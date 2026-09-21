@@ -1218,6 +1218,20 @@ body.show-file-panel #source-editor {
   background: var(--selection-bg);
 }
 
+/* ======= 语法揭示（span 级 Markdown 源码态） ======= */
+/* 揭示态节点：等宽 + 次要文字色；标记字符（**、== 等）再弱一档。
+   对 span[data-md-source] 恒定生效——孤立的揭示节点（粘贴副本/撤销恢复）
+   也保持揭示外观，光标进入后由插件接管。 */
+#editor .ProseMirror span[data-md-source] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
+  font-size: 0.92em;
+  color: var(--text-secondary, var(--text-color));
+  white-space: pre-wrap;
+}
+#editor .ProseMirror span[data-md-source] .md-reveal-marker {
+  opacity: 0.6;
+}
+
 /* ======= THEMES ======= */
 
 :root, body.theme-light {

@@ -29,6 +29,7 @@ import { tableModal } from './table-modal'
 import { remarkMathFalsePositiveGuard } from './math-guard'
 import { remarkResidualEmphasis } from './residual-emphasis'
 import { highlight, remarkHighlight, highlightStringifyHandler } from './highlight'
+import { syntaxRevealPlugin, syntaxRevealPluginKey, mdSourceSchema } from './syntax-reveal'
 import { blankLinePlugin, remarkBlankLine, blankLineStringifyHandler } from '../../extensions/blank-line'
 import { emphDotPlugin, remarkEmphDot, emphDotStringifyHandler } from '../../extensions/emph-dot'
 import { pinyinRubyPlugin, remarkPinyinRuby, pinyinRubyStringifyHandler } from '../../extensions/pinyin-ruby'
@@ -1438,7 +1439,14 @@ export async function createEditor(
       state: {
         init: () => null,
         apply(tr, value) {
-          if (tr.docChanged) onDocumentChange()
+          if (tr.docChanged) {
+            // 语法揭示的进入/接管事务、以及内容未被编辑的提交事务，序列化
+            // 结果不变（md_source 原样输出 markdown），不应把文档标记为已修改；
+            // changed=true 表示用户在揭示态真的改了内容，照常计脏。
+            const revealMeta = tr.getMeta(syntaxRevealPluginKey) as { changed?: boolean } | undefined
+            if (revealMeta?.changed === false) return value
+            onDocumentChange()
+          }
           return value
         }
       }
@@ -1525,6 +1533,8 @@ export async function createEditor(
     .use(fontStylePlugin)
     .use(tianziGridPlugin)
     .use(imageStylePlugin)
+    // 语法揭示的 md_source 行内节点 schema（toMarkdown 原样输出，见 syntax-reveal.ts）
+    .use(mdSourceSchema)
     .use(history)
     .use(listener)
     .use(clipboard)
@@ -1540,6 +1550,9 @@ export async function createEditor(
     .use(searchHighlight)
     .use(headingFlashPlugin)
     .use(toolbarStatePlugin)
+    // 语法揭示插件：Enter 键处理（揭示态内提交并吞掉换行）必须先于
+    // enterSplitGuardPlugin 的规则扫描，避免揭示文本的字面量标记被误匹配
+    .use(syntaxRevealPlugin)
     // 必须最后注册：handleKeyDown 按插件顺序处理，本守卫要在容器退出键位等
     // 自定义逻辑之后、核心 customInputRules（始终在 prosePlugins 之后）之前
     .use(enterSplitGuardPlugin)
