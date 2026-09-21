@@ -1,11 +1,25 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "composite": true,
     "module": "CommonJS",
     "moduleResolution": "node",
     "target": "ES2022",
     "outDir": "dist/main",
-    "rootDir": "src/main"
+    "rootDir": "src"
   },
-  "include": ["src/main/**/*"]
+  "include": [
+    "src/main/**/*",
+    "src/extensions/blank-line/**/*",
+    "src/extensions/circled-sup/**/*",
+    "src/extensions/columns/**/*",
+    "src/extensions/emph-dot/**/*",
+    "src/extensions/font-style/**/*",
+    "src/extensions/image-style/**/*",
+    "src/extensions/pinyin-inline/**/*",
+    "src/extensions/pinyin-ruby/**/*",
+    "src/extensions/tianzi-grid/**/*",
+    "src/renderer/editor/residual-emphasis.ts",
+    "src/renderer/editor/math-guard.ts"
+  ]
 }

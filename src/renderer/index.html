@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https: http: file:;">
-  <title>ColaMD</title>
+  <title>Teyoo</title>
   <!-- Keep the titlebar stable before the renderer CSS bundle loads. -->
   <style>
     #titlebar { height: 40px; display: flex; align-items: center; padding: 0 6px 0 96px; position: relative; z-index: 30; -webkit-app-region: drag; }
@@ -17,7 +17,7 @@
     body.platform-win #titlebar { padding-right: calc(100vw - env(titlebar-area-width, calc(100vw - 138px)) + 6px); }
     #titlebar > button { flex: none; position: relative; margin-left: 8px; -webkit-app-region: no-drag; border: 0; background: transparent; color: inherit; display: flex; align-items: center; justify-content: center; }
     #titlebar > button[hidden] { display: none; }
-    #word-count, #source-toggle-btn, #file-toggle-btn, #app-menu-btn { width: 28px; height: 28px; }
+    #word-count, #source-toggle-btn, #file-toggle-btn { width: 28px; height: 28px; }
     #save-status { flex: none; margin-right: 2px; white-space: nowrap; font-size: 11px; line-height: 1.3; opacity: 0; pointer-events: none; }
     .toolbar-tip { position: absolute; opacity: 0; pointer-events: none; }
     #file-panel { width: var(--file-panel-width, 220px); }
@@ -27,19 +27,18 @@
 </head>
 <body>
   <div id="titlebar">
-    <!-- The menu button is Windows-only (hidden everywhere else; macOS has the menu
-         bar). On Windows a menu or options control belongs at the row's left end,
-         before the document's own strip: that is where a Windows user looks for
-         it, and the right end is taken by the three window buttons the system
-         paints there. -->
-    <button id="app-menu-btn" hidden aria-label="菜单">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
-        <line x1="2.5" y1="4.8" x2="13.5" y2="4.8"/>
-        <line x1="2.5" y1="8" x2="13.5" y2="8"/>
-        <line x1="2.5" y1="11.2" x2="13.5" y2="11.2"/>
-      </svg>
-      <span class="toolbar-tip">菜单</span>
-    </button>
+    <!-- Typora 式顶部菜单栏：Windows/Linux 显示一行一级标签，点击在标签下方
+         弹出原生二级菜单。macOS 使用系统菜单栏，此条保持隐藏。 -->
+    <div id="app-menubar" role="menubar" aria-label="Application menu" hidden>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="file">文件</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="edit">编辑</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="format">格式</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="font">字体</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="fontSize">字号</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="view">视图</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="theme">主题</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="help">帮助</button>
+    </div>
     <div id="tab-bar" hidden></div>
     <span id="save-status" aria-live="polite"></span>
     <button id="file-toggle-btn" aria-label="显示 / 隐藏文件列表">
@@ -65,7 +64,187 @@
       <span class="toolbar-tip word-count-tip">0 字 · 0 词 · 0 段</span>
     </button>
   </div>
-  <div id="hover-tip" hidden></div>
+  <!-- Typora 式第二行工具条：历史 / 段落 / 行内格式 / 列表 / 插入。
+       源码模式下隐藏；可见性偏好由 toolbar.ts 控制。 -->
+  <div id="toolbar" role="toolbar" aria-label="格式工具栏" hidden>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn" data-tb-cmd="undo" title="撤销 (Ctrl+Z)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7v6h6"/>
+          <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="redo" title="重做 (Ctrl+Shift+Z)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 7v6h-6"/>
+          <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/>
+        </svg>
+      </button>
+    </div>
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <div class="heading-dropdown">
+        <button type="button" id="heading-select-btn" class="toolbar-btn heading-select-btn" aria-haspopup="true" aria-expanded="false" title="段落样式">
+          <span id="heading-select-label">正文</span>
+          <svg class="heading-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="2.5 3.8 5 6.3 7.5 3.8"/>
+          </svg>
+        </button>
+        <div id="heading-menu" class="heading-menu" role="menu" hidden>
+          <button type="button" role="menuitem" class="heading-menu-item" data-block="paragraph">正文</button>
+          <button type="button" role="menuitem" class="heading-menu-item" data-block="heading1">标题 1</button>
+          <button type="button" role="menuitem" class="heading-menu-item" data-block="heading2">标题 2</button>
+          <button type="button" role="menuitem" class="heading-menu-item" data-block="heading3">标题 3</button>
+          <button type="button" role="menuitem" class="heading-menu-item" data-block="heading4">标题 4</button>
+          <button type="button" role="menuitem" class="heading-menu-item" data-block="heading5">标题 5</button>
+          <button type="button" role="menuitem" class="heading-menu-item" data-block="heading6">标题 6</button>
+        </div>
+      </div>
+      <button type="button" class="toolbar-btn" data-tb-cmd="quote" title="引用块">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+          <path d="M7.2 3.2C4.9 3.7 3.7 5.5 3.7 8v4.3h3.6V8.4H5.4c0-1.4.6-2.4 2-2.7l-.2-2.5zm5.6 0c-2.3.5-3.5 2.3-3.5 4.8v4.3h3.6V8.4H11c0-1.4.6-2.4 2-2.7l-.2-2.5z"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="hr" title="分割线">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <line x1="2.5" y1="8" x2="13.5" y2="8"/>
+        </svg>
+      </button>
+    </div>
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="strikethrough" title="删除线 (Ctrl+Shift+X)"><span class="tb-strike">S</span></button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="emphDot" title="字下着重号（@.文字.@）">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <line x1="3" y1="5" x2="8" y2="5"/>
+          <line x1="3" y1="8.5" x2="10.5" y2="8.5"/>
+          <circle cx="3.6" cy="12.3" r="1.05" fill="currentColor" stroke="none"/>
+          <circle cx="6.9" cy="12.3" r="1.05" fill="currentColor" stroke="none"/>
+          <circle cx="10.2" cy="12.3" r="1.05" fill="currentColor" stroke="none"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="inlineCode" title="行内代码 (Ctrl+E)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 4.5 2.5 8 6 11.5"/>
+          <polyline points="10 4.5 13.5 8 10 11.5"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="clearFont" title="清除字体样式 (Ctrl+空格)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.6 11.5 6.6 4l3 7.5"/>
+          <path d="M4.7 9.1h3.8"/>
+          <line x1="11.6" y1="4.6" x2="14.4" y2="7.4"/>
+          <line x1="14.4" y1="4.6" x2="11.6" y2="7.4"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="link" title="链接 (Ctrl+K)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6.8 9.2a2.6 2.6 0 0 0 3.7.3l1.2-1.2a2.6 2.6 0 0 0-3.7-3.7L7.1 5.5"/>
+          <path d="M9.2 6.8a2.6 2.6 0 0 0-3.7-.3l-1.2 1.2a2.6 2.6 0 0 0 3.7 3.7l.9-.9"/>
+        </svg>
+      </button>
+    </div>
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn" data-tb-cmd="bulletList" title="无序列表 (Ctrl+Shift+8)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <line x1="5.5" y1="4" x2="13.5" y2="4"/>
+          <line x1="5.5" y1="8" x2="13.5" y2="8"/>
+          <line x1="5.5" y1="12" x2="13.5" y2="12"/>
+          <circle cx="3" cy="4" r="1" fill="currentColor" stroke="none"/>
+          <circle cx="3" cy="8" r="1" fill="currentColor" stroke="none"/>
+          <circle cx="3" cy="12" r="1" fill="currentColor" stroke="none"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="orderedList" title="有序列表 (Ctrl+Shift+7)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <line x1="5.5" y1="4" x2="13.5" y2="4"/>
+          <line x1="5.5" y1="8" x2="13.5" y2="8"/>
+          <line x1="5.5" y1="12" x2="13.5" y2="12"/>
+          <text x="1.4" y="5.9" font-size="5.6" fill="currentColor" stroke="none" font-family="sans-serif">1</text>
+          <text x="1.4" y="9.9" font-size="5.6" fill="currentColor" stroke="none" font-family="sans-serif">2</text>
+          <text x="1.4" y="13.9" font-size="5.6" fill="currentColor" stroke="none" font-family="sans-serif">3</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="taskList" title="任务列表">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2.5" width="5" height="5" rx="1"/>
+          <polyline points="3.2 5 4.5 6.3 6.1 3.9"/>
+          <line x1="9" y1="5" x2="14" y2="5"/>
+          <rect x="2" y="8.5" width="5" height="5" rx="1"/>
+          <line x1="9" y1="11" x2="14" y2="11"/>
+        </svg>
+      </button>
+    </div>
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn" data-tb-cmd="longBlank" title="插入长空白（10 个全角空格）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6H5v12h4"/>
+          <path d="M15 6h4v12h-4"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="longUnderscore" title="插入长下划线（填空线）">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="8" x2="6" y2="13"/>
+          <line x1="12" y1="8" x2="12" y2="13"/>
+          <line x1="18" y1="8" x2="18" y2="13"/>
+          <line x1="3" y1="17" x2="21" y2="17"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="math" title="公式 (Ctrl+Shift+E)">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <text x="8" y="15" text-anchor="middle" font-size="16" fill="currentColor" font-family="Georgia,'Times New Roman',serif" font-style="italic">∑</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="image" title="插入图片">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <circle cx="9" cy="10" r="2"/>
+          <path d="M3 17l5-5 4 4 3-3 6 6"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="circledSup" title="汉字右上角带圈序号（光标置于汉字后）">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <text x="5" y="18" font-size="15" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">字</text>
+          <circle cx="18" cy="5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <text x="18" y="6.8" text-anchor="middle" font-size="5" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">1</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="pinyin" title="汉字拼音（上方 / 同行）"><b>P</b></button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="subblock" title="子块（带边框/对齐）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="18" height="14" rx="1" />
+          <line x1="3" y1="10" x2="21" y2="10" />
+          <text x="12" y="8" text-anchor="middle" font-size="3.5" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">text</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="cols" title="分栏（N 列等宽或 A:B 比例）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="1" />
+          <line x1="12" y1="4" x2="12" y2="20" />
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="tianzi" title="汉字田字格（纯汉字 / 空白格 / 带拼音）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="1" />
+          <line x1="3" y1="12" x2="21" y2="12" stroke-dasharray="2 2"/>
+          <line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="table" title="插入表格">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="16" height="14" rx="1"/>
+          <line x1="2" y1="8" x2="18" y2="8"/>
+          <line x1="2" y1="13" x2="18" y2="13"/>
+          <line x1="8" y1="3" x2="8" y2="17"/>
+          <line x1="13" y1="3" x2="13" y2="17"/>
+        </svg>
+      </button>
+    </div>
+  </div>
   <aside id="file-panel" hidden>
     <div class="file-panel-tabs" role="tablist" aria-label="侧栏内容">
       <button id="file-panel-files" class="active" type="button" role="tab" aria-selected="true">文件</button>

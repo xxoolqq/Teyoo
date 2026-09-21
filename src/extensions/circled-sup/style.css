@@ -1,0 +1,26 @@
+/* 规约E：汉字右上角带圈序号 */
+/* 渲染：<span class="circled-sup">汉字<sup class="circled-num">数字</sup></span> */
+
+.circled-sup {
+  white-space: nowrap;
+}
+
+.circled-sup-char {
+  /* 汉字保持默认 */
+}
+
+/* 带圈数字上标：用 border 画圆圈，vertical-align 做上标 */
+.circled-num {
+  font-size: 0.55em;
+  vertical-align: super;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  display: inline-block;
+  width: 1.3em;
+  height: 1.3em;
+  text-align: center;
+  /* line-height 略小于 height，使数字在圆圈内偏上约 1px */
+  line-height: 1.2em;
+  margin-left: 0.05em;
+  box-sizing: border-box;
+}

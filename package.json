@@ -1,5 +1,5 @@
 {
-  "name": "colamd",
+  "name": "teyoo",
   "version": "2.4.3",
   "description": "A free, elegant Markdown editor for macOS, Windows and Linux. Simple by design, always in sync with the file on disk.",
   "main": "dist/main/index.js",
@@ -20,7 +20,7 @@
     "preview": "electron-vite preview",
     "dist": "electron-vite build && electron-builder",
     "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:win": "electron-vite build && electron-builder --win --publish never",
     "dist:linux": "electron-vite build && electron-builder --linux",
     "build:web": "vite build --config vite.web.config.ts",
     "preview:web": "vite preview --config vite.web.config.ts"
@@ -31,8 +31,12 @@
     "docx": "^9.7.1",
     "electron-updater": "^6.8.9",
     "katex": "^0.16.47",
+    "mathml2omml": "^0.5.0",
     "mermaid": "^11.17.0",
-    "remark-breaks": "^4.0.0"
+    "pinyin-pro": "^3.29.4",
+    "remark-breaks": "^4.0.0",
+    "remark-math": "^6.0.0",
+    "temml": "^0.13.5"
   },
   "devDependencies": {
     "@types/katex": "^0.16.8",

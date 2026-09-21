@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 深色 Dark =====
+/* ===== Teyoo Theme: 深色 Dark =====
    GitHub dark: soft black with blue links.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #0d1117;

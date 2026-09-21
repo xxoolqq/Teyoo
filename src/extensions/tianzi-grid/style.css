@@ -1,0 +1,90 @@
+/* 规约G：汉字田字格 */
+/*
+  结构：
+  <span class="tianzi-grid">
+    <span class="tz-cell">
+      <span class="tz-py">拼音</span>
+      <span class="tz-box"><span class="tz-char">字</span></span>
+    </span>
+    …连续多格…
+  </span>
+
+  尺寸以 em 为单位，随编辑器字号缩放。
+  每格上下两行：上方拼音行（固定高度，无拼音时占位保证格底对齐），
+  下方正方形格框（实线外框 + 虚线十字）。
+*/
+
+.tianzi-grid {
+  display: inline;
+  white-space: nowrap;
+}
+
+.tz-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  vertical-align: bottom;
+  /* 相邻格框线折叠为 1px */
+  margin-left: -1px;
+}
+.tz-cell:first-child {
+  margin-left: 0;
+}
+
+/* 拼音行：固定高度，空内容也占位，使所有格子底部对齐 */
+.tz-py {
+  height: 1em;
+  line-height: 1em;
+  font-size: 0.62em;
+  text-align: center;
+  color: #555;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  white-space: nowrap;
+  margin-bottom: 0.3em;
+}
+
+/* 格框：正方形，实线外框 */
+.tz-box {
+  position: relative;
+  width: 2.2em;
+  height: 2.2em;
+  border: 1px solid #444;
+  box-sizing: border-box;
+}
+
+/* 中间横虚线 */
+.tz-box::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px dashed #d38b8b;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* 中间竖虚线 */
+.tz-box::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  border-left: 1px dashed #d38b8b;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* 汉字：楷体居中 */
+.tz-char {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: KaiTi, STKaiti, '楷体', 'KaiTi_GB2312', serif;
+  font-size: 1.35em;
+  line-height: 1;
+  color: #111;
+}

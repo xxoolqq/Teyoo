@@ -52,6 +52,10 @@ export interface ElectronAPI {
   reportTheme: (theme: string) => Promise<void>
   reportTitlebarColors: (colors: { background: string; symbol: string }) => Promise<void>
   popupAppMenu: () => Promise<void>
+  getMenubarLabels: () => Promise<Record<string, string>>
+  popupMenubar: (key: string, x: number, y: number) => Promise<void>
+  onMenubarLabelsChanged: (callback: () => void) => void
+  onMenubarClosed: (callback: () => void) => void
   onFullscreenChange: (callback: (isFullscreen: boolean) => void) => void
   getPathForFile: (file: File) => string
   openExternal: (url: string) => void
@@ -73,6 +77,7 @@ export interface ElectronAPI {
   onSearch: (callback: () => void) => void
   onMathModal: (callback: () => void) => void
   onFormatCommand: (callback: (id: string) => void) => void
+  onFontCommand: (callback: (attrs: { family?: string; size?: string; clear?: boolean }) => void) => void
   readClipboardText: () => Promise<string>
   onSiblingsChanged: (callback: (files: SiblingFile[]) => void) => void
   onToggleFilePanel: (callback: () => void) => void
@@ -81,6 +86,7 @@ export interface ElectronAPI {
   listSystemFonts: () => Promise<string[]>
   onEditorFontChanged: (callback: (prefs: { family: string; size: number }) => void) => void
   onOpenFontSettings: (callback: () => void) => void
+  onToggleToolbar: (callback: () => void) => void
   reportExternalConflict: () => Promise<void>
   onExternalConflictResult: (callback: (result: { action: 'keep' | 'load'; content?: string }) => void) => void
   onUpdateAvailable: (callback: (version: string) => void) => void
@@ -133,6 +139,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   reportTheme: (theme: string) => ipcRenderer.invoke('report-theme', theme),
   reportTitlebarColors: (colors: { background: string; symbol: string }) => ipcRenderer.invoke('report-titlebar-colors', colors),
   popupAppMenu: () => ipcRenderer.invoke('popup-app-menu'),
+  getMenubarLabels: () => ipcRenderer.invoke('menubar-get-labels') as Promise<Record<string, string>>,
+  popupMenubar: (key: string, x: number, y: number) => ipcRenderer.invoke('menubar-popup', key, x, y) as Promise<void>,
+  onMenubarLabelsChanged: (callback: () => void) => {
+    ipcRenderer.on('menubar-labels-changed', () => callback())
+  },
+  onMenubarClosed: (callback: () => void) => {
+    ipcRenderer.on('menubar-closed', () => callback())
+  },
   onFullscreenChange: (callback: (isFullscreen: boolean) => void) => {
     ipcRenderer.on('fullscreen-changed', (_event, isFullscreen) => callback(isFullscreen === true))
   },
@@ -195,6 +209,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFormatCommand: (callback: (id: string) => void) => {
     ipcRenderer.on('editor:format', (_event, id: string) => callback(id))
   },
+  onFontCommand: (callback: (attrs: { family?: string; size?: string; clear?: boolean }) => void) => {
+    ipcRenderer.on('editor:font', (_event, attrs: { family?: string; size?: string; clear?: boolean }) => callback(attrs))
+  },
   readClipboardText: () => ipcRenderer.invoke('read-clipboard-text') as Promise<string>,
   onSiblingsChanged: (callback: (files: SiblingFile[]) => void) => {
     ipcRenderer.on('siblings-changed', (_event, files) => callback(files))
@@ -216,6 +233,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onOpenFontSettings: (callback: () => void) => {
     ipcRenderer.on('open-font-settings', () => callback())
+  },
+  onToggleToolbar: (callback: () => void) => {
+    ipcRenderer.on('toggle-toolbar', () => callback())
   },
   reportExternalConflict: () => {
     return ipcRenderer.invoke('report-external-conflict')

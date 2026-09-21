@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 羊皮纸 Sepia =====
+/* ===== Teyoo Theme: 羊皮纸 Sepia =====
    Kindle / Apple Books warm paper, serif body for long-form reading.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #f6efe0;

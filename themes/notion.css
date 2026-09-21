@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 简白 Notion =====
+/* ===== Teyoo Theme: 简白 Notion =====
    Clean minimal workspace, warm off-black text on white.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #ffffff;

@@ -17,6 +17,19 @@ html, body {
      right below it and nothing below needs a second offset. */
   --tab-bar-height: 0px;
   --editor-top-gap: 0px;
+  /* 第二行格式工具栏占的高度；用户隐藏或进入源码模式时归零，
+     编辑器/侧栏/分隔条的 calc 同时收缩，不留空条。 */
+  --toolbar-height: 38px;
+}
+
+/* 用户通过「视图 → 显示/隐藏工具栏」收起时整条不占高度 */
+body.toolbar-hidden {
+  --toolbar-height: 0px;
+}
+
+/* 源码模式下工具栏隐藏且不占位（:has 在 Electron 44 / Chromium 136 可用） */
+body:has(#source-editor.visible) {
+  --toolbar-height: 0px;
 }
 
 /* The room the panel's column takes out of the right-hand end of the row. Zero
@@ -364,14 +377,192 @@ body.platform-win #titlebar {
   display: none;
 }
 
-/* The Windows menu button is the row's first child, so it gets its own air
-   instead of the 8px gap the right-hand cluster uses: the row's 6px gutter is
-   its left margin, and 6px on the right puts the glyph exactly halfway between
-   the window's edge and the line the document's strip starts on. Inheriting the
-   shared margin-left left it jammed against the first tab (2026-09-15). */
-#titlebar > #app-menu-btn {
-  margin-left: 0;
-  margin-right: 6px;
+/* ─── Typora 式顶部菜单栏 ───────────────────────────────────────────────────
+   一行五个一级标签（文件/编辑/视图/主题/帮助），位于行首、标签页之前。
+   二级菜单是原生弹出菜单（main 进程控制），这里只负责标签的静态外观与
+   弹出期间的 .active 高亮。整条不可拖动窗口，否则点击会被拖拽吞掉。 */
+#app-menubar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin-right: 4px;
+  -webkit-app-region: no-drag;
+}
+
+#app-menubar[hidden] {
+  display: none;
+}
+
+.menubar-item {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 0 9px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: default;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+/* hover 与「菜单弹出中」同一外观：弹出期间在标签间移动鼠标即可切换 */
+.menubar-item:hover,
+.menubar-item.active {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+  color: var(--text-color);
+}
+
+/* ─── 第二行格式工具栏 ──────────────────────────────────────────────────────
+   标题栏之下的一行图标按钮，分组之间用 1px 竖线分隔。按下态用 .is-active，
+   由编辑器选区状态驱动。整条不拦截窗口拖拽；按钮 mousedown 在 JS 里
+   preventDefault，避免点击时编辑器丢选区。 */
+#toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--toolbar-height, 38px);
+  padding: 0 10px;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--shell-line);
+  -webkit-app-region: no-drag;
+  overflow: visible; /* 标题下拉弹层不能被裁切 */
+}
+
+#toolbar[hidden],
+body.toolbar-hidden #toolbar,
+body:has(#source-editor.visible) #toolbar {
+  display: none;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.toolbar-sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--shell-line);
+}
+
+.toolbar-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.toolbar-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+  color: var(--text-color);
+}
+
+/* 光标位于该格式内时的按下态 */
+.toolbar-btn.is-active {
+  background: color-mix(in srgb, var(--text-color) 14%, transparent);
+  color: var(--text-color);
+}
+
+/* B / I / S 文字按钮 */
+.toolbar-btn.tb-text {
+  font-family: inherit;
+  font-size: 13.5px;
+}
+
+.toolbar-btn .tb-strike {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.2px;
+}
+
+/* 段落/标题下拉选择器：比图标宽，显示当前样式名 + 箭头 */
+.heading-dropdown {
+  position: relative;
+}
+
+.heading-select-btn {
+  width: auto;
+  min-width: 76px;
+  padding: 0 8px;
+  gap: 5px;
+  font-size: 12.5px;
+  justify-content: space-between;
+}
+
+#heading-select-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.heading-chevron {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.heading-select-btn[aria-expanded="true"] .heading-chevron {
+  transform: rotate(180deg);
+}
+
+.heading-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 128px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--shell-line);
+  background: var(--chrome-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.heading-menu[hidden] {
+  display: none;
+}
+
+.heading-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.heading-menu-item:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
+.heading-menu-item.is-active {
+  color: var(--text-color);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--text-color) 7%, transparent);
 }
 
 /* One focus ring for the whole shell, drawn in the theme's own ink. The platform
@@ -427,7 +618,7 @@ body.platform-win #titlebar {
 
 #editor {
   position: relative; /* anchor for the absolutely-positioned code copy button */
-  height: calc(100vh - 40px - var(--tab-bar-height, 0px));
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px) - var(--toolbar-height, 0px));
   overflow-y: auto;
   /* 40px of air above the first line, the same as below it and at the sides, and
      the same as the source view's: a document that starts flush against the
@@ -438,7 +629,7 @@ body.platform-win #titlebar {
 
 #source-editor {
   display: none;
-  height: calc(100vh - 40px - var(--tab-bar-height, 0px));
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px) - var(--toolbar-height, 0px));
   width: 100%;
   /* Center a column matching the visual editor (780px) so switching modes
      keeps the text in the same place (#48). Falls back to 40px on narrow windows. */
@@ -462,7 +653,7 @@ body.platform-win #titlebar {
 /* Same-directory file panel */
 #file-panel {
   position: fixed;
-  top: calc(40px + var(--tab-bar-height, 0px));
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
   right: 0;
   bottom: 0;
   width: var(--file-panel-width, 220px);
@@ -494,7 +685,7 @@ body.platform-win #titlebar {
    this is shell furniture. */
 #panel-resizer {
   position: fixed;
-  top: calc(40px + var(--tab-bar-height, 0px));
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
   bottom: 0;
   right: calc(var(--file-panel-width, 220px) - 4px);
   width: 7px;
@@ -998,7 +1189,7 @@ body.show-file-panel #source-editor {
 #editor .ProseMirror th,
 #editor .ProseMirror td {
   border: 1px solid var(--border-color);
-  padding: 8px 12px;
+  padding: 4px 12px;
   text-align: left;
 }
 
@@ -1105,11 +1296,6 @@ body.theme-elegant #editor .ProseMirror blockquote {
 
 body.theme-elegant #editor .ProseMirror table th {
   border-bottom: 2px solid #c44b2b;
-}
-
-body.theme-elegant #editor .ProseMirror table td {
-  border-left: none;
-  border-right: none;
 }
 
 /* Scrollbar: macOS keeps its native overlay bars, which are drawn while you
@@ -1393,6 +1579,285 @@ body.web-playground *::-webkit-scrollbar-corner {
 
 .math-modal-btn.save:hover {
   opacity: 0.9;
+}
+
+/* --- Image edit modal (reuses math-modal shell, adds form rows) --- */
+.image-modal {
+  width: 520px;
+  gap: 12px;
+}
+
+.image-modal h3 {
+  font-size: 15px;
+}
+
+.image-modal-preview-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  max-height: 200px;
+  overflow: hidden;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--code-bg);
+}
+
+.image-modal-preview {
+  max-width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+}
+
+.image-modal-preview[style*="display: none"],
+.image-modal-preview:not([src]) {
+  display: none;
+}
+
+.image-modal-row {
+  display: flex;
+  gap: 10px;
+}
+
+.image-modal-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.image-modal-label {
+  font-size: 12px;
+  color: var(--text-secondary, var(--text-muted));
+}
+
+.image-modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  outline: none;
+}
+
+.image-modal-input:focus {
+  border-color: var(--link-color);
+}
+
+/* 下拉框右侧加箭头留白 */
+.image-modal-select {
+  appearance: none;
+  cursor: pointer;
+  padding-right: 28px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.image-modal-options {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  color: var(--text-secondary, var(--text-muted));
+  font-size: 13px;
+}
+
+.image-modal-options input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.image-modal-cb-label {
+  cursor: pointer;
+  user-select: none;
+}
+
+/* src input + 转 Base64 button flex row */
+.image-modal-src-flex {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.image-modal-src-flex .image-modal-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.image-modal-convert-btn {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  border: 1px solid var(--shell-line);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.image-modal-convert-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 14%, transparent);
+}
+
+.image-modal-convert-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* --- Circled number modal (reuses math-modal shell) --- */
+.circled-sup-modal {
+  width: 360px;
+  gap: 12px;
+}
+
+.circled-sup-modal h3 {
+  font-size: 15px;
+}
+
+.circled-sup-modal-input {
+  font-family: inherit;
+  padding: 8px 10px;
+  font-size: 14px;
+  resize: none;
+  height: 36px;
+}
+
+.circled-sup-modal-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.circled-sup-modal-hint-error {
+  color: #d33;
+}
+
+/* --- Pinyin modal (combines 规约B ruby + 规约B2 inline; reuses image-modal rows) --- */
+.pinyin-modal {
+  width: 420px;
+  gap: 12px;
+}
+
+.pinyin-modal h3 {
+  font-size: 15px;
+}
+
+/* 子块模态框 */
+.subblock-modal {
+  width: 460px;
+  gap: 12px;
+}
+
+.subblock-modal h3 {
+  font-size: 15px;
+}
+
+.subblock-modal-textarea {
+  width: 100%;
+  min-height: 80px;
+  max-height: 200px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border: 1px solid var(--shell-line);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  resize: vertical;
+}
+
+/* 分栏模态框 */
+.cols-modal {
+  width: 360px;
+  gap: 12px;
+}
+
+.cols-modal h3 {
+  font-size: 15px;
+}
+
+.cols-modal-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* 田字格模态框 */
+.tianzi-modal {
+  width: 400px;
+  gap: 12px;
+}
+
+.tianzi-modal h3 {
+  font-size: 15px;
+}
+
+.tianzi-modal-fields {
+  position: relative;
+  width: 100%;
+}
+
+.tianzi-modal-field {
+  width: 100%;
+}
+
+/* 田字格形态 radio 互斥单选组 */
+.tianzi-modal-modes {
+  display: flex;
+  gap: 16px;
+  width: 100%;
+}
+.tianzi-modal-radio {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.tianzi-modal-radio input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+}
+.tianzi-mode-label {
+  user-select: none;
+}
+
+.tianzi-modal-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* 表格模态框标签 */
+.table-modal-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--text-color);
+  font-size: 13px;
+}
+
+.table-modal-input {
+  width: 60px !important;
+  text-align: center;
 }
 
 /* Update banner (weak, non-blocking) */

@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 熊红 Bear =====
+/* ===== Teyoo Theme: 熊红 Bear =====
    Crisp white with confident red accent, Bear style.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #ffffff;

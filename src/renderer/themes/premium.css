@@ -87,12 +87,6 @@ body.theme-notion #editor .ProseMirror code {
   background: #f7f6f3;
 }
 
-body.theme-notion #editor .ProseMirror table th,
-body.theme-notion #editor .ProseMirror table td {
-  border-left: none;
-  border-right: none;
-}
-
 /* ---------- 熊红 Bear ----------
    Bear's signature warmth: crisp white, near-black ink,
    confident red accent threading through links and marks. */

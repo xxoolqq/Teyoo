@@ -1,0 +1,15 @@
+/* 规约C：行内填空线
+   .blank-line  - 带下划线的填空线
+   .blank-space - 纯空白（无下划线）
+   white-space: normal 允许超出行宽时自然折行续接 */
+
+.blank-line {
+  display: inline;
+  border-bottom: 1px solid currentColor;
+  white-space: normal;
+}
+
+.blank-space {
+  display: inline;
+  white-space: normal;
+}

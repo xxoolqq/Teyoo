@@ -1,0 +1,19 @@
+/* 规约B2：同行平级拼音 —— 拼音在汉字右侧同一行 */
+/* 渲染：<span class="pinyin-inline">汉字 <span class="annot">带调拼音</span></span> */
+
+.pinyin-inline {
+  /* 整体作为内联单元，不拆行 */
+  white-space: nowrap;
+}
+
+.pinyin-inline-text {
+  /* 汉字保持默认字号 */
+}
+
+.pinyin-inline-annot {
+  /* 拼音在汉字右侧，略小、颜色稍淡 */
+  margin-left: 0.25em;
+  font-size: 0.85em;
+  color: #666;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}

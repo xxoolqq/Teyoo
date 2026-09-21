@@ -1,14 +1,14 @@
-# ColaMD
+# Teyoo
 
 > A free, elegant Markdown editor anyone can pick up. No toolbars, no clutter, and the file on disk is always what you see.
 
 **Language / 语言: [English](README.md) · [中文](README_CN.md)** · [Website](https://colamd.com/)
 
-ColaMD is an open-source, free, elegant Markdown editor for writing, notes, and documentation. It is built for people who just want to write: no toolbars, no status bar, nothing to configure: just your text and a file list, with a tab strip only when you open a second document.
+Teyoo is an open-source, free, elegant Markdown editor for writing, notes, and documentation. It is built for people who just want to write: no toolbars, no status bar, nothing to configure: just your text and a file list, with a tab strip only when you open a second document.
 
 It offers true WYSIWYG editing, 12 built-in themes, rich-text copy, smart line breaks, search and replace, a document outline, PDF / HTML / Word export, and support for macOS, Windows, and Linux.
 
-Whatever writes the file (an AI agent such as Claude Code or Codex, a script, or another editor), ColaMD shows the new content right away. No reopening, no manual refresh.
+Whatever writes the file (an AI agent such as Claude Code or Codex, a script, or another editor), Teyoo shows the new content right away. No reopening, no manual refresh.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub release](https://img.shields.io/github/release/marswaveai/colamd.svg)](https://github.com/marswaveai/colamd/releases)
@@ -20,8 +20,8 @@ Whatever writes the file (an AI agent such as Claude Code or Codex, a script, or
 ## Screenshots
 
 <p align="center">
-  <img src="docs/images/tasks-en.png" alt="ColaMD showing an interactive task list" width="49%">
-  <img src="docs/images/rendering-en.png" alt="ColaMD rendering a table and inline code" width="49%">
+  <img src="docs/images/tasks-en.png" alt="Teyoo showing an interactive task list" width="49%">
+  <img src="docs/images/rendering-en.png" alt="Teyoo rendering a table and inline code" width="49%">
 </p>
 
 <p align="center"><em>Interactive task lists, and Markdown rendered as you type: headings, links, tables and inline code.</em></p>
@@ -31,7 +31,7 @@ Whatever writes the file (an AI agent such as Claude Code or Codex, a script, or
 Twelve built-in themes, six light, six dark, inspired by Bear, Notion, iA Writer, Kindle, Solarized, Nord, Gruvbox, and Dracula. Every one of them is also a standalone CSS file in [`themes/`](themes/), with a guide to [writing your own](themes/README.md).
 
 <p align="center">
-  <img src="docs/images/theme-swatches.svg" alt="ColaMD themes" width="92%">
+  <img src="docs/images/theme-swatches.svg" alt="Teyoo themes" width="92%">
 </p>
 
 ## Features
@@ -56,13 +56,13 @@ Twelve built-in themes, six light, six dark, inspired by Bear, Notion, iA Writer
 - **PDF, HTML & Word Export**: Turn your Markdown document into a themed PDF, self-contained HTML, or editable Word document.
 - **Reading-Page Image Export**: Share Markdown as desktop or mobile PNG pages; longer documents continue as numbered pages.
 - **Portable Image Paths**: Local images use safe `file://` URLs for display and return to relative paths when saved.
-- **VS Code Integration**: Open the current Markdown file in ColaMD directly from VS Code.
+- **VS Code Integration**: Open the current Markdown file in Teyoo directly from VS Code.
 - **Minimal by Design**: No toolbar, no permanent sidebar, no distractions.
 - **Cross-Platform**: Available for macOS, Windows, and Linux.
 
 ## Works with your Markdown workflow
 
-ColaMD does not ask you to change your habits. It works well alongside Obsidian, Typora, VS Code, and other Markdown apps, all sharing the same `.md` files, with each tool doing what it does best.
+Teyoo does not ask you to change your habits. It works well alongside Obsidian, Typora, VS Code, and other Markdown apps, all sharing the same `.md` files, with each tool doing what it does best.
 
 ## Download
 
@@ -76,7 +76,7 @@ ColaMD does not ask you to change your habits. It works well alongside Obsidian,
 
 ## Roadmap
 
-ColaMD will keep growing as a focused, free Markdown editor:
+Teyoo will keep growing as a focused, free Markdown editor:
 
 - v1.1: Live file reload, file associations, drag & drop, themes
 - v1.2: New icon
@@ -118,4 +118,4 @@ ColaMD will keep growing as a focused, free Markdown editor:
 
 ---
 
-ColaMD is built by [Cola.app](https://cola.app) and maintained by [orange2ai](https://github.com/orange2ai). Issues, ideas and pull requests are welcome.
+Teyoo is built by [Cola.app](https://cola.app) and maintained by [orange2ai](https://github.com/orange2ai). Issues, ideas and pull requests are welcome.

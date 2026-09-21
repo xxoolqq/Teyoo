@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 极地 Nord =====
+/* ===== Teyoo Theme: 极地 Nord =====
    Arctic night: cool blue-grays, frost-cyan links.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #2e3440;

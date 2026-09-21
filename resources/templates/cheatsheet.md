@@ -1,6 +1,6 @@
 # Markdown 语法速查
 
-ColaMD 支持下面这些 Markdown 格式。每个示例下方是它的源码写法。
+Teyoo 支持下面这些 Markdown 格式。每个示例下方是它的源码写法。
 
 ## 标题
 
@@ -71,7 +71,7 @@ function hello() {
 
 | 名称 | 说明 |
 | --- | --- |
-| ColaMD | Agent Native Markdown 编辑器 |
+| Teyoo | Agent Native Markdown 编辑器 |
 
 源码：用 `|` 分隔列，第二行写 `---` 作为表头分隔线。
 

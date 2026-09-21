@@ -44,22 +44,22 @@ const THEMES: Array<[string, string, string]> = [
 
 const COPY = {
   zh: {
-    docTitle: 'ColaMD 主题体验',
+    docTitle: 'Teyoo 主题体验',
     subtitle: '主题体验',
     hint: '这是真的编辑器，直接改这里的字试试。',
     maximize: '全屏',
     restore: '退出全屏',
-    note: '这是网页预览：写的字不会保存，也不会联网。真正的 ColaMD 把文件放在你自己的电脑上。',
+    note: '这是网页预览：写的字不会保存，也不会联网。真正的 Teyoo 把文件放在你自己的电脑上。',
     cta: '下载桌面版',
     toggle: 'EN'
   },
   en: {
-    docTitle: 'ColaMD themes in the browser',
+    docTitle: 'Teyoo themes in the browser',
     subtitle: 'themes, in the browser',
     hint: 'This is the real editor. Type in it.',
     maximize: 'Full screen',
     restore: 'Exit full screen',
-    note: 'This is a web preview: nothing is saved and nothing leaves the page. The real ColaMD keeps your files on your own computer.',
+    note: 'This is a web preview: nothing is saved and nothing leaves the page. The real Teyoo keeps your files on your own computer.',
     cta: 'Download for desktop',
     toggle: '中文'
   }

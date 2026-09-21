@@ -1,0 +1,23 @@
+/* 规约H：字体大小规约 */
+
+/* ─── 块级容器 font-block ──────────────────────────────────────────────── */
+/* 不设背景色：文字背景与周围一致（font-family/size/text-align 由 inline style 生效）。
+   仅保留 margin/padding 归零，避免改变排版。 */
+.font-block {
+  margin: 0;
+  padding: 0;
+}
+
+/* ─── 行内 mark font-span ───────────────────────────────────────────────── */
+/* 仅做 class 标识；font-family/font-size 由 inline style 生效。
+   不设 text-align（行内 align 仅标记透传，由外层块生效）。 */
+.font-span {
+}
+
+/* 源码模式可选：鼠标悬浮显示当前样式详情（规约 8.3）。
+   :hover 仅在编辑器内生效，不影响导出 HTML。 */
+.font-block:hover,
+.font-span:hover {
+  outline: 1px dashed rgba(100, 116, 139, 0.3);
+  outline-offset: 1px;
+}

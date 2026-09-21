@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 浅色 Light =====
+/* ===== Teyoo Theme: 浅色 Light =====
    GitHub-inspired clean white. The default look.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #ffffff;

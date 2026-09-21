@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 夜航 Solarized Dark =====
+/* ===== Teyoo Theme: 夜航 Solarized Dark =====
    Deep teal-black sea, muted cyan text, orange and blue stars.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #002b36;

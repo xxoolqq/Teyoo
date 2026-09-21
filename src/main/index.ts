@@ -21,7 +21,7 @@ function writeStartupTrace(): void {
   startupTraceWritten = true
   const trace = JSON.stringify({ platform: process.platform, electron: process.versions.electron, ...startupMarks })
   void appendFile(join(app.getPath('userData'), 'startup-trace.jsonl'), `${trace}\n`).catch(() => {})
-  console.info(`ColaMD startup trace: ${trace}`)
+  console.info(`Teyoo startup trace: ${trace}`)
 }
 
 
@@ -361,6 +361,10 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Dev 模式渲染页来自 http://localhost，而本地图片是 file:// URL；
+      // Electron 默认 webSecurity 会拦截跨源加载，导致图片不显示。
+      // 生产环境用 loadFile 从 file:// 加载，同源无需关闭。
+      webSecurity: app.isPackaged,
       // No spellcheck UI in ColaMD — avoid red squiggles in the editor (issue #7)
       spellcheck: false
     }
@@ -461,7 +465,7 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
 function updateTitle(win: BrowserWindow): void {
   const state = getState(win)
   const fileName = state.filePath ? basename(state.filePath) : 'Untitled'
-  win.setTitle(`${fileName} — ColaMD`)
+  win.setTitle(`${fileName} — Teyoo`)
 }
 
 function suggestFileName(win: BrowserWindow, content?: string): string | undefined {
@@ -604,10 +608,48 @@ function localImageUrl(src: string, dir: string): string {
   return pathToFileURL(isAbsolute(value) ? value : resolve(dir, value)).href
 }
 
+// 从 `![alt](...)` 的 `(...)` 内容中分离 URL 与可选 title。
+// 之前的实现把 `[^)]+` 整体当作 URL 传给 localImageUrl，导致
+// `C:\path "title"` 被整体 pathToFileURL 编码、title 被拼进 URL；
+// 重新解析时 title 又被解码回 src 字符串，使 src 含空格，
+// 触发 remark-stringify 的角括号包裹（[<url "title">]），表现为
+// 「程序莫名其妙给图片加尖括号」。
+// 本函数支持三种形态：裸 URL / 裸 URL + "title" / <url> + "title"。
+function parseImageDestination(content: string): { url: string; title: string | null } {
+  const trimmed = content.trim()
+  // 角括号 URL：<url> 可选 "title"
+  const angleMatch = trimmed.match(/^<([^>]*)>(?:\s+"([^"]*)")?\s*$/)
+  if (angleMatch) {
+    return { url: angleMatch[1].trim(), title: angleMatch[2] ?? null }
+  }
+  // 裸 URL：第一段非空白为 url，可选 "title"
+  const nakedMatch = trimmed.match(/^(\S+)(?:\s+"([^"]*)")?\s*$/)
+  if (nakedMatch) {
+    return { url: nakedMatch[1], title: nakedMatch[2] ?? null }
+  }
+  // 兜底：整段当作 URL
+  return { url: trimmed, title: null }
+}
+
+// 重新拼装 `![alt](url "title")`，保留 title（若有）。URL 若含空格/括号
+// 会被 markdownImagePath 自动加角括号；title 始终在 URL 之外、引号之内。
+function assembleImageMarkdown(alt: string, url: string, title: string | null): string {
+  const wrapped = markdownImagePath(url)
+  return title !== null
+    ? `![${alt}](${wrapped} "${title}")`
+    : `![${alt}](${wrapped})`
+}
+
 function resolveImagePaths(content: string, filePath: string): string {
   const dir = dirname(filePath)
-  const markdown = content.replace(/!\[([^\]]*)\]\((?!https?:\/\/|file:\/\/|data:|blob:)([^)]+)\)/g, (_match, alt, src) => {
-    return `![${alt}](${localImageUrl(src, dir)})`
+  const markdown = content.replace(/!\[([^\]]*)\]\(([^)]*)\)/g, (_match, alt, dest) => {
+    const { url, title } = parseImageDestination(dest)
+    // 只处理本地路径；http/file/data/blob URL 原样保留（localImageUrl 内部也会判）
+    const value = url.trim().replace(/^<|>$/g, '')
+    if (/^(?:https?:\/\/|file:\/\/|data:|blob:)/i.test(value)) {
+      return assembleImageMarkdown(alt, url, title)
+    }
+    return assembleImageMarkdown(alt, localImageUrl(url, dir), title)
   })
 
   return markdown.replace(/(<img\b[^>]*\bsrc\s*=\s*)(["'])([^"']+)\2/gi, (_match, prefix, quote, src) => {
@@ -637,8 +679,13 @@ function markdownImagePath(value: string): string {
 
 function restoreImagePaths(content: string, filePath: string): string {
   const dir = dirname(filePath)
-  const markdown = content.replace(/!\[([^\]]*)\]\((file:[^)]+)\)/gi, (_match, alt, src) => {
-    return `![${alt}](${markdownImagePath(sourceImageUrl(src, dir))})`
+  const markdown = content.replace(/!\[([^\]]*)\]\(([^)]*)\)/g, (_match, alt, dest) => {
+    const { url, title } = parseImageDestination(dest)
+    // 只处理 file: URL；其他原样保留
+    if (!/^file:/i.test(url.trim())) {
+      return _match
+    }
+    return assembleImageMarkdown(alt, sourceImageUrl(url, dir), title)
   })
 
   return markdown.replace(/(<img\b[^>]*\bsrc\s*=\s*)(["'])(file:[^"']+)\2/gi, (_match, prefix, quote, src) => {
@@ -1507,6 +1554,52 @@ ipcMain.handle('popup-app-menu', (event) => {
   Menu.getApplicationMenu()?.popup({ window: win })
 })
 
+// ─── Typora 式自定义顶部菜单栏 ──────────────────────────────────────────────
+// 顶部五个一级标签（文件/编辑/视图/主题/帮助）由 renderer 绘制，二级菜单仍弹出
+// 原生菜单：复用全部 accelerator / checkbox / 动态子菜单（最近文件、主题）。
+// buildMenu 每次重建后按 key 保存当前顶层 MenuItem 引用。
+type MenubarKey = 'file' | 'edit' | 'format' | 'font' | 'fontSize' | 'view' | 'theme' | 'help'
+let menubarItems: Partial<Record<MenubarKey, Electron.MenuItem>> = {}
+
+// renderer 拉取当前界面语言下的五个标签文本
+ipcMain.handle('menubar-get-labels', () => {
+  const result: Record<string, string> = {}
+  for (const [key, item] of Object.entries(menubarItems)) {
+    if (item) result[key] = item.label
+  }
+  return result
+})
+
+// 弹出某个一级菜单的原生子菜单。
+// 渲染层只传「视口内坐标」（getBoundingClientRect，DIP）；主进程用
+// getContentBounds() 把它换算成屏幕坐标。不能用渲染层的 window.screenX/Y：
+// 那是窗口外框坐标（Windows 含约 7-8px 不可见调整边框），与视口基准不同，
+// 非最大化窗口时菜单会整体偏左上（最大化时外框溢出屏幕恰好抵消，所以只在
+// 还原窗口时错位）。getContentBounds 精确对应网页视口，与边框/标题栏/
+// DPI/窗口位置无关。
+ipcMain.handle('menubar-popup', (event, key: unknown, x: unknown, y: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || win.isDestroyed()) return
+  if (typeof key !== 'string') return
+  const item = menubarItems[key as MenubarKey]
+  if (!item?.submenu) return
+  const offsetX = Number(x)
+  const offsetY = Number(y)
+  if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return
+  // 坐标基准（实测校准，Windows / Electron 44）：
+  // 传入 window 参数后，popup 的 x/y 是「相对该窗口客户区左上角」的 DIP，
+  // Electron 内部自行换算屏幕坐标——绝不能再加 getContentBounds() 的原点，
+  // 否则窗口越偏离屏幕左上角、菜单越偏右下（最大化时客户区原点≈(0,0) 恰好
+  // 抵消，所以旧版只在还原窗口时错位）。
+  // 渲染端 getBoundingClientRect 是 CSS px，页面缩放（zoomFactor，本应用
+  // 视图缩放会持久化）下 1 CSS px = zoomFactor DIP，需乘该系数。
+  // 系统 DPI scaleFactor 双方同为 DIP，已抵消，不参与。
+  const zoom = event.sender.getZoomFactor()
+  const popX = Math.round(offsetX * zoom)
+  const popY = Math.round(offsetY * zoom)
+  item.submenu.popup({ window: win, x: popX, y: popY })
+})
+
 ipcMain.handle('get-language', () => getPreferredLanguage())
 
 // Menu — targets the focused window
@@ -1547,7 +1640,7 @@ function setAsDefaultApp(): void {
     if (error) {
       dialog.showMessageBox({
         type: 'error',
-        message: 'Failed to set ColaMD as the default app.',
+        message: 'Failed to set Teyoo as the default app.',
         detail: stderr || error.message
       })
       return
@@ -1558,7 +1651,7 @@ function setAsDefaultApp(): void {
       dialog.showMessageBox({
         type: 'info',
         message: allOk
-          ? 'ColaMD is now the default app for Markdown and text files.'
+          ? 'Teyoo is now the default app for Markdown and text files.'
           : 'Some file types could not be associated. System Settings may need manual adjustment.',
         detail: results.join('\n')
       })
@@ -1613,7 +1706,7 @@ function buildMenu(): void {
   const preferredCheatsheetLanguage = getPreferredCheatsheetLanguage()
   const labels = preferredCheatsheetLanguage === 'zh'
     ? {
-        file: '文件', edit: '编辑', view: '视图', theme: '主题', window: '窗口', help: '帮助',
+        file: '文件', edit: '编辑', format: '格式', view: '视图', theme: '主题', window: '窗口', help: '帮助',
         newFile: '新建', open: '打开...', save: '保存', saveAs: '另存为...',
         newTab: '新建标签页', closeTab: '关闭标签页',
         recentOpen: '最近打开', restoreOnLaunch: '启动时打开上次文档', clearRecent: '清除最近记录', noRecent: '没有最近打开的文件',
@@ -1624,16 +1717,18 @@ function buildMenu(): void {
         sepia: '羊皮纸', notion: '简白', bear: '熊红', writer: '作家',
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
         importTheme: '导入主题...', whatsNew: '新功能演示',
-        cheatsheet: 'Markdown 语法', about: '关于 ColaMD', checkForUpdates: '检查更新...', updateAvailable: '发现新版本', close: '关闭窗口',
+        cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新...', updateAvailable: '发现新版本', close: '关闭窗口',
+        font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
         actualSize: '实际大小', zoomIn: '放大', zoomOut: '缩小', fullscreen: '切换全屏',
         fontSettings: '编辑器字体…',
+        toolbar: '工具栏',
         language: '界面语言', chinese: '中文', english: 'English',
-        hide: '隐藏 ColaMD', hideOthers: '隐藏其他应用', showAll: '显示全部', quit: '退出 ColaMD',
+        hide: '隐藏 Teyoo', hideOthers: '隐藏其他应用', showAll: '显示全部', quit: '退出 Teyoo',
         minimize: '最小化', zoom: '缩放', front: '前置全部窗口',
       }
     : {
-        file: 'File', edit: 'Edit', view: 'View', theme: 'Theme', window: 'Window', help: 'Help',
+        file: 'File', edit: 'Edit', format: 'Format', view: 'View', theme: 'Theme', window: 'Window', help: 'Help',
         newFile: 'New', open: 'Open...', save: 'Save', saveAs: 'Save As...',
         newTab: 'New Tab', closeTab: 'Close Tab',
         recentOpen: 'Open Recent', restoreOnLaunch: 'Reopen last document at launch', clearRecent: 'Clear Recent', noRecent: 'No recent files',
@@ -1644,12 +1739,14 @@ function buildMenu(): void {
         sepia: 'Sepia', notion: 'Notion', bear: 'Bear', writer: 'Writer',
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
         importTheme: 'Import Theme...', whatsNew: "What's New",
-        cheatsheet: 'Markdown Syntax', about: 'About ColaMD', checkForUpdates: 'Check for Updates...', updateAvailable: 'Update Available', close: 'Close Window',
+        cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates...', updateAvailable: 'Update Available', close: 'Close Window',
+        font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
         actualSize: 'Actual Size', zoomIn: 'Zoom In', zoomOut: 'Zoom Out', fullscreen: 'Toggle Full Screen',
         fontSettings: 'Editor Font…',
+        toolbar: 'Toolbar',
         language: 'Language', chinese: '中文', english: 'English',
-        hide: 'Hide ColaMD', hideOthers: 'Hide Others', showAll: 'Show All', quit: 'Quit ColaMD',
+        hide: 'Hide Teyoo', hideOthers: 'Hide Others', showAll: 'Show All', quit: 'Quit Teyoo',
         minimize: 'Minimize', zoom: 'Zoom', front: 'Bring All to Front',
       }
 
@@ -1692,7 +1789,7 @@ function buildMenu(): void {
 
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{
-      label: 'ColaMD',
+      label: 'Teyoo',
       submenu: [
         { label: labels.about, role: 'about' as const },
         { type: 'separator' as const },
@@ -1809,20 +1906,52 @@ function buildMenu(): void {
           label: labels.insertFormula,
           accelerator: 'CmdOrCtrl+Shift+E',
           click: () => sendToFocused('editor:math')
-        },
-        {
-          // #58: discoverable format shortcuts; the menu is the documentation.
-          label: preferredCheatsheetLanguage === 'zh' ? '格式' : 'Format',
-          submenu: [
-            { label: preferredCheatsheetLanguage === 'zh' ? '加粗' : 'Bold', accelerator: 'CmdOrCtrl+B', click: () => sendToFocused('editor:format', 'bold') },
-            { label: preferredCheatsheetLanguage === 'zh' ? '斜体' : 'Italic', accelerator: 'CmdOrCtrl+I', click: () => sendToFocused('editor:format', 'italic') },
-            { label: preferredCheatsheetLanguage === 'zh' ? '行内代码' : 'Inline Code', accelerator: 'CmdOrCtrl+E', click: () => sendToFocused('editor:format', 'inlineCode') },
-            { label: preferredCheatsheetLanguage === 'zh' ? '删除线' : 'Strikethrough', accelerator: 'CmdOrCtrl+Shift+X', click: () => sendToFocused('editor:format', 'strikethrough') },
-            { label: preferredCheatsheetLanguage === 'zh' ? '链接（网址取自剪贴板）' : 'Link (URL from clipboard)', accelerator: 'CmdOrCtrl+K', click: () => sendToFocused('editor:format', 'link') },
-            { label: preferredCheatsheetLanguage === 'zh' ? '无序列表' : 'Bullet List', accelerator: 'CmdOrCtrl+Shift+8', click: () => sendToFocused('editor:format', 'bulletList') },
-            { label: preferredCheatsheetLanguage === 'zh' ? '有序列表' : 'Ordered List', accelerator: 'CmdOrCtrl+Shift+7', click: () => sendToFocused('editor:format', 'orderedList') }
-          ]
         }
+      ]
+    },
+    {
+      // #58: discoverable format shortcuts; the menu is the documentation.
+      label: labels.format,
+      submenu: [
+        { label: preferredCheatsheetLanguage === 'zh' ? '加粗' : 'Bold', accelerator: 'CmdOrCtrl+B', click: () => sendToFocused('editor:format', 'bold') },
+        { label: preferredCheatsheetLanguage === 'zh' ? '斜体' : 'Italic', accelerator: 'CmdOrCtrl+I', click: () => sendToFocused('editor:format', 'italic') },
+        { label: preferredCheatsheetLanguage === 'zh' ? '行内代码' : 'Inline Code', accelerator: 'CmdOrCtrl+E', click: () => sendToFocused('editor:format', 'inlineCode') },
+        { label: preferredCheatsheetLanguage === 'zh' ? '删除线' : 'Strikethrough', accelerator: 'CmdOrCtrl+Shift+X', click: () => sendToFocused('editor:format', 'strikethrough') },
+        { label: preferredCheatsheetLanguage === 'zh' ? '链接（网址取自剪贴板）' : 'Link (URL from clipboard)', accelerator: 'CmdOrCtrl+K', click: () => sendToFocused('editor:format', 'link') },
+        { label: preferredCheatsheetLanguage === 'zh' ? '无序列表' : 'Bullet List', accelerator: 'CmdOrCtrl+Shift+8', click: () => sendToFocused('editor:format', 'bulletList') },
+        { label: preferredCheatsheetLanguage === 'zh' ? '有序列表' : 'Ordered List', accelerator: 'CmdOrCtrl+Shift+7', click: () => sendToFocused('editor:format', 'orderedList') }
+      ]
+    },
+    {
+      label: labels.font,
+      submenu: [
+        { label: '宋体 SimSun', click: () => sendToFocused('editor:font', { family: 'SimSun' }) },
+        { label: '黑体 SimHei', click: () => sendToFocused('editor:font', { family: 'SimHei' }) },
+        { label: '楷体 KaiTi', click: () => sendToFocused('editor:font', { family: 'KaiTi' }) },
+        { label: '仿宋 FangSong', click: () => sendToFocused('editor:font', { family: 'FangSong' }) },
+        { label: '微软雅黑 Microsoft YaHei', click: () => sendToFocused('editor:font', { family: 'Microsoft YaHei' }) },
+        { type: 'separator' as const },
+        { label: 'Times New Roman', click: () => sendToFocused('editor:font', { family: 'Times New Roman' }) },
+        { label: 'Arial', click: () => sendToFocused('editor:font', { family: 'Arial' }) },
+        { label: 'Courier New', click: () => sendToFocused('editor:font', { family: 'Courier New' }) },
+        { type: 'separator' as const },
+        { label: labels.clearFont, accelerator: 'CmdOrCtrl+Space', click: () => sendToFocused('editor:font', { clear: true }) },
+      ]
+    },
+    {
+      label: labels.fontSize,
+      submenu: [
+        { label: '小初 36pt', click: () => sendToFocused('editor:font', { size: '36pt' }) },
+        { label: '一号 26pt', click: () => sendToFocused('editor:font', { size: '26pt' }) },
+        { label: '小一 24pt', click: () => sendToFocused('editor:font', { size: '24pt' }) },
+        { label: '二号 22pt', click: () => sendToFocused('editor:font', { size: '22pt' }) },
+        { label: '小二 18pt', click: () => sendToFocused('editor:font', { size: '18pt' }) },
+        { label: '三号 16pt', click: () => sendToFocused('editor:font', { size: '16pt' }) },
+        { label: '小三 15pt', click: () => sendToFocused('editor:font', { size: '15pt' }) },
+        { label: '四号 14pt', click: () => sendToFocused('editor:font', { size: '14pt' }) },
+        { label: '小四 12pt', click: () => sendToFocused('editor:font', { size: '12pt' }) },
+        { label: '五号 10.5pt', click: () => sendToFocused('editor:font', { size: '10.5pt' }) },
+        { label: '小五 9pt', click: () => sendToFocused('editor:font', { size: '9pt' }) },
       ]
     },
     {
@@ -1843,6 +1972,7 @@ function buildMenu(): void {
           click: () => sendToFocused('toggle-source-mode')
         },
         { type: 'separator' },
+        { label: labels.toolbar, click: () => sendToFocused('toggle-toolbar') },
         { label: labels.fontSettings, click: () => sendToFocused('open-font-settings') },
         {
           label: labels.language,
@@ -1901,6 +2031,28 @@ function buildMenu(): void {
   const menu = Menu.buildFromTemplate(template)
   Menu.setApplicationMenu(menu)
   localizeWindowMenu(menu, labels)
+
+  // 保存五个一级菜单的当前引用，供自定义顶部菜单栏按坐标弹出
+  menubarItems = {
+    file: menu.items.find((item) => item.label === labels.file),
+    edit: menu.items.find((item) => item.label === labels.edit),
+    format: menu.items.find((item) => item.label === labels.format),
+    font: menu.items.find((item) => item.label === labels.font),
+    fontSize: menu.items.find((item) => item.label === labels.fontSize),
+    view: menu.items.find((item) => item.label === labels.view),
+    theme: menu.items.find((item) => item.label === labels.theme),
+    help: menu.items.find((item) => item.label === labels.help),
+  }
+  // 原生菜单关闭时通知 renderer 取消标签高亮
+  menu.on('menu-will-close', () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('menubar-closed')
+    }
+  })
+  // 菜单可能因语言切换/主题变更/更新状态而重建，通知 renderer 刷新标签文本
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('menubar-labels-changed')
+  }
   themeMenuItems = [
     ...themeSubmenu.filter((item): item is Electron.MenuItemConstructorOptions & { id: string } => typeof item.id === 'string')
       .map((item) => ({ id: item.id, theme: themeIdByLabel.get(item.label ?? '') ?? (item.id.startsWith('theme-custom-') ? `custom:${String(item.label)}.css` : '') })),
@@ -1990,7 +2142,7 @@ function setupAutoUpdater(): void {
     void showUpdateMessage({
       type: 'info',
       buttons: [chinese ? '好' : 'OK'],
-      message: chinese ? 'ColaMD 已是最新版本' : 'ColaMD is up to date',
+      message: chinese ? 'Teyoo 已是最新版本' : 'Teyoo is up to date',
       detail: chinese ? `当前版本：v${app.getVersion()}` : `Current version: v${app.getVersion()}`
     })
   })

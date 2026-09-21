@@ -1,0 +1,77 @@
+/* 规约F：子块与分栏 */
+
+/* ─── 分栏容器 ──────────────────────────────────────────────────────────── */
+/* 默认宽 54em，水平居中；CSS Grid 布局，列间距 1em，列高由最高列决定，
+   子块顶部对齐（align-items 默认 stretch，这里改 start 避免无框块被拉高）。 */
+.cols {
+  display: grid;
+  gap: 1em;
+  width: 54em;
+  max-width: 100%;
+  margin: 0.5em auto;
+  align-items: start;
+}
+
+/* ─── 子块 ──────────────────────────────────────────────────────────────── */
+/* 独立子块撑满可用宽度；分栏内宽度由 grid 轨道决定。
+   min-width:0 防止 grid 项被长内容撑破轨道。 */
+.sub-block {
+  min-width: 0;
+  box-sizing: border-box;
+  text-align: left;
+  margin: 0.5em 0;
+}
+
+.cols .sub-block {
+  margin: 0;
+  width: 100%;
+}
+
+/* 带框子块 */
+.sub-block.boxed {
+  border: 1px solid #d8d8d8;
+  border-radius: 4px;
+  padding: 0.5em 0.9em;
+}
+
+/* 分栏内子块：与独立子块统一浅色边框 */
+.cols .sub-block.boxed {
+  border-color: #d8d8d8;
+}
+
+/* 空子块提示字"这里输入内容"——光标进入后自动消失。
+   空段落 DOM 为 <p><br></p> 或 <p></p>，匹配后用 ::before 显示提示字 */
+.sub-block > p:has(br:only-child)::before,
+.sub-block > p:empty::before {
+  content: '这里输入内容';
+  color: #c8c8c8;
+  pointer-events: none;
+  font-size: 0.9em;
+}
+
+/* 子块内文字 / 图片对齐（#left #center #right） */
+.sub-block[data-align='center'] {
+  text-align: center;
+}
+.sub-block[data-align='right'] {
+  text-align: right;
+}
+
+/* 图片是 inline 元素，text-align 即可对齐；
+   块级显示的图片补一组 margin 居中规则。 */
+.sub-block[data-align='center'] img {
+  margin-left: auto;
+  margin-right: auto;
+}
+.sub-block[data-align='right'] img {
+  margin-left: auto;
+  margin-right: 0;
+}
+
+/* 所见即所得编辑辅助：空的无框子块给一圈虚线框，便于看到可编辑区域。
+   有内容后 :has 不匹配，虚线自动消失。 */
+.sub-block:not(.boxed):has(> p:only-child:empty) {
+  border: 1px dashed #c8c8c8;
+  border-radius: 4px;
+  padding: 0.5em 0.9em;
+}

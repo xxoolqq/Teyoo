@@ -1,4 +1,6 @@
-import { createEditor, flashHeadingOnArrival, focusEditor, getMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, runFormatCommand, type FormatCommandId } from './editor/editor'
+import { createEditor, flashHeadingOnArrival, focusEditor, getMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, runFormatCommand, applyFont, type FormatCommandId } from './editor/editor'
+import { setupToolbar, toggleToolbarVisible } from './toolbar'
+import { setCurrentImageFilePath } from '../extensions/image-style'
 import { detectMarkdownStyle } from './editor/markdown-style'
 import { SearchPanel } from './editor/search-panel'
 import { applyTheme, loadSavedTheme } from './themes/theme-manager'
@@ -54,6 +56,15 @@ let outlineSyncQueued = false
 let outlineJumping = false
 let outlineJumpTimer: ReturnType<typeof setTimeout> | null = null
 let outlineJumpStartTop = 0
+
+// 缓存上次序列化/反序列化结果，避免模式切换时重复执行昂贵的
+// getMarkdown() / setMarkdown() 操作。
+// - cachedMarkdown: 上次 WYSIWYG → Source 时 getMarkdown() 的结果（未折叠 base64）
+// - sourceEnterText: 上次进入 Source 模式时 textarea 的值（已折叠 base64）
+// WYSIWYG → Source 时若 dirty === false 且有缓存，跳过序列化。
+// Source → WYSIWYG 时若 textarea 内容未改，跳过解析。
+let cachedMarkdown: string | null = null
+let sourceEnterText: string | null = null
 
 // Resizable file panel: default 220px, drag range 180-420px, persisted
 // locally (design.md: light, no permanent handle, hover feedback only).
@@ -394,6 +405,9 @@ function showBlankDocument(): void {
   } finally {
     applyingProgrammaticChange = false
   }
+  cachedMarkdown = null
+  sourceEnterText = null
+  foldBase64Cache = null
   updateWordCount('')
   resetDirty()
   updateFileTitle()
@@ -703,6 +717,7 @@ function noteTabSaved(content: string): void {
 function setDirty(): void {
   documentRevision += 1
   dirty = true
+  cachedMarkdown = null
   reportDirty()
   showSaveStatus('dirty')
   markActiveTabDirty()
@@ -851,7 +866,7 @@ function updateSourceToggle(): void {
 function updateUiLanguage(): void {
   const zh = isChinese()
   document.documentElement.lang = zh ? 'zh-CN' : 'en'
-  document.title = 'ColaMD'
+  document.title = 'Teyoo'
   untitledName = zh ? '未命名' : 'Untitled'
   fileTabEl().textContent = zh ? '文件' : 'Files'
   outlineTabEl().textContent = zh ? '大纲' : 'Outline'
@@ -859,12 +874,6 @@ function updateUiLanguage(): void {
   sourceToggleBtnEl().setAttribute('aria-label', zh ? '切换 Markdown 源码 / 所见即所得' : 'Toggle Markdown source / WYSIWYG')
   const wordTip = wordCountEl().querySelector('.word-count-tip')
   if (wordTip) wordTip.textContent = zh ? '0 字 · 0 词 · 0 段' : '0 chars · 0 words · 0 paragraphs'
-  const menuBtn = document.getElementById('app-menu-btn')
-  if (menuBtn) {
-    menuBtn.setAttribute('aria-label', zh ? '菜单' : 'Menu')
-    const menuTip = menuBtn.querySelector('.toolbar-tip')
-    if (menuTip) menuTip.textContent = zh ? '菜单' : 'Menu'
-  }
   updateSourceToggle()
   updateWordCount()
 }
@@ -882,14 +891,33 @@ function restoreScrollRatio(el: HTMLElement, ratio: number): void {
 
 function toggleSourceMode(): void {
   if (sourceModeActive) {
-    const ratio = scrollRatio(sourceEl())
-    // Source → WYSIWYG: re-parse the textarea content back into the editor
-    exitSourceMode()
-    setMarkdownProgrammatically(sourceEl().value)
-    restoreScrollRatio(editorEl(), ratio)
+    // Source → WYSIWYG: 如果 textarea 内容自进入 Source 模式后未修改，跳过解析
+    const currentText = sourceEl().value
+    if (sourceEnterText !== null && currentText === sourceEnterText) {
+      const ratio = scrollRatio(sourceEl())
+      setCurrentImageFilePath(currentFilePath)
+      exitSourceMode()
+      restoreScrollRatio(editorEl(), ratio)
+    } else {
+      // textarea 内容已修改，需要重新解析
+      const ratio = scrollRatio(sourceEl())
+      setCurrentImageFilePath(currentFilePath)
+      exitSourceMode()
+      setMarkdownProgrammatically(unfoldBase64(currentText))
+      restoreScrollRatio(editorEl(), ratio)
+    }
   } else {
-    // WYSIWYG → Source: serialize the current editor content into the textarea
-    enterSourceMode(getMarkdown(), scrollRatio(editorEl()))
+    // WYSIWYG → Source: 如果文档未修改且有缓存，跳过序列化
+    let markdown: string
+    if (!dirty && cachedMarkdown !== null) {
+      markdown = cachedMarkdown
+    } else {
+      markdown = getMarkdown()
+      cachedMarkdown = markdown
+    }
+    setCurrentImageFilePath(currentFilePath)
+    enterSourceMode(markdown, scrollRatio(editorEl()))
+    sourceEnterText = sourceEl().value
   }
   updateWordCount()
   scheduleOutlineUpdate()
@@ -1306,12 +1334,130 @@ async function refreshSiblings(): Promise<void> {
   if (files) renderFileList(files)
 }
 
+// ─── 源码模式 base64 图片折叠 ───────────────────────────────────────────────
+// 源码 textarea 中 data:image/...;base64,xxxx 可能长达数万字符，淹没正文。
+// 显示时替换为 [(data:image/png;base64,iVBORw0KGgoAAAANSUhEUg ...] 形式的短占位符
+// （保留完整 data 头 + 前 24 个 base64 字符 + 空格省略号），完整字符串保存在映射表中；
+// 所有数据出口（getContent 保存/导出、切回所见即所得）先还原，保证数据无损。
+// 用户若手动删除/改写占位符，则该图无法还原（与手动改坏图片链接同理）。
+
+const base64FoldMap = new Map<string, string>()
+const BASE64_FOLD_THRESHOLD = 200
+// 省略号前保留的 base64 字符数（20+，用户要求）
+const BASE64_PREVIEW_LEN = 24
+
+// 匹配 data URI（base64 图片典型字符集，不含 ) " ' 空白，避免越过 markdown/HTML 边界）
+const RE_DATA_URI = /data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+)(;[a-zA-Z0-9.+=;-]*)?;base64,[A-Za-z0-9+/=]+/g
+// 折叠占位符：[(data:<mime>;base64,<24字符> ...]
+const RE_FOLDED_PLACEHOLDER = /\[\(data:[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+=;-]*)?;base64,[A-Za-z0-9+/=]+ \.\.\.\]/g
+
+// 折叠结果缓存：模式切换时如果 Markdown 未变（dirty=false 走 cachedMarkdown），
+// foldBase64 输入相同 → 直接返回上次折叠结果，跳过全文正则扫描。
+// 对于含多张大 base64 图片的文档，这个正则扫描是主要瓶颈之一。
+let foldBase64Cache: { input: string; output: string } | null = null
+
+function foldBase64(markdown: string): string {
+  if (foldBase64Cache && foldBase64Cache.input.length === markdown.length) {
+    // 长度相同再比较内容（V8 对等长字符串逐字符比较，仍远快于全文正则）
+    if (foldBase64Cache.input === markdown) {
+      return foldBase64Cache.output
+    }
+  }
+  const output = markdown.replace(RE_DATA_URI, (uri, mime: string, params?: string) => {
+    if (uri.length <= BASE64_FOLD_THRESHOLD) return uri
+    const header = `data:${mime}${params ?? ''};base64,`
+    const data = uri.slice(header.length)
+    // 两张图前 24 字符恰好相同时（如同格式截图头部），逐步加长预览直到占位符唯一
+    let previewLen = BASE64_PREVIEW_LEN
+    let placeholder = ''
+    while (previewLen < data.length) {
+      placeholder = `[(${header}${data.slice(0, previewLen)} ...]`
+      const existing = base64FoldMap.get(placeholder)
+      if (existing === undefined || existing === uri) break
+      previewLen += BASE64_PREVIEW_LEN
+    }
+    base64FoldMap.set(placeholder, uri)
+    return placeholder
+  })
+  foldBase64Cache = { input: markdown, output }
+  return output
+}
+
+function unfoldBase64(text: string): string {
+  return text.replace(RE_FOLDED_PLACEHOLDER, (placeholder) => base64FoldMap.get(placeholder) ?? placeholder)
+}
+
+// ─── Typora 式顶部菜单栏 ───────────────────────────────────────────────────
+// 一级标签在标题栏横向排开；点击标签时在其正下方弹出对应的原生菜单（main 进程
+// 负责），所以二级菜单的快捷键、勾选态、最近文件/主题等动态内容全部复用原生实现。
+// 仅 Windows 启用（与旧汉堡按钮的平台范围一致）；macOS 用系统菜单栏。
+let menubarOpen = false
+
+async function setupMenubar(): Promise<void> {
+  const bar = document.getElementById('app-menubar')
+  if (!bar || !/Windows/i.test(navigator.userAgent)) return
+  bar.removeAttribute('hidden')
+
+  const setActive = (btn: Element | null): void => {
+    for (const el of bar.querySelectorAll('.menubar-item')) {
+      el.classList.toggle('active', el === btn)
+    }
+  }
+
+  const refreshLabels = async (): Promise<void> => {
+    const labels = await window.electronAPI.getMenubarLabels()
+    for (const btn of bar.querySelectorAll<HTMLElement>('.menubar-item')) {
+      const text = labels[btn.dataset.menu ?? '']
+      if (text) btn.textContent = text
+    }
+  }
+  await refreshLabels()
+  window.electronAPI.onMenubarLabelsChanged(() => { void refreshLabels() })
+  // 原生菜单关闭（选择条目/Esc/点击外部）后取消标签高亮
+  window.electronAPI.onMenubarClosed(() => {
+    menubarOpen = false
+    setActive(null)
+  })
+
+  const popupAt = (btn: HTMLElement): void => {
+    const key = btn.dataset.menu
+    if (!key) return
+    const rect = btn.getBoundingClientRect()
+    // 只传视口内坐标（DIP）；主进程用窗口内容区 getContentBounds() 换算
+    // 屏幕坐标。切勿在此加 window.screenX/Y——那是窗口外框坐标，非最大化
+    // 窗口会因 Windows 不可见调整边框产生偏移，导致菜单错位。
+    window.electronAPI.popupMenubar(
+      key,
+      Math.round(rect.left),
+      Math.round(rect.bottom),
+    )
+  }
+
+  bar.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('.menubar-item')
+    if (!btn) return
+    menubarOpen = true
+    setActive(btn)
+    popupAt(btn)
+  })
+
+  // 菜单弹出期间悬停到其他标签即切换菜单（平台在菜单模态循环中仍派发指针
+  // 事件时生效；不生效也无副作用——再点一次即可）
+  bar.addEventListener('mouseover', (e) => {
+    if (!menubarOpen) return
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('.menubar-item')
+    if (!btn || btn.classList.contains('active')) return
+    setActive(btn)
+    popupAt(btn)
+  })
+}
+
 function enterSourceMode(content: string, ratio = 0): void {
   sourceModeActive = true
   editorEl().classList.add('hidden')
   const ta = sourceEl()
   ta.classList.add('visible')
-  ta.value = content
+  ta.value = foldBase64(content)
   restoreScrollRatio(ta, ratio)
   updateSourceToggle()
 }
@@ -1326,6 +1472,12 @@ function exitSourceMode(): void {
 const LARGE_DOCUMENT_SOURCE_THRESHOLD = 512 * 1024
 
 function setContent(content: string, flushHistory = false): void {
+  // 同步当前文件路径，供图片路径转换使用
+  setCurrentImageFilePath(currentFilePath)
+  // 文档切换，清空模式切换缓存
+  cachedMarkdown = null
+  sourceEnterText = null
+  foldBase64Cache = null
   // Follow the incoming document's Markdown style before it is parsed, so a
   // save writes the same markers the file already used.
   const detectedStyle = detectMarkdownStyle(content)
@@ -1343,7 +1495,7 @@ function setContent(content: string, flushHistory = false): void {
 }
 
 function getContent(): string {
-  if (sourceModeActive) return sourceEl().value
+  if (sourceModeActive) return unfoldBase64(sourceEl().value)
   return getMarkdown()
 }
 
@@ -1421,12 +1573,12 @@ async function init(): Promise<void> {
   if (!/^Mac/i.test(navigator.platform)) document.body.classList.add('platform-non-mac')
   // Windows has no traffic lights on the left and draws its window controls inside
   // the row on the right (titleBarOverlay), so it needs both ends of the row told
-  // apart from macOS. The menu button shows there too, since the menu bar is
-  // hidden (the Alt key still reveals the system one).
+  // apart from macOS. The custom Typora-style top menu bar shows there too.
   if (/Windows/i.test(navigator.userAgent)) {
     document.body.classList.add('platform-win')
-    document.getElementById('app-menu-btn')?.removeAttribute('hidden')
   }
+  void setupMenubar()
+  setupToolbar()
   const language = await api.getLanguage()
   fileManagerName = await api.getFileManagerName()
   setUiLanguage(language)
@@ -1447,6 +1599,7 @@ async function init(): Promise<void> {
   api.onSearch(() => searchPanel.show())
   api.onMathModal(() => showMathModal())
   api.onFormatCommand((id) => runFormatCommand(id as FormatCommandId))
+  api.onFontCommand((attrs) => applyFont(attrs))
   updateUiLanguage()
 
   await createEditor('editor', (markdown) => {
@@ -1602,7 +1755,7 @@ async function init(): Promise<void> {
       return
     }
     if (sourceModeActive) {
-      sourceEl().value = content
+      sourceEl().value = foldBase64(content)
     } else {
       // An external write is not something the reader can undo into; making it
       // one undo step would also let a stray undo write stale content back.
@@ -1623,10 +1776,6 @@ async function init(): Promise<void> {
     document.body.classList.toggle('fullscreen', isFullscreen)
   })
 
-  // The row's own menu button. Windows hides the menu bar (autoHideMenuBar) so the
-  // shell is one row; this button pops the same native menu, which keeps the menu
-  // itself identical on every platform.
-  document.getElementById('app-menu-btn')?.addEventListener('click', () => void api.popupAppMenu())
   api.onLanguageChanged((language: UiLanguage) => {
     setUiLanguage(language)
     searchPanel.setLanguage(language)
@@ -1649,6 +1798,7 @@ async function init(): Promise<void> {
     externalConflictPending = false
   })
   api.onOpenFontSettings(() => showFontSettingsModal())
+  api.onToggleToolbar(() => toggleToolbarVisible())
   api.onEditorFontChanged((prefs) => applyEditorFont(prefs.family || prefs.size ? prefs : null))
   api.onSetCustomCSS((css) => {
     const theme = loadSavedTheme()

@@ -1,0 +1,48 @@
+{
+  // ColaMD（electron-vite + Electron 44）调试配置
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "调试主进程 (Main)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "runtimeExecutable": "${workspaceRoot}/node_modules/.bin/electron-vite.cmd",
+      "runtimeArgs": ["dev", "--sourcemap"],
+      "env": {
+        "REMOTE_DEBUGGING_PORT": "9222"
+      },
+      "console": "integratedTerminal",
+      "serverStartTimeout": 120000,
+      "autoAttachChildProcesses": true,
+      "smartStep": true,
+      "sourceMaps": true,
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/**",
+        "!**/node_modules/**"
+      ]
+    },
+    {
+      "name": "调试渲染进程 (Renderer)",
+      "type": "chrome",
+      "request": "attach",
+      "port": 9222,
+      "timeout": 120000,
+      "urlFilter": "http://localhost:5173/*",
+      "webRoot": "${workspaceFolder}/src/renderer",
+      "sourceMapPathOverrides": {
+        "webpack:///./*": "${workspaceFolder}/*"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "调试全部 (Main + Renderer)",
+      "configurations": [
+        "调试主进程 (Main)",
+        "调试渲染进程 (Renderer)"
+      ],
+      "stopAll": true
+    }
+  ]
+}

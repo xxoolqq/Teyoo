@@ -1,0 +1,16 @@
+/* 规约B：ruby 上方汉字拼音
+   使用 HTML5 <ruby> 元素，浏览器原生渲染把 <rt> 放在 base 上方。
+   ruby-position: over 显式声明上方位置（兼容性更稳）。
+   rt 字号略小、颜色稍淡，避免喧宾夺主。
+   line-height 留余量给 rt 高度，避免与上一行重叠。 */
+
+ruby[data-pinyin] {
+  ruby-position: over;
+  line-height: 1.8;
+}
+
+ruby[data-pinyin] rt {
+  font-size: 0.65em;
+  color: #888;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}

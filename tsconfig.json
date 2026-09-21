@@ -6,6 +6,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
+  "files": [],
   "references": [
     { "path": "./tsconfig.main.json" },
     { "path": "./tsconfig.preload.json" },

@@ -1,0 +1,17 @@
+/* 规约A：字下着重号（点）
+   模拟高考着重号：每个汉字下方一个圆点。
+   用 CSS text-emphasis：浏览器自动在每个字形下方居中放置一个 emphasis 标记，
+   天然实现「一字一点」，无需手动按字符拆 span。
+   - text-emphasis: filled dot      → 实心小圆点
+   - text-emphasis-position: under  → 位于字形下方（水平书写模式）
+   - text-emphasis-color             → 与文字同色（默认 currentColor）
+   保留 -webkit- 前缀以兼容更早的 Chromium 版本。 */
+
+.emph-dot {
+  -webkit-text-emphasis: filled dot;
+  text-emphasis: filled dot;
+  -webkit-text-emphasis-position: under;
+  text-emphasis-position: under;
+  -webkit-text-emphasis-color: currentColor;
+  text-emphasis-color: currentColor;
+}

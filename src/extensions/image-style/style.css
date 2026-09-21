@@ -1,0 +1,60 @@
+/* 图片样式扩展（cherry 语法第一阶段） */
+
+/* 样式修饰符 */
+.emph-img .img-border,
+.img-border {
+  border: 1px solid #ddd;
+}
+
+.emph-img .img-shadow,
+.img-shadow {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.emph-img .img-radius,
+.img-radius {
+  border-radius: 8px;
+}
+
+/* 块级对齐：left/center/right 独占一行 */
+.emph-img .img-align-left,
+.img-align-left {
+  display: block;
+  margin-left: 0;
+  margin-right: auto;
+}
+
+.emph-img .img-align-center,
+.img-align-center {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.emph-img .img-align-right,
+.img-align-right {
+  display: block;
+  margin-left: auto;
+  margin-right: 0;
+}
+
+/* 浮动对齐：用 wrapper span 承载 float，img 在 span 内
+   PM 把 span 当作 atom 节点，光标可在 span 前（左侧）正常定位 */
+.emph-img .img-float-left,
+.img-float-left {
+  float: left;
+  margin-right: 1em;
+  margin-bottom: 0.5em;
+}
+
+.emph-img .img-float-right,
+.img-float-right {
+  float: right;
+  margin-left: 1em;
+  margin-bottom: 0.5em;
+}
+
+.img-float-left img,
+.img-float-right img {
+  display: block;
+}

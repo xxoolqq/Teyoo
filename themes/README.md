@@ -1,6 +1,6 @@
-# ColaMD Themes
+# Teyoo Themes
 
-ColaMD ships with 12 built-in themes. Every theme below is available as a standalone `.css` file — download it and place it in `~/.colamd/themes/`, or use **Theme > Import Theme** in ColaMD to import directly.
+Teyoo ships with 12 built-in themes. Every theme below is available as a standalone `.css` file — download it and place it in `~/.colamd/themes/`, or use **Theme > Import Theme** in Teyoo to import directly.
 
 See the [theme swatches](https://raw.githubusercontent.com/marswaveai/ColaMD/main/docs/images/theme-swatches.svg) for a visual preview.
 
@@ -28,7 +28,7 @@ See the [theme swatches](https://raw.githubusercontent.com/marswaveai/ColaMD/mai
 
 ## Creating Your Own Theme
 
-ColaMD custom themes are plain CSS files. You can style the editor by targeting CSS custom properties or writing direct selectors.
+Teyoo custom themes are plain CSS files. You can style the editor by targeting CSS custom properties or writing direct selectors.
 
 ### CSS Variables
 
@@ -68,5 +68,5 @@ For more control, target elements directly:
 ### Tips
 
 - Theme files should be self-contained (no external imports)
-- Omitted variables inherit ColaMD's Light defaults, so override only the tokens your theme needs
+- Omitted variables inherit Teyoo's Light defaults, so override only the tokens your theme needs
 - Name the file descriptively: `dark-ocean.css`, `solarized-light.css`, etc.

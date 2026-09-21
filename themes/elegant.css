@@ -1,8 +1,8 @@
-/* ===== ColaMD Theme: 雅致 Elegant =====
+/* ===== Teyoo Theme: 雅致 Elegant =====
    Warm serif with terracotta accents, inspired by classic writing apps.
 
    Import: Theme > Import Theme, or place in ~/.colamd/themes/
-   Variables target :root; element rules target the ColaMD editor DOM. */
+   Variables target :root; element rules target the Teyoo editor DOM. */
 
 :root {
   --bg-color: #f0edea;

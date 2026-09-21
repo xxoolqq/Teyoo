@@ -1,6 +1,6 @@
 # Markdown Syntax Reference
 
-ColaMD supports the Markdown syntax you use every day, plus highlights, task lists, and formulas.
+Teyoo supports the Markdown syntax you use every day, plus highlights, task lists, and formulas.
 
 ## Headings
 
@@ -69,7 +69,7 @@ Source: add `>` at the beginning of a quote. Put `---` on a line by itself for a
 
 | Name | Description |
 | --- | --- |
-| ColaMD | Agent Native Markdown editor |
+| Teyoo | Agent Native Markdown editor |
 
 Source: separate columns with `|` and use `---` in the second row.
 
