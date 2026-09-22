@@ -74,6 +74,7 @@ export interface ElectronAPI {
   onSetTheme: (callback: (theme: string) => void) => void
   onSetCustomCSS: (callback: (css: string) => void) => void
   onMenuImportTheme: (callback: () => void) => void
+  onMenuPreferences: (callback: () => void) => void
   onSearch: (callback: () => void) => void
   onMathModal: (callback: () => void) => void
   onFormatCommand: (callback: (id: string) => void) => void
@@ -199,6 +200,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMenuImportTheme: (callback: () => void) => {
     ipcRenderer.on('menu-import-theme', () => callback())
+  },
+  onMenuPreferences: (callback: () => void) => {
+    ipcRenderer.on('menu-preferences', () => callback())
   },
   onSearch: (callback: () => void) => {
     ipcRenderer.on('editor:search', () => callback())

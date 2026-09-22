@@ -1718,6 +1718,7 @@ function buildMenu(): void {
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
         importTheme: '导入主题...', whatsNew: '新功能演示',
         cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新...', updateAvailable: '发现新版本', close: '关闭窗口',
+        preferences: '偏好设置…',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
         actualSize: '实际大小', zoomIn: '放大', zoomOut: '缩小', fullscreen: '切换全屏',
@@ -1740,6 +1741,7 @@ function buildMenu(): void {
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
         importTheme: 'Import Theme...', whatsNew: "What's New",
         cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates...', updateAvailable: 'Update Available', close: 'Close Window',
+        preferences: 'Preferences…',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
         actualSize: 'Actual Size', zoomIn: 'Zoom In', zoomOut: 'Zoom Out', fullscreen: 'Toggle Full Screen',
@@ -2000,6 +2002,12 @@ function buildMenu(): void {
     {
       label: labels.help,
       submenu: [
+        {
+          label: labels.preferences,
+          accelerator: 'CmdOrCtrl+,',
+          click: () => sendToFocused('menu-preferences')
+        },
+        { type: 'separator' },
         {
           label: labels.whatsNew,
           accelerator: 'CmdOrCtrl+Shift+D',

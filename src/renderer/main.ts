@@ -3,6 +3,7 @@ import { setupToolbar, toggleToolbarVisible } from './toolbar'
 import { setCurrentImageFilePath } from '../extensions/image-style'
 import { detectMarkdownStyle } from './editor/markdown-style'
 import { SearchPanel } from './editor/search-panel'
+import { preferencesModal } from './preferences-modal'
 import { applyTheme, loadSavedTheme } from './themes/theme-manager'
 import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
@@ -1809,6 +1810,8 @@ async function init(): Promise<void> {
     const result = await api.loadCustomTheme()
     if (result) applyTheme(`custom:${result.name}`, result.css)
   })
+
+  api.onMenuPreferences(() => preferencesModal.show())
 
   // --- Auto update banner (weak, non-blocking) ---
   let updateDownloaded = false
