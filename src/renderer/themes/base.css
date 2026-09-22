@@ -1480,6 +1480,15 @@ body.web-playground *::-webkit-scrollbar-corner {
   background: var(--code-bg);
 }
 
+/* 公式渲染失败（math-engine/ 各引擎共用）：红字展示 LaTeX 源码 */
+.math-render-error {
+  color: #cc3d3d;
+  font-family: 'SF Mono', 'Fira Code', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .math-modal-overlay {
   position: fixed;
   inset: 0;
@@ -2055,7 +2064,9 @@ body.has-custom-font #source-editor {
 /* ======= 偏好设置弹窗（Typora 风格） ======= */
 .prefs-overlay {
   position: fixed;
-  inset: 0;
+  /* 顶部让出 40px 标题栏行：Windows 的 titleBarOverlay 原生关闭/最大化/最小化
+     按钮在那一条的右上角，遮罩盖住会导致它们无法点击（2026-09-23）。 */
+  inset: 40px 0 0 0;
   z-index: 10000;
   display: flex;
   align-items: center;
@@ -2067,9 +2078,10 @@ body.has-custom-font #source-editor {
 .prefs-modal {
   display: flex;
   flex-direction: column;
-  width: 820px;
-  max-width: 92vw;
-  max-height: 86vh;
+  width: 96vw;
+  /* 94% of the overlay (= viewport height minus the 40px titlebar row), so the
+     modal can never reach into the window-control cluster above it. */
+  height: 94%;
   background: var(--bg-color);
   border: 1px solid var(--border-color);
   border-radius: 10px;
@@ -2115,7 +2127,9 @@ body.has-custom-font #source-editor {
 }
 
 .prefs-search {
-  margin: 12px 20px 0;
+  /* 与 6 个 tab 同处左侧栏：占满 sidebar 宽度，置于 tab 列表上方 */
+  width: 100%;
+  margin: 0 0 10px;
   padding: 7px 10px;
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -2123,6 +2137,8 @@ body.has-custom-font #source-editor {
   color: var(--text-color);
   font-size: 13px;
   outline: none;
+  box-sizing: border-box;
+  flex: none;
 }
 
 .prefs-search:focus {
@@ -2139,6 +2155,8 @@ body.has-custom-font #source-editor {
 /* ── 左侧 Tab 侧边栏 ── */
 .prefs-sidebar {
   width: 140px;
+  /* 整列右移 100px：tab 离屏幕左边缘的留白加大（Typora 同款比例） */
+  margin-left: 100px;
   padding: 0 10px;
   display: flex;
   flex-direction: column;
@@ -2287,87 +2305,4 @@ body.has-custom-font #source-editor {
 
 .prefs-insert-path .prefs-label {
   min-width: auto;
-}
-
-/* ── 导出面板 ── */
-.prefs-export-panel {
-  gap: 14px;
-}
-
-.prefs-export-subbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 10px;
-  background: var(--code-bg);
-  border-radius: 8px;
-}
-
-.prefs-export-sub {
-  padding: 5px 12px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  text-align: left;
-  border-radius: 5px;
-  cursor: pointer;
-  transition: background .12s, color .12s;
-}
-
-.prefs-export-sub:hover {
-  background: rgba(128, 128, 128, 0.15);
-  color: var(--text-color);
-}
-
-.prefs-export-sub.active {
-  background: var(--bg-color);
-  color: var(--text-color);
-  font-weight: 500;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
-
-.prefs-export-sub-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.prefs-export-sub-panel h3 {
-  font-size: 13px;
-  margin-bottom: 6px;
-}
-
-.prefs-placeholder {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.prefs-export-footer {
-  display: flex;
-  gap: 6px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-color);
-  margin-top: 4px;
-}
-
-.prefs-icon-btn {
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border-color);
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: 6px;
-  font-size: 13px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background .12s, color .12s;
-}
-
-.prefs-icon-btn:hover {
-  background: var(--code-bg);
-  color: var(--text-color);
 }

@@ -15,6 +15,7 @@ import { setBlockType, wrapIn, splitBlock } from '@milkdown/kit/prose/commands'
 import { liftTarget, findWrapping } from '@milkdown/kit/prose/transform'
 import { Selection, TextSelection } from '@milkdown/kit/prose/state'
 import { remarkMathPlugin, katexOptionsCtx, mathInlineSchema, mathBlockSchema } from '@milkdown/plugin-math'
+import { mathInlineView, mathBlockView } from '../math-engine'
 import { htmlView } from './html-view'
 import { mermaidView } from './mermaid-view'
 import { releaseMermaidRenderer as releaseMermaidRendererBridge } from './mermaid-bridge'
@@ -1541,6 +1542,9 @@ export async function createEditor(
     .use(htmlView)
     .use(mermaidView)
     .use([remarkMathPlugin, katexOptionsCtx, mathInlineSchema, mathBlockSchema].flat())
+    // 公式 nodeView：渲染改道 math-engine（KaTeX/MathJax 可切换），立即生效
+    .use(mathInlineView)
+    .use(mathBlockView)
     .use(mathEditorPlugin)
     .use(imageEditorPlugin)
     .use(pinyinEditorPlugin)

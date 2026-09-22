@@ -5,15 +5,30 @@
 // 全部控件为静态占位（onChange 空转），后续功能逐步接入 localStorage
 // 与已有模块（theme-manager、editor-font 等）。
 //
-// 导出面板独有二级子 Tab（通用/PDF/HTML/.../OPML），其余面板直接展示内容区。
+// 已接线：Markdown 页的 LaTeX 引擎切换（math-engine/registry，立即生效）、
+// 导出页的公式引擎偏好持久化（主进程转换器后续接入）。
+//
 // 搜索框在 v1 也做出来但不实现过滤——留作后续扩展入口。
 //
 // 样式写在 themes/base.css 的 ".preferences-*" 规则里，与现有 math-modal
 // 同层级，避免 inline style。
 
+import { getActiveMathEngineId, listMathEngines, setMathEngine } from './math-engine'
+
 type TabKey = 'general' | 'appearance' | 'editor' | 'image' | 'markdown' | 'export'
-type ExportSubKey = 'general' | 'pdf' | 'html' | 'html_no_style' | 'image' | 'docx'
-  | 'openoffice' | 'rtf' | 'epub' | 'latex' | 'mediawiki' | 'rst' | 'textile' | 'opml'
+
+// 导出链路的公式转换引擎偏好（temml / mathjax）。
+// 主进程接入点：src/main/formula/registry.ts 的 registerFormulaConverter。
+const EXPORT_FORMULA_ENGINE_STORAGE_KEY = 'colamd-export-formula-engine'
+
+function loadExportFormulaEngine(): string {
+  try {
+    const v = localStorage.getItem(EXPORT_FORMULA_ENGINE_STORAGE_KEY)
+    return v === 'MathJax' ? 'MathJax' : 'Temml'
+  } catch {
+    return 'Temml'
+  }
+}
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'general', label: '通用' },
@@ -24,23 +39,6 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'export', label: '导出' },
 ]
 
-const EXPORT_SUBS: { key: ExportSubKey; label: string }[] = [
-  { key: 'general', label: '通用' },
-  { key: 'pdf', label: 'PDF' },
-  { key: 'html', label: 'HTML' },
-  { key: 'html_no_style', label: 'HTML (without Styles)' },
-  { key: 'image', label: 'Image' },
-  { key: 'docx', label: 'Word (.docx)' },
-  { key: 'openoffice', label: 'OpenOffice' },
-  { key: 'rtf', label: 'RTF' },
-  { key: 'epub', label: 'Epub' },
-  { key: 'latex', label: 'LaTeX' },
-  { key: 'mediawiki', label: 'Media Wiki' },
-  { key: 'rst', label: 'reStructuredText' },
-  { key: 'textile', label: 'Textile' },
-  { key: 'opml', label: 'OPML' },
-]
-
 class PreferencesModal {
   private container: HTMLDivElement
   private modal: HTMLDivElement
@@ -49,13 +47,8 @@ class PreferencesModal {
   private searchInput: HTMLInputElement
   private closeBtn: HTMLButtonElement
   private activeTab: TabKey = 'general'
-  private activeExportSub: ExportSubKey = 'general'
   private tabNodes: Record<TabKey, HTMLElement | null> = {
     general: null, appearance: null, editor: null, image: null, markdown: null, export: null,
-  }
-  private exportSubNodes: Record<ExportSubKey, HTMLElement | null> = {
-    general: null, pdf: null, html: null, html_no_style: null, image: null, docx: null,
-    openoffice: null, rtf: null, epub: null, latex: null, mediawiki: null, rst: null, textile: null, opml: null,
   }
 
   constructor() {
@@ -88,6 +81,8 @@ class PreferencesModal {
     // ── 左侧 Tab 侧边栏 ────────────────────────────────────────────────────
     this.sidebar = document.createElement('nav')
     this.sidebar.className = 'prefs-sidebar'
+    // 搜索框与 6 个 tab 同处左侧栏（Typora 布局：搜索在上、tab 在下）
+    this.sidebar.appendChild(this.searchInput)
     for (const tab of TABS) {
       const btn = document.createElement('button')
       btn.className = 'prefs-tab'
@@ -106,7 +101,7 @@ class PreferencesModal {
     body.className = 'prefs-body'
     body.append(this.sidebar, this.content)
 
-    this.modal.append(header, this.searchInput, body)
+    this.modal.append(header, body)
     this.container.appendChild(this.modal)
 
     // 遮罩点击关闭；Esc 关闭
@@ -140,7 +135,6 @@ class PreferencesModal {
   hide(): void {
     this.container.style.display = 'none'
     this.activeTab = 'general'
-    this.activeExportSub = 'general'
   }
 
   // ──────────────────── 面板切换 ────────────────────
@@ -154,21 +148,6 @@ class PreferencesModal {
     // 内容切换
     for (const [key, node] of Object.entries(this.tabNodes) as [TabKey, HTMLElement | null][]) {
       if (node) node.style.display = key === tab ? '' : 'none'
-    }
-  }
-
-  private switchExportSub(sub: ExportSubKey): void {
-    this.activeExportSub = sub
-    // 子 tab 选中态
-    const exportPanel = this.tabNodes.export
-    if (exportPanel) {
-      for (const node of exportPanel.querySelectorAll('.prefs-export-sub')) {
-        node.classList.toggle('active', node === exportPanel.querySelector(`[data-sub="${sub}"]`))
-      }
-    }
-    // 子内容切换
-    for (const [key, node] of Object.entries(this.exportSubNodes) as [ExportSubKey, HTMLElement | null][]) {
-      if (node) node.style.display = key === sub ? '' : 'none'
     }
   }
 
@@ -344,19 +323,6 @@ class PreferencesModal {
     const root = document.createElement('section')
     root.className = 'prefs-panel'
 
-    const rebootHint = document.createElement('p')
-    rebootHint.className = 'prefs-reboot-hint'
-    rebootHint.textContent = '（下面选项将在 Teyoo 重启后生效）'
-    root.appendChild(rebootHint)
-
-    // Markdown 语法偏好
-    root.append(this.group('Markdown 语法偏好', [
-      this.checkRow('严格模式'),
-      this.selectRow('标题样式', ['atx (#)', 'setext (=)', 'atx & setext']),
-      this.selectRow('无序列表', ['-', '*', '+']),
-      this.selectRow('有序列表', ['1... 2... 3...', '1. 2. 3.']),
-    ]))
-
     // Markdown 扩展语法
     root.append(this.group('Markdown 扩展语法', [
       this.checkRow('内联公式（例：$LaTeX$）'),
@@ -367,29 +333,19 @@ class PreferencesModal {
       this.checkRow('首行缩进'),
     ]))
 
-    // 智能标点
-    root.append(this.group('智能标点', [
-      this.selectRow('智能标点', ['输入时转换', '从不转换']),
-      this.checkRow('智能引号："" ... ""'),
-      this.inline('',
-        this.select(['""', '「」', '"']),
-        this.select(["''", '『』', "'"]),
+    // LaTeX 引擎选择 —— 切换后编辑器内公式立即用新引擎重渲染
+    root.append(this.group('LaTeX 引擎', [
+      this.selectRow(
+        '公式渲染引擎',
+        listMathEngines().map((engine) => engine.label),
+        {
+          value: getActiveMathEngineId(),
+          onChange: (value) => {
+            const engine = listMathEngines().find((e) => e.label === value)
+            if (engine) setMathEngine(engine.id)
+          },
+        },
       ),
-      this.checkRow('智能破折号'),
-      this.selectRow('破折号转换规则', ['将 -- 转为 — (en dash), 将 --- 转化为 — (em dash)', '自定义']),
-      this.checkRow('解析 Markdown 时允许并转化 Unicode 标点', { disabled: true }),
-    ]))
-
-    // 代码块
-    root.append(this.group('代码块', [
-      this.checkRow('显示行号'),
-      this.checkRow('代码自动换行'),
-      this.selectRow('代码缩进', ['2', '4', '8']),
-    ]))
-
-    // 公式
-    root.append(this.group('公式', [
-      this.checkRow('自动添加序号'),
     ]))
 
     return root
@@ -399,84 +355,23 @@ class PreferencesModal {
 
   private buildExportPanel(): HTMLElement {
     const root = document.createElement('section')
-    root.className = 'prefs-panel prefs-export-panel'
+    root.className = 'prefs-panel'
 
-    // 子 Tab 导航
-    const subbar = document.createElement('div')
-    subbar.className = 'prefs-export-subbar'
-    for (const sub of EXPORT_SUBS) {
-      const btn = document.createElement('button')
-      btn.className = 'prefs-export-sub'
-      btn.dataset.sub = sub.key
-      btn.textContent = sub.label
-      btn.addEventListener('click', () => this.switchExportSub(sub.key))
-      subbar.appendChild(btn)
-    }
-    root.appendChild(subbar)
-
-    // 子内容容器
-    const subContainer = document.createElement('div')
-    subContainer.className = 'prefs-export-content'
-
-    // 通用子面板（用户截屏中可见）
-    const generalSub = document.createElement('div')
-    generalSub.className = 'prefs-export-sub-panel'
-    generalSub.style.display = ''
-    generalSub.append(
-      this.selectRow('默认的导出文件夹', ['自动', '当前文件所在文件夹', '自定义位置']),
-      this.rowWithPath('Pandoc 路径', { browse: true }),
-      this.checkRow('打开导出文件所在目录'),
-    )
-    this.exportSubNodes.general = generalSub
-
-    // 其余子面板（占位）
-    this.exportSubNodes.pdf = this.placeholderSub('PDF')
-    this.exportSubNodes.html = this.placeholderSub('HTML')
-    this.exportSubNodes.html_no_style = this.placeholderSub('HTML (without Styles)')
-    this.exportSubNodes.image = this.placeholderSub('Image')
-    this.exportSubNodes.docx = this.placeholderSub('Word (.docx)')
-    this.exportSubNodes.openoffice = this.placeholderSub('OpenOffice (.odt)')
-    this.exportSubNodes.rtf = this.placeholderSub('RTF')
-    this.exportSubNodes.epub = this.placeholderSub('Epub')
-    this.exportSubNodes.latex = this.placeholderSub('LaTeX')
-    this.exportSubNodes.mediawiki = this.placeholderSub('Media Wiki')
-    this.exportSubNodes.rst = this.placeholderSub('reStructuredText')
-    this.exportSubNodes.textile = this.placeholderSub('Textile')
-    this.exportSubNodes.opml = this.placeholderSub('OPML')
-
-    for (const node of Object.values(this.exportSubNodes)) {
-      if (node) {
-        if (node !== this.exportSubNodes.general) node.style.display = 'none'
-        subContainer.appendChild(node)
-      }
-    }
-    root.appendChild(subContainer)
-
-    // 底部操作按钮（+ - ↑ ↓ ✏️，用户截屏中有）
-    const footer = document.createElement('div')
-    footer.className = 'prefs-export-footer'
-    footer.append(
-      this.iconBtn('+', () => {}, '添加'),
-      this.iconBtn('−', () => {}, '删除'),
-      this.iconBtn('↑', () => {}, '上移'),
-      this.iconBtn('↓', () => {}, '下移'),
-      this.iconBtn('✏️', () => {}, '编辑'),
-    )
-    root.appendChild(footer)
+    // LaTeX 引擎选择（导出链路独立于编辑器预览引擎）
+    // 仅持久化偏好；主进程导出转换器的接入点是 src/main/formula/registry.ts
+    // （registerFormulaConverter / getFormulaConverter），后续按此偏好选取转换器。
+    root.append(this.group('LaTeX 引擎', [
+      this.selectRow('公式渲染引擎', ['Temml', 'MathJax'], {
+        value: loadExportFormulaEngine(),
+        onChange: (value) => {
+          try {
+            localStorage.setItem(EXPORT_FORMULA_ENGINE_STORAGE_KEY, value)
+          } catch { /* ignore */ }
+        },
+      }),
+    ]))
 
     return root
-  }
-
-  private placeholderSub(title: string): HTMLElement {
-    const sub = document.createElement('div')
-    sub.className = 'prefs-export-sub-panel'
-    const h = document.createElement('h3')
-    h.textContent = title
-    const p = document.createElement('p')
-    p.className = 'prefs-placeholder'
-    p.textContent = '（此面板配置项待后续逐步实现）'
-    sub.append(h, p)
-    return sub
   }
 
   // ──────────────────── 表单控件工厂 ────────────────────
@@ -541,15 +436,6 @@ class PreferencesModal {
     return b
   }
 
-  private iconBtn(icon: string, onClick: () => void, title: string): HTMLButtonElement {
-    const b = document.createElement('button')
-    b.className = 'prefs-icon-btn'
-    b.textContent = icon
-    b.title = title
-    b.addEventListener('click', onClick)
-    return b
-  }
-
   private checkRow(text: string, opts?: { disabled?: boolean }): HTMLElement {
     const row = document.createElement('label')
     row.className = 'prefs-row prefs-check'
@@ -580,10 +466,19 @@ class PreferencesModal {
     return row
   }
 
-  private selectRow(label: string, options: string[]): HTMLElement {
+  private selectRow(
+    label: string,
+    options: string[],
+    opts?: { value?: string; onChange?: (value: string) => void }
+  ): HTMLElement {
     const row = document.createElement('div')
     row.className = 'prefs-row prefs-field'
-    row.append(this.label(label), this.select(options))
+    const sel = this.select(options)
+    if (opts?.value != null) sel.value = opts.value
+    if (opts?.onChange) {
+      sel.addEventListener('change', () => opts.onChange!(sel.value))
+    }
+    row.append(this.label(label), sel)
     return row
   }
 
@@ -601,14 +496,6 @@ class PreferencesModal {
     const row = document.createElement('div')
     row.className = 'prefs-row prefs-btn-row'
     row.append(this.btn(text, onClick))
-    return row
-  }
-
-  private rowWithPath(labelText: string, opts: { browse?: boolean }): HTMLElement {
-    const row = document.createElement('div')
-    row.className = 'prefs-row prefs-path-row'
-    row.append(this.label(labelText), this.input('text', { placeholder: '(自动检测)', style: 'flex:1' }))
-    if (opts.browse) row.appendChild(this.btn('浏览…', () => {}))
     return row
   }
 }
