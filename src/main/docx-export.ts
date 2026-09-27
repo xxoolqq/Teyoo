@@ -20,7 +20,7 @@
 //   规约D image        ![a#w#h#对齐#B](url) → 尺寸/对齐；data: URL 直接嵌入
 //   规约E circledSup   字^{n}     → 汉字 + 上标带圈数字（①…⑳㉑…㉟㊱…㊿）
 //   规约F subBlock/cols @box/@@cols → 单元格表格（boxed 带边框，比例分栏）
-//   规约G tianziGrid   ++xx++     → 虚线字符边框格子；拼音格用 w:ruby 置顶
+//   规约G tianziGrid   ++xx++     → DrawingML 行内形状格子（外框+十字虚线+内嵌文字）
 //   规约H fontBlock    ::: font{…} → 段落对齐 + 字体字号（子树继承）
 //   规约H fontSpan     {= …: …}   → Run 字体/字号覆盖
 //   公式   $…$ / $$…$$ → OMML（LaTeX → MathML → OMML，方案注册表 src/main/formula）
@@ -43,6 +43,8 @@ import {
   EmphasisMarkType,
   ExternalHyperlink,
   HeadingLevel,
+  HorizontalPositionAlign,
+  HorizontalPositionRelativeFrom,
   ImageRun,
   ImportedXmlComponent,
   Packer,
@@ -51,7 +53,10 @@ import {
   TableCell,
   TableRow,
   TextRun,
+  TextWrappingSide,
+  TextWrappingType,
   VerticalAlign,
+  VerticalPositionRelativeFrom,
   WidthType,
   type ParagraphChild,
 } from 'docx'
@@ -68,7 +73,7 @@ import { remarkCircledSup } from '../extensions/circled-sup/remark'
 import { remarkColumns } from '../extensions/columns/remark'
 import { remarkFontBlock, remarkFontSpan } from '../extensions/font-style/remark'
 import { remarkTianziGrid } from '../extensions/tianzi-grid/remark'
-import { parseCells } from '../extensions/tianzi-grid/lib'
+import { parseCells, type TianziCell } from '../extensions/tianzi-grid/lib'
 import { parseImageAlt, type ImageParams } from '../extensions/image-style/lib'
 // 残余强调重解析与编辑器共用同一实现（**紧邻标点的侧翼规则修正）
 import { remarkResidualEmphasis } from '../renderer/editor/residual-emphasis'
@@ -185,15 +190,12 @@ function alignmentOf(align: string | undefined): (typeof AlignmentType)[keyof ty
 
 // ─── OOXML 原生 XML 注入（ruby 注音 / 字符边框） ─────────────────────────────
 //
-// docx 库未提供 phonetic guide（w:ruby）与字符边框（w:bdr）的声明式 API，
+// docx 库未提供 phonetic guide（w:ruby）等声明式 API，
 // 通过 ImportedXmlComponent.fromXmlString 注入原始 OOXML。注意 w:rPr 子元素
-// 顺序须符合 CT_RPr 序列：rFonts → color → spacing → sz → szCs → bdr。
-
-/** 字符边框（虚线方框）rPr 片段 —— 田字格用，颜色与编辑器 #444 一致 */
-const TIANZI_BORDER_RPR = '<w:bdr w:val="dashed" w:sz="6" w:space="1" w:color="444444"/>'
+// 顺序须符合 CT_RPr 序列：rFonts → color → sz → szCs。
 
 /** 构造一个 Run 的 rPr 片段（保持 CT_RPr 元素顺序） */
-function rprXml(style: RunStyle, opts: { border?: boolean } = {}): string {
+function rprXml(style: RunStyle): string {
   const parts: string[] = []
   if (style.family) {
     parts.push(`<w:rFonts w:ascii="${xmlEscape(style.family)}" w:eastAsia="${xmlEscape(style.family)}" w:hAnsi="${xmlEscape(style.family)}"/>`)
@@ -202,16 +204,14 @@ function rprXml(style: RunStyle, opts: { border?: boolean } = {}): string {
   if (half) {
     parts.push(`<w:sz w:val="${half}"/><w:szCs w:val="${half}"/>`)
   }
-  if (opts.border) parts.push(TIANZI_BORDER_RPR)
   return parts.length > 0 ? `<w:rPr>${parts.join('')}</w:rPr>` : ''
 }
 
 /**
  * 构造注音 Run（w:ruby）：rt 拼音显示在 base 基字上方。
- * opts.baseBorder：基字加虚线字符边框（田字格拼音格的空格底座）。
  * 注音字号取基字的一半（与 Word 拼音指南默认行为一致）。
  */
-function rubyRunXml(base: string, rt: string, style: RunStyle, opts: { baseBorder?: boolean } = {}): ImportedXmlComponent {
+function rubyRunXml(base: string, rt: string, style: RunStyle): ImportedXmlComponent {
   const half = ptToHalfPoints(style.fontSize)
   const rtHalf = half ? Math.max(10, Math.round(half / 2)) : 15
   const xml =
@@ -222,7 +222,7 @@ function rubyRunXml(base: string, rt: string, style: RunStyle, opts: { baseBorde
     `<w:t xml:space="preserve">${xmlEscape(rt)}</w:t>` +
     '</w:r></w:rt>' +
     '<w:rubyBase><w:r>' +
-    rprXml(style, { border: opts.baseBorder }) +
+    rprXml(style) +
     `<w:t xml:space="preserve">${xmlEscape(base)}</w:t>` +
     '</w:r></w:rubyBase>' +
     '</w:ruby></w:r>'
@@ -279,36 +279,174 @@ function circledDigit(numStr: string): string | null {
   return String.fromCodePoint(0x32b1 + n - 36) // ㊱…㊿
 }
 
-// ─── 规约G：田字格 Run 序列 ──────────────────────────────────────────────────
+// ─── 规约G：田字格 Run 序列（DrawingML 行内形状） ────────────────────────────
 //
-// 每格 = 一个带虚线字符边框的 Run（汉字或全角空格底座）；
-// 拼音格 = w:ruby（拼音在上，全角空格底座带边框）。
-// 相邻同边框 Run 会被 Word 合并成一个大框，格子之间插入细空格 Run 断开，
-// 与编辑器渲染的格间距对应。
+// 旧方案（w:bdr 字符边框 + w:ruby 拼音）在 Word 中不可靠：纯空白字符不画
+// 字符边框 → 空白格/拼音格整格消失。改为每格一个 wp:inline 行内形状组合
+// （a:graphicData uri=wordprocessingGroup → wpg:wgp，Word 2010+ 格式）：
+//   - 外框矩形：0.75pt 实线 #444444（对应编辑器 .tz-box border）
+//   - 横/竖虚线：0.75pt 虚线 #D38B8B（对应 .tz-box::before/::after）
+//   - 有字格：矩形内嵌文本（楷体 1.35em #111，anchor=ctr 水平垂直居中）
+//   - 拼音格：顶部加拼音文本框（Segoe UI 0.62em #555，无边框无填充）
+// 尺寸以正文字号为 em 基准（1pt 字号 = 1em），与编辑器 CSS 完全对应：
+//   格边 2.2em；拼音行 1em + 0.3em 间距（所有格子上方都占位，格底对齐）。
+// 相邻格共享边线（与编辑器 margin-left:-1px 边框折叠一致），格间不插空格。
+
+const NS_WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+const NS_WPG = 'http://schemas.microsoft.com/office/word/2010/wordprocessingGroup'
+const NS_WPS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape'
+
+/** EMU（English Metric Unit）：1pt = 12700 EMU */
+const EMU_PER_PT = 12700
+
+/** wp:docPr 全文档唯一 id（须 ≥1 且不重复，Word 打开时校验） */
+let tianziShapeIdCounter = 0
+
+/** 形状描边 XML（CT_LineProperties：实色填充 → 虚线样式） */
+function shapeStrokeXml(widthEmu: number, color: string, dashed: boolean): string {
+  return (
+    `<a:ln w="${widthEmu}">` +
+    `<a:solidFill><a:srgbClr val="${color}"/></a:solidFill>` +
+    (dashed ? '<a:prstDash val="dash"/>' : '') +
+    '</a:ln>'
+  )
+}
+
+/** 田字格内嵌文本段落（w:txbxContent）：水平居中、无段距、行距单倍 */
+function txbxParagraphXml(text: string, font: string, halfPt: number, color: string): string {
+  return (
+    '<w:p>' +
+    '<w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="center"/></w:pPr>' +
+    '<w:r>' +
+    `<w:rPr><w:rFonts w:ascii="${font}" w:eastAsia="${font}" w:hAnsi="${font}"/>` +
+    `<w:color w:val="${color}"/><w:sz w:val="${halfPt}"/><w:szCs w:val="${halfPt}"/></w:rPr>` +
+    `<w:t xml:space="preserve">${xmlEscape(text)}</w:t>` +
+    '</w:r>' +
+    '</w:p>'
+  )
+}
+
+/** 单个 wps:wsp 子形状（矩形/直线，可选内嵌文本），坐标为组内子坐标系 */
+function tianziShapeXml(opts: {
+  x: number
+  y: number
+  cx: number
+  cy: number
+  /** a:prstGeom 预设：rect / line */
+  preset: string
+  stroke?: { width: number; color: string; dashed?: boolean }
+  text?: { content: string; font: string; halfPt: number; color: string }
+}): string {
+  const parts: string[] = [
+    `<wps:wsp xmlns:wps="${NS_WPS}">`,
+    '<wps:cNvSpPr/>',
+    '<wps:spPr>',
+    `<a:xfrm><a:off x="${opts.x}" y="${opts.y}"/><a:ext cx="${opts.cx}" cy="${opts.cy}"/></a:xfrm>`,
+    `<a:prstGeom prst="${opts.preset}"><a:avLst/></a:prstGeom>`,
+    '<a:noFill/>',
+    opts.stroke
+      ? shapeStrokeXml(opts.stroke.width, opts.stroke.color, opts.stroke.dashed ?? false)
+      : '<a:ln><a:noFill/></a:ln>',
+    '</wps:spPr>',
+  ]
+  if (opts.text) {
+    parts.push(
+      '<wps:txbx><w:txbxContent>',
+      txbxParagraphXml(opts.text.content, opts.text.font, opts.text.halfPt, opts.text.color),
+      '</w:txbxContent></wps:txbx>',
+    )
+  }
+  parts.push('<wps:bodyPr rot="0" anchor="ctr" lIns="0" tIns="0" rIns="0" bIns="0"/>', '</wps:wsp>')
+  return parts.join('')
+}
+
+/**
+ * 单个田字格的行内形状组合（外层 <w:r> XML，经 fromXml 注入）。
+ * baseHalf：正文字号半点值（fontBlock/fontSpan 继承），无则按五号 10.5pt。
+ */
+function tianziCellXml(cell: TianziCell, baseHalf: number): string {
+  const basePt = baseHalf / 2
+  const side = Math.round(2.2 * basePt * EMU_PER_PT)
+  // 拼音行 1em + 0.3em 间距：所有格子上方都留（编辑器 .tz-py 占位保底对齐）
+  const pyRow = Math.round(1.3 * basePt * EMU_PER_PT)
+  const height = pyRow + side
+  const mid = Math.round(side / 2)
+  tianziShapeIdCounter += 1
+
+  const shapes =
+    (cell.pinyin
+      ? tianziShapeXml({
+          x: 0,
+          y: 0,
+          cx: side,
+          cy: Math.round(1.0 * basePt * EMU_PER_PT),
+          preset: 'rect',
+          text: {
+            content: cell.pinyin,
+            font: 'Segoe UI',
+            halfPt: Math.max(10, Math.round(0.62 * baseHalf)),
+            color: '555555',
+          },
+        })
+      : '') +
+    tianziShapeXml({
+      x: 0,
+      y: pyRow,
+      cx: side,
+      cy: side,
+      preset: 'rect',
+      stroke: { width: 9525, color: '444444' },
+      ...(cell.char
+        ? { text: { content: cell.char, font: 'KaiTi', halfPt: Math.round(1.35 * baseHalf), color: '111111' } }
+        : {}),
+    }) +
+    tianziShapeXml({
+      x: 0,
+      y: pyRow + mid,
+      cx: side,
+      cy: 0,
+      preset: 'line',
+      stroke: { width: 9525, color: 'D38B8B', dashed: true },
+    }) +
+    tianziShapeXml({
+      x: mid,
+      y: pyRow,
+      cx: 0,
+      cy: side,
+      preset: 'line',
+      stroke: { width: 9525, color: 'D38B8B', dashed: true },
+    })
+
+  return (
+    '<w:r><w:drawing>' +
+    `<wp:inline xmlns:wp="${NS_WP}" distT="0" distB="0" distL="0" distR="0">` +
+    `<wp:extent cx="${side}" cy="${height}"/>` +
+    '<wp:effectExtent l="0" t="0" r="0" b="0"/>' +
+    `<wp:docPr id="${tianziShapeIdCounter}" name="田字格 ${tianziShapeIdCounter}"/>` +
+    '<wp:cNvGraphicFramePr/>' +
+    `<a:graphic xmlns:a="${NS_A}"><a:graphicData uri="${NS_WPG}">` +
+    `<wpg:wgp xmlns:wpg="${NS_WPG}">` +
+    '<wpg:cNvGrpSpPr/>' +
+    '<wpg:grpSpPr>' +
+    `<a:xfrm><a:off x="0" y="0"/><a:ext cx="${side}" cy="${height}"/>` +
+    `<a:chOff x="0" y="0"/><a:chExt cx="${side}" cy="${height}"/></a:xfrm>` +
+    '</wpg:grpSpPr>' +
+    shapes +
+    '</wpg:wgp>' +
+    '</a:graphicData></a:graphic>' +
+    '</wp:inline>' +
+    '</w:drawing></w:r>'
+  )
+}
 
 function tianziRuns(raw: string, style: RunStyle): ParagraphChild[] {
   const model = parseCells(raw)
   // 数据异常（理论上 remark 已过滤）时降级为字面文本
   if (!model) return [new TextRun({ text: `++${raw}++`, ...runOptions(style) })]
-  const runs: ParagraphChild[] = []
-  for (const cell of model.cells) {
-    if (runs.length > 0) runs.push(new TextRun({ text: '\u2009' }))
-    if (cell.pinyin) {
-      // 拼音格：拼音在上方，下方为带框全角空格
-      runs.push(asParagraphChild(rubyRunXml('\u2003', cell.pinyin, style, { baseBorder: true })))
-    } else if (cell.char) {
-      // 有字格：边框内直接放汉字
-      runs.push(asParagraphChild(fromXml(
-        '<w:r>' + rprXml(style, { border: true }) + `<w:t xml:space="preserve">${xmlEscape(cell.char)}</w:t></w:r>`
-      )))
-    } else {
-      // 空白格：带框全角空格
-      runs.push(asParagraphChild(fromXml(
-        '<w:r>' + rprXml(style, { border: true }) + '<w:t xml:space="preserve">\u2003</w:t></w:r>'
-      )))
-    }
-  }
-  return runs
+  // em 基准：继承字号（fontBlock/fontSpan 可设），缺省按五号 10.5pt（21 半点）
+  const baseHalf = ptToHalfPoints(style.fontSize) ?? 21
+  return model.cells.map((cell) => asParagraphChild(fromXml(tianziCellXml(cell, baseHalf))))
 }
 
 // ─── 行内扩展节点 ───────────────────────────────────────────────────────────
@@ -413,6 +551,7 @@ function imagePixelSize(natural: { width: number; height: number }, params: Imag
 /**
  * 构建图片 Run；无法加载时返回 null（调用方降级为占位文本）。
  * 规约D的 border/shadow/radius 修饰符为纯视觉装饰，docx 阶段不呈现。
+ * float-left/float-right → wp:anchor 浮动定位（文字环绕）。
  */
 function imageRunOf(node: MarkdownNode, sourcePath: string | null): { run: ImageRun; params: ImageParams } | null {
   const { params } = parseImageAlt(node.alt ?? '')
@@ -423,7 +562,31 @@ function imageRunOf(node: MarkdownNode, sourcePath: string | null): { run: Image
   const loaded = loadImageData(resolved)
   if (!loaded) return null
   const size = imagePixelSize(loaded.natural, params)
-  const run = new ImageRun({ type: loaded.type, data: loaded.data, transformation: size })
+  const isFloating = params.align === 'float-left' || params.align === 'float-right'
+  const run = new ImageRun({
+    type: loaded.type,
+    data: loaded.data,
+    transformation: size,
+    ...(isFloating ? {
+      floating: {
+        horizontalPosition: {
+          relative: HorizontalPositionRelativeFrom.COLUMN,
+          align: params.align === 'float-right' ? HorizontalPositionAlign.RIGHT : HorizontalPositionAlign.LEFT,
+        },
+        verticalPosition: {
+          relative: VerticalPositionRelativeFrom.PARAGRAPH,
+          offset: 0,
+        },
+        allowOverlap: true,
+        behindDocument: false,
+        layoutInCell: true,
+        wrap: {
+          type: TextWrappingType.SQUARE,
+          side: TextWrappingSide.BOTH_SIDES,
+        },
+      },
+    } : {}),
+  })
   return { run, params }
 }
 
@@ -431,8 +594,8 @@ function imageAlignment(params: ImageParams): (typeof AlignmentType)[keyof typeo
   if (!params.align) return undefined
   if (params.align === 'center') return AlignmentType.CENTER
   if (params.align === 'right') return AlignmentType.RIGHT
-  if (params.align === 'left' || params.align === 'float-left') return AlignmentType.LEFT
-  if (params.align === 'float-right') return AlignmentType.RIGHT
+  if (params.align === 'left') return AlignmentType.LEFT
+  // float-left/float-right: 不设置段落对齐，由 ImageRun 的 floating 配置处理
   return undefined
 }
 
@@ -537,11 +700,17 @@ function inlineRuns(nodes: MarkdownNode[] | undefined, style: RunStyle = {}, sou
         }, sourcePath, formula))
         break
       case 'html': {
-        // 内联 HTML：仅识别 <u>/</u>（遗留文档下划线），其余内联标记丢弃但保留后续文本。
+        // 内联 HTML：识别 <br>（Typora 风格换行 → Word 真换行）与 <u>/</u>
+        // （遗留文档下划线），其余内联标记丢弃但保留后续文本。
+        const v = (node.value ?? '').trim()
+        if (/^<br\s*\/?>$/i.test(v)) {
+          runs.push(new TextRun({ break: 1, ...runOptions(style) }))
+          break
+        }
         // 切换当前样式（在循环内原地生效，</u> 时复位）
-        const v = (node.value ?? '').trim().toLowerCase()
-        if (v === '<u>') style.underline = true
-        else if (v === '</u>') style.underline = false
+        const lv = v.toLowerCase()
+        if (lv === '<u>') style.underline = true
+        else if (lv === '</u>') style.underline = false
         break
       }
       default:
@@ -706,7 +875,14 @@ function blockNodes(
     } else if (node.type === 'thematicBreak') {
       output.push(new Paragraph({ border: { bottom: { color: 'AEB7C2', space: 1, style: 'single', size: 6 } } }))
     } else if (node.type === 'html') {
-      output.push(new Paragraph({ children: [new TextRun({ text: node.value ?? '' })] }))
+      // 块级 HTML：<br> 单独成行（Typora 常见）→ 空段落（换行语义），
+      // 避免字面 "<br/>" 出现在 Word 正文；其余 HTML 块原样输出文本
+      const v = (node.value ?? '').trim()
+      if (/^<br\s*\/?>$/i.test(v)) {
+        output.push(new Paragraph({ children: [] }))
+      } else {
+        output.push(new Paragraph({ children: [new TextRun({ text: node.value ?? '' })] }))
+      }
     } else if (node.type === 'footnoteDefinition') {
       output.push(new Paragraph({ children: [new TextRun({ text: textContent(node), size: 18, color: '667085' })] }))
     } else {

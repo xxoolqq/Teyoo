@@ -1,4 +1,5 @@
-import { Editor, rootCtx, defaultValueCtx, editorViewCtx, serializerCtx, parserCtx, remarkPluginsCtx, remarkStringifyOptionsCtx, inputRulesCtx } from '@milkdown/kit/core'
+import { Editor, rootCtx, defaultValueCtx, editorViewCtx, serializerCtx, parserCtx, remarkCtx, schemaCtx, remarkPluginsCtx, remarkStringifyOptionsCtx, inputRulesCtx } from '@milkdown/kit/core'
+import { SerializerState } from '@milkdown/kit/transformer'
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@milkdown/kit/prose/state'
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
@@ -18,6 +19,10 @@ import { remarkMathPlugin, katexOptionsCtx, mathInlineSchema, mathBlockSchema } 
 import { mathInlineView, mathBlockView } from '../math-engine'
 import { htmlView } from './html-view'
 import { mermaidView } from './mermaid-view'
+import { codeBlockExitPlugin } from './code-block-exit'
+import { tabIndentPlugin } from './tab-indent'
+import { fixMilkdownMarkSplits, fixMarkerEscapes } from './serializer-fix'
+import { orderedListFixSchema } from './ordered-list-fix'
 import { releaseMermaidRenderer as releaseMermaidRendererBridge } from './mermaid-bridge'
 import { mathModal } from './math-modal'
 import { imageModal } from './image-modal'
@@ -31,15 +36,23 @@ import { remarkMathFalsePositiveGuard } from './math-guard'
 import { remarkResidualEmphasis } from './residual-emphasis'
 import { highlight, remarkHighlight, highlightStringifyHandler } from './highlight'
 import { syntaxRevealPlugin, syntaxRevealPluginKey, mdSourceSchema } from './syntax-reveal'
+import { escapeInputPlugin } from './escape-input'
+import { escapedLiteralMark, remarkEscapedLiteral, restoreEscapes } from './escaped-literal'
+import { fixStrikeThroughInputRule } from './strike-through-fix'
+import { disableFormatInputRules } from './format-input-rules-off'
+import { linkFixSchema, linkInputRule } from './link-fix'
+import { tableFloatingToolbarPlugin } from './table-floating-toolbar'
 import { blankLinePlugin, remarkBlankLine, blankLineStringifyHandler } from '../../extensions/blank-line'
 import { emphDotPlugin, remarkEmphDot, emphDotStringifyHandler } from '../../extensions/emph-dot'
+import { underlinePlugin, remarkUnderline, underlineStringifyHandler } from '../../extensions/underline'
 import { pinyinRubyPlugin, remarkPinyinRuby, pinyinRubyStringifyHandler } from '../../extensions/pinyin-ruby'
 import { pinyinInlinePlugin, remarkPinyinInline, pinyinInlineStringifyHandler } from '../../extensions/pinyin-inline'
 import { circledSupPlugin, remarkCircledSup, circledSupStringifyHandler } from '../../extensions/circled-sup'
+import { subSupPlugin, remarkSubSup, subscriptStringifyHandler, superscriptStringifyHandler } from '../../extensions/sub-sup'
 import { columnsPlugin, remarkColumns, subBlockStringifyHandler, colsStringifyHandler } from '../../extensions/columns'
 import { fontStylePlugin, remarkFontBlock, remarkFontSpan, fontBlockStringifyHandler, fontSpanStringifyHandler } from '../../extensions/font-style'
 import { tianziGridPlugin, remarkTianziGrid, tianziGridStringifyHandler } from '../../extensions/tianzi-grid'
-import { imageStylePlugin, setCurrentImageFilePath } from '../../extensions/image-style'
+import { imageStylePlugin, imageResizeView, setCurrentImageFilePath } from '../../extensions/image-style'
 import { type MarkdownStyle } from './markdown-style'
 import { isChinese } from '../ui-language'
 
@@ -477,6 +490,171 @@ export function showTableModal(): void {
   tableModal.show()
 }
 
+// 工具栏「链接」按钮调用 —— 弹出模态框输入链接名称与 URL，
+// 插入 markdown 链接语义的文本：[菜鸟教程](https://www.runoob.com)。
+// 弹窗结构与拼音弹窗同构（image-modal 行/列/标签/输入），尺寸固定。
+//   - 有选区 → 名称预填选中文本；应用时替换为「名称 + link mark」；
+//   - 光标已在链接内 → 预填原链接文本与 href，应用即改写；
+//   - 剪贴板是合法网址时预填 URL；
+//   - 输入无协议时自动补 https://，名称留空时以 URL 为锚文本。
+export function showLinkModal(): void {
+  const view = getEditorView()
+  if (!view || !view.hasFocus()) return
+  const linkType = view.state.schema.marks.link
+  if (!linkType) return
+  const { from, to, empty } = view.state.selection
+
+  // 光标/选区处的现有链接信息（编辑模式预填用）
+  const marks = empty
+    ? [...(view.state.storedMarks ?? []), ...view.state.doc.resolve(from).marks()]
+    : view.state.doc.resolve(Math.min(from + 1, to)).marks()
+  const existing = linkType.isInSet(marks)
+
+  const zh = isChinese()
+  const t = {
+    title: existing ? (zh ? '编辑链接' : 'Edit Link') : (zh ? '插入链接' : 'Insert Link'),
+    nameLabel: zh ? '链接名称' : 'Link Text',
+    urlLabel: zh ? '链接' : 'URL',
+    namePlaceholder: zh ? '链接名称' : 'link name',
+    urlPlaceholder: '输入网址',
+    hint: zh ? '留空名称时以链接地址作为名称' : 'Falls back to the URL if text is empty',
+    cancel: zh ? '取消' : 'Cancel',
+    apply: existing ? (zh ? '更新' : 'Update') : (zh ? '插入' : 'Insert'),
+  }
+
+  const apply = (rawName: string, rawUrl: string, hintEl: HTMLElement): boolean => {
+    const input = rawUrl.trim()
+    if (!input) {
+      // URL 为空 → 闪红提示
+      hintEl.classList.add('circled-sup-modal-hint-error')
+      setTimeout(() => hintEl.classList.remove('circled-sup-modal-hint-error'), 1500)
+      return false
+    }
+    const url = /^https?:\/\//i.test(input) ? input : `https://${input}`
+    const text = rawName.trim() || url
+    const liveView = getEditorView()
+    if (!liveView) return true
+    const link = liveView.state.schema.marks.link
+    if (!link) return true
+    const sel = liveView.state.selection
+    const tr = liveView.state.tr
+    // 用「名称」替换选区（空选区即原位插入），加 link mark，光标落在其后
+    tr.insertText(text, sel.from, sel.to)
+    const markFrom = sel.from
+    const markTo = markFrom + text.length
+    tr.addMark(markFrom, markTo, link.create({ href: url }))
+    tr.setSelection(TextSelection.create(tr.doc, markTo))
+    liveView.dispatch(tr.scrollIntoView())
+    liveView.focus()
+    return true
+  }
+
+  const overlay = document.createElement('div')
+  overlay.className = 'math-modal-overlay'
+
+  const modal = document.createElement('div')
+  modal.className = 'math-modal link-modal'
+
+  const header = document.createElement('h3')
+  header.textContent = t.title
+
+  // 链接名称
+  const nameRow = document.createElement('div')
+  nameRow.className = 'image-modal-row'
+  const nameCol = document.createElement('div')
+  nameCol.className = 'image-modal-col'
+  const nameLabel = document.createElement('label')
+  nameLabel.textContent = t.nameLabel
+  nameLabel.className = 'image-modal-label'
+  const nameInput = document.createElement('input')
+  nameInput.type = 'text'
+  nameInput.className = 'image-modal-input'
+  nameInput.placeholder = t.namePlaceholder
+  nameInput.autocomplete = 'off'
+  nameCol.append(nameLabel, nameInput)
+  nameRow.appendChild(nameCol)
+
+  // 链接地址
+  const urlRow = document.createElement('div')
+  urlRow.className = 'image-modal-row'
+  const urlCol = document.createElement('div')
+  urlCol.className = 'image-modal-col'
+  const urlLabel = document.createElement('label')
+  urlLabel.textContent = t.urlLabel
+  urlLabel.className = 'image-modal-label'
+  const urlInput = document.createElement('input')
+  urlInput.type = 'text'
+  urlInput.className = 'image-modal-input'
+  urlInput.placeholder = t.urlPlaceholder
+  urlInput.autocomplete = 'off'
+  urlInput.spellcheck = false
+  urlCol.append(urlLabel, urlInput)
+  urlRow.appendChild(urlCol)
+
+  // 提示
+  const hint = document.createElement('p')
+  hint.className = 'circled-sup-modal-hint'
+  hint.textContent = t.hint
+
+  // 预填：选中文本 / 已有链接
+  if (!empty) {
+    nameInput.value = view.state.doc.textBetween(from, to, ' ')
+  }
+  if (existing) {
+    const href = (existing.attrs as { href?: string }).href ?? ''
+    urlInput.value = href
+  } else {
+    // 剪贴板是合法网址时预填 URL（Electron IPC；web 环境跳过）
+    void window.electronAPI?.readClipboardText?.().then((clip) => {
+      const clipUrl = (clip ?? '').trim()
+      if (/^https?:\/\/\S+$/i.test(clipUrl) && !urlInput.value) urlInput.value = clipUrl
+    })
+  }
+
+  const footer = document.createElement('div')
+  footer.className = 'math-modal-footer'
+
+  const cancelBtn = document.createElement('button')
+  cancelBtn.type = 'button'
+  cancelBtn.textContent = t.cancel
+  cancelBtn.className = 'math-modal-btn cancel'
+  cancelBtn.addEventListener('click', () => overlay.remove())
+
+  const applyBtn = document.createElement('button')
+  applyBtn.type = 'button'
+  applyBtn.textContent = t.apply
+  applyBtn.className = 'math-modal-btn save'
+  applyBtn.addEventListener('click', () => {
+    if (apply(nameInput.value, urlInput.value, hint)) overlay.remove()
+  })
+
+  // 两个输入框内回车即应用，Esc 取消
+  for (const field of [nameInput, urlInput]) {
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        if (apply(nameInput.value, urlInput.value, hint)) overlay.remove()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        overlay.remove()
+      }
+    })
+  }
+
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === overlay) overlay.remove()
+  })
+
+  footer.append(cancelBtn, applyBtn)
+  modal.append(header, nameRow, urlRow, hint, footer)
+  overlay.appendChild(modal)
+  document.body.appendChild(overlay)
+  // 名称已预填（有选区）时聚焦 URL，否则聚焦名称
+  const focusEl = nameInput.value ? urlInput : nameInput
+  focusEl.focus()
+  focusEl.select()
+}
+
 export function setMathModalLanguage(language: 'zh' | 'en'): void {
   mathModal.setLanguage(language)
   imageModal.setLanguage(language)
@@ -551,14 +729,12 @@ function enhanceClipboard(e: ClipboardEvent): void {
   // Preserve the markdown plain-text flavour set by milkdown's clipboardTextSerializer,
   // which retains markdown marks (**bold**, @..@着重号, etc.) so
   // pasting into plain-text targets (Notepad, etc.) keeps the formatting syntax.
-  // Previously this was overwritten with textContent from the HTML DOM, which stripped
-  // all marks. Collapse paragraph-separating \n\n to single \n so pasting into plain-text
-  // targets doesn't double-space, matching the previous HTML-derived tight line breaks.
-  const existingPlain = e.clipboardData?.getData('text/plain') ?? ''
-  if (existingPlain) {
-    const plain = unescapeMarkers(existingPlain).replace(/\n{2,}/g, '\n')
-    e.clipboardData?.setData('text/plain', plain)
-  }
+  // 空行不再折叠为单行：空行是 markdown 块级语法（段落、分栏定界符、
+  // 围栏容器）的结构组成部分，折叠会让粘贴到 markdown 感知目标
+  // （本应用提交页、Typora、VS Code）的相邻 :::font / @ 定界符互相粘连，
+  // 解析失败退化为字面文本。聊天工具中的段间空行属 markdown 正常形态。
+  // text/plain 原样保留（含 \* 等转义）：序列化器对字面 * / ~ 的转义是
+  // 语义保真的正确形态，外部目标再粘贴回来不变形。
 }
 
 // ─── 粘贴图片 → base64 内嵌 ──────────────────────────────────────────────────
@@ -895,7 +1071,7 @@ function setupFootnotePreview(root: HTMLElement): void {
 // Marks toggle on the selection; lists wrap the current block. Empty
 // selections are a no-op for marks, matching the previous cmd+B behavior.
 
-export type FormatCommandId = 'bold' | 'italic' | 'inlineCode' | 'strikethrough' | 'emphDot' | 'link' | 'bulletList' | 'orderedList'
+export type FormatCommandId = 'bold' | 'italic' | 'inlineCode' | 'strikethrough' | 'emphDot' | 'underline' | 'subscript' | 'superscript' | 'highlight' | 'link' | 'bulletList' | 'orderedList'
 
 export function runFormatCommand(id: FormatCommandId): void {
   if (!editorInstance) return
@@ -954,9 +1130,20 @@ export function runFormatCommand(id: FormatCommandId): void {
           : id === 'emphDot'
             // 规约A：字下着重号 mark（src/extensions/emph-dot）
             ? ['emphDot']
-            // Milkdown's gfm preset registers the mark as `strike_through`
-            // even though the export is named strikethroughSchema (review on #87).
-            : ['strike_through', 'strikethrough']
+            : id === 'underline'
+              // 文字下划线 mark（src/extensions/underline，<u>…</u>）
+              ? ['underline']
+              // 上下标 mark（src/extensions/sub-sup，_{x} / ^{x}）
+              : id === 'subscript'
+                ? ['subscript']
+                : id === 'superscript'
+                  ? ['superscript']
+                  // ==高亮== mark（src/renderer/editor/highlight.ts，==text==）
+                  : id === 'highlight'
+                    ? ['highlight']
+                    // Milkdown's gfm preset registers the mark as `strike_through`
+                  // even though the export is named strikethroughSchema (review on #87).
+                  : ['strike_through', 'strikethrough']
     const mark = candidates.map((name) => view.state.schema.marks[name]).find(Boolean)
     if (!mark || empty) return
     const has = view.state.doc.rangeHasMark(from, to, mark)
@@ -979,6 +1166,9 @@ export interface ToolbarState {
   strike: boolean
   code: boolean
   emphDot: boolean
+  underline: boolean
+  subscript: boolean
+  superscript: boolean
   link: boolean
   bulletList: boolean
   orderedList: boolean
@@ -986,13 +1176,18 @@ export interface ToolbarState {
   quote: boolean
   /** 选区/光标命中 font_span 行内标记或 font_block 块容器（供「清除字体」高亮） */
   font: boolean
+  /** 光标/选区处的字体族（行内 font_span 优先，font_block 祖先链补齐），无则为 null */
+  fontFamily: string | null
+  /** 光标/选区处的字号（同上），无则为 null */
+  fontSize: string | null
   block: ToolbarBlockKind
 }
 
 function emptyToolbarState(): ToolbarState {
   return {
-    bold: false, italic: false, strike: false, code: false, emphDot: false, link: false,
+    bold: false, italic: false, strike: false, code: false, emphDot: false, underline: false, subscript: false, superscript: false, link: false,
     bulletList: false, orderedList: false, taskList: false, quote: false, font: false,
+    fontFamily: null, fontSize: null,
     block: 'paragraph',
   }
 }
@@ -1101,6 +1296,21 @@ export function insertLongBlank(): void {
   })
 }
 
+// 在光标处插入任意文本（插入符号面板等入口）。选区非空时替换选区，
+// 光标折叠到插入文本末尾，语义同 insertLongUnderscore。
+export function insertTextAtCursor(text: string): void {
+  if (!text) return
+  editorInstance?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    if (!view.hasFocus()) return
+    const { from, to } = view.state.selection
+    const tr = view.state.tr.insertText(text, from, to)
+    tr.setSelection(TextSelection.create(tr.doc, from + text.length))
+    view.dispatch(tr.scrollIntoView())
+    view.focus()
+  })
+}
+
 // 任务列表 toggle：gfm 的任务列表 = bullet_list 内嵌带 checked 属性的
 // list_item（checked=null 为普通列表项，false/true=任务项）。
 // 不在列表内 → 包裹为任务列表；在列表内 → 在「普通列表项」与「任务项」间切换。
@@ -1200,6 +1410,75 @@ export function insertTable(rows = 3, cols = 3): void {
     const sel = Selection.findFrom(tr.doc.resolve(from + 1), 1, true)
     if (sel) tr.setSelection(sel)
     view.dispatch(tr.scrollIntoView())
+  })
+}
+
+// 设置光标所在列的对齐属性。
+//
+// GFM 表格有一个 keepTableAlignPlugin（@milkdown/preset-gfm），它的 appendTransaction
+// 会遍历所有 table_cell（body cell），强制每列的 body cell alignment 与同列的
+// header cell（table_header）保持一致。因此直接修改 body cell 会被插件立刻还原，
+// 表现为「点了没反应」。
+//
+// 正确做法：修改该列的 header cell 的 alignment，插件会自动把同列所有 body cell
+// 同步为相同的值。这也与 GFM Markdown 序列表头对齐语义一致（| :---: | 决定整列）。
+export function setTableAlignment(alignment: 'left' | 'center' | 'right'): void {
+  editorInstance?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { state } = view
+    const $head = state.selection.$head
+
+    // 向上查找 table 节点和当前 cell 节点的深度
+    let tableDepth = -1
+    let cellDepth = -1
+    for (let d = $head.depth; d > 0; d--) {
+      const n = $head.node(d)
+      if (cellDepth === -1 && (n.type.name === 'table_cell' || n.type.name === 'table_header')) {
+        cellDepth = d
+      }
+      if (n.type.name === 'table') {
+        tableDepth = d
+        break
+      }
+    }
+    if (tableDepth === -1 || cellDepth === -1) return
+
+    const table = $head.node(tableDepth)
+    const tablePos = $head.before(tableDepth)
+    const cellNode = $head.node(cellDepth)
+    // 深度结构：table(d) → row(d+1) → cell(d+2) → paragraph(d+3)
+    // 因此包含当前 cell 的行节点在 cellDepth - 1，不是 +1（+1 是 cell 内的段落，
+    // 在段落子节点里找 cell 永远匹配不到，colIndex 会错误地保持 0）。
+    const cellRow = $head.node(cellDepth - 1)
+
+    // 计算当前单元格在行中的列索引
+    let colIndex = 0
+    cellRow.forEach((child, _offset, i) => {
+      if (child === cellNode) colIndex = i
+    })
+
+    // 表头行 = table 的第一个子节点（schema: table_header_row table_row+）
+    const headerRow = table.firstChild
+    if (!headerRow || headerRow.type.name !== 'table_header_row') return
+
+    // 定位表头单元格的绝对位置：
+    //   tablePos      → <table> 开标签
+    //   tablePos + 1  → <table_header_row> 开标签（第一个子节点）
+    //   tablePos + 2  → headerRow 内容起点 = 第一个 header cell 开标签
+    // 后续 cell 位置累加前驱 cell 的 nodeSize（含开闭标签）
+    let headerCellPos = tablePos + 2
+    for (let i = 0; i < colIndex; i++) {
+      headerCellPos += headerRow.child(i).nodeSize
+    }
+    const headerCell = headerRow.child(colIndex)
+    if (!headerCell) return
+
+    const tr = state.tr.setNodeMarkup(headerCellPos, undefined, {
+      ...headerCell.attrs,
+      alignment,
+    })
+    view.dispatch(tr)
+    view.focus()
   })
 }
 
@@ -1357,6 +1636,9 @@ export function getToolbarState(): ToolbarState {
     result.strike = checkMark(['strike_through', 'strikethrough'])
     result.code = checkMark(['inlineCode', 'code'])
     result.emphDot = checkMark(['emphDot'])
+    result.underline = checkMark(['underline'])
+    result.subscript = checkMark(['subscript'])
+    result.superscript = checkMark(['superscript'])
     result.link = checkMark(['link'])
 
     // 字体样式命中：行内 font_span mark，或 font_block 块容器。
@@ -1380,6 +1662,33 @@ export function getToolbarState(): ToolbarState {
       })
     }
     result.font = checkMark(['font_span']) || inFontBlock
+
+    // 字体/字号同步：行内 font_span attrs 优先（选区内部位置读取，与
+    // applyFont 合并语义一致），缺失字段由 font_block 祖先链从内向外补齐。
+    const fontMarkType = state.schema.marks['font_span']
+    if (fontMarkType) {
+      let markAttrs: { family?: string; size?: string } | null = null
+      if (empty) {
+        const m = [...(state.storedMarks ?? []), ...$from.marks()].find((x) => x.type === fontMarkType)
+        if (m) markAttrs = m.attrs as { family?: string; size?: string }
+      } else {
+        const $inside = state.doc.resolve(Math.min(from + 1, to))
+        const m = $inside.marks().find((x) => x.type === fontMarkType)
+        if (m) markAttrs = m.attrs as { family?: string; size?: string }
+      }
+      if (markAttrs?.family) result.fontFamily = markAttrs.family
+      if (markAttrs?.size) result.fontSize = markAttrs.size
+    }
+    if (!result.fontFamily || !result.fontSize) {
+      for (let depth = $from.depth; depth > 0; depth -= 1) {
+        const node = $from.node(depth)
+        if (node.type.name === 'font_block') {
+          if (!result.fontFamily && node.attrs.family) result.fontFamily = node.attrs.family
+          if (!result.fontSize && node.attrs.size) result.fontSize = node.attrs.size
+          if (result.fontFamily && result.fontSize) break
+        }
+      }
+    }
 
     // 当前块类型（段落/标题）
     const parent = $from.parent
@@ -1422,9 +1731,8 @@ const toolbarStatePlugin = $prose(() => new Plugin({
 }))
 
 function defaultContent(): string {
-  return isChinese()
-    ? '# **欢迎使用 Teyoo**\n\n开始写作...\n'
-    : '# **Welcome to Teyoo**\n\nStart typing here...\n'
+  // 空文档：启动页不预置任何文字
+  return ''
 }
 
 export async function createEditor(
@@ -1462,6 +1770,11 @@ export async function createEditor(
       ctx.set(rootCtx, root)
       ctx.set(defaultValueCtx, defaultContent())
       ctx.set(remarkPluginsCtx, [
+        // 转义字符保真（最前）：按原文 position 把 text 中被消耗的 `\标点`
+        // 拆为 escape 节点 → escaped_literal mark。必须在任何 raw-text
+        // transformer（columns 的 normalizeFontMarkerLines 会改写 vfile）之前，
+        // 此时 position 与原文严格一致。
+        { plugin: remarkEscapedLiteral, options: {} },
         // 块级容器插件放最前：在原始文本上识别 @box / @@cols 区域，
         // 内部内容递归走完整解析管线，不受 remark-breaks 拆行影响。
         { plugin: remarkColumns, options: {} },
@@ -1480,6 +1793,10 @@ export async function createEditor(
         // 重音符：把 @.内容.@ 拆为 emphDot mark。在 residual-emphasis 之后运行，
         // 这样 **@.内容.@** 先被拆成 strong{text("@.内容.@")}，再由 emphDot 处理内部。
         { plugin: remarkEmphDot, options: {} },
+        // 文字下划线：在 mdast 子节点序列中配对 html <u>/</u>。
+        // 与 emphDot 同为跨行 mark，须在 remarkBreaks 之前；放
+        // residual-emphasis 之后（html 节点不受其展开影响）。
+        { plugin: remarkUnderline, options: {} },
         // 规约H 行内标记：在 text 节点扫描 {= attrs : text}。
         // 与 emphDot 同模式，需在 remarkBreaks 之前以支持跨软换行匹配。
         { plugin: remarkFontSpan, options: {} },
@@ -1489,6 +1806,11 @@ export async function createEditor(
         { plugin: remarkPinyinRuby, options: {} },
         { plugin: remarkPinyinInline, options: {} },
         { plugin: remarkCircledSup, options: {} },
+        // 通用上下标（化学式）：_{x} 走 micromark tokenize 层（抢在 emphasis
+        // 之前消费，见 sub-sup/micromark-subscript.ts），^{x} 走 mdast 后置扫描。
+        // 必须在 remarkCircledSup 之后：`字^{12}`（汉字+纯数字）由带圈序号
+        // 优先消费，本插件只处理剩余形态（`字^{2-}` / `x^{2}`）。
+        { plugin: remarkSubSup, options: {} },
         { plugin: remarkTianziGrid, options: {} },
         { plugin: remarkMathFalsePositiveGuard, options: {} },
       ])
@@ -1502,11 +1824,14 @@ export async function createEditor(
         handlers: {
           ...stringifyOptions.handlers,
           mark: highlightStringifyHandler,
+          underline: underlineStringifyHandler,
           blankLine: blankLineStringifyHandler,
           emphDot: emphDotStringifyHandler,
           pinyinRuby: pinyinRubyStringifyHandler,
           pinyinInline: pinyinInlineStringifyHandler,
           circledSup: circledSupStringifyHandler,
+          subscript: subscriptStringifyHandler,
+          superscript: superscriptStringifyHandler,
           subBlock: subBlockStringifyHandler,
           cols: colsStringifyHandler,
           fontBlock: fontBlockStringifyHandler,
@@ -1523,13 +1848,32 @@ export async function createEditor(
       }
     })
     .use(commonmark)
+    // 有序列表序号保真：同名 schema 覆盖官方 ordered_list（parseMarkdown 丢
+    // start / toMarkdown 硬编码 start:1 / toDOM start 属性无效，三处缺陷
+    // 导致粘贴连续序号列表被重置为 1）。必须在 commonmark 之后注册。
+    .use(orderedListFixSchema)
+    // 转义字符保真：escaped_literal mark 记录「来自转义的字面字符」，
+    // 序列化还原 `\x`（\[你好\] 不再被规范化成 \[你好]）。新 mark 不
+    // 覆盖任何官方 schema，但需在 commonmark 之后注册以保证 mark 顺序
+    // （序列化时 escaped 最后 open、最内层）。
+    .use(escapedLiteralMark)
+    // 链接 mark inclusive: false：GFM autolink 产生的链接末尾敲字不再被吸进
+    // 超链接（光标困住问题），链接内部敲字仍保持链接。见 link-fix.ts。
+    .use(linkFixSchema)
+    // 链接输入规则：commonmark 有图片的输入规则却没有链接的——wysiwyg
+    // 敲 [text](url) 永远是字面文本，切源码就变成 \[text\]\(url\...)。
+    // 补 Typora 式规则：敲完收尾 ) 即转为真链接。见 link-fix.ts。
+    .use(linkInputRule)
     .use(gfm)
     .use(highlight)
     .use(blankLinePlugin)
     .use(emphDotPlugin)
+    // 文字下划线 mark：<u>内容</u> 语法 + 工具栏/Ctrl+U 切换（无输入规则）
+    .use(underlinePlugin)
     .use(pinyinRubyPlugin)
     .use(pinyinInlinePlugin)
     .use(circledSupPlugin)
+    .use(subSupPlugin)
     .use(columnsPlugin)
     .use(fontStylePlugin)
     .use(tianziGridPlugin)
@@ -1547,22 +1891,70 @@ export async function createEditor(
     .use(mathBlockView)
     .use(mathEditorPlugin)
     .use(imageEditorPlugin)
+    // 图片 nodeView：单击选中出现定位框，拖拽手柄调整尺寸（提交 attrs 后
+    // toMarkdown 自动把新尺寸写回 alt 参数串，见 image-style/node-view.ts）
+    .use(imageResizeView)
     .use(pinyinEditorPlugin)
     .use(subBlockEditorPlugin)
     .use(colsEditorPlugin)
     .use(tianziEditorPlugin)
+    .use(tableFloatingToolbarPlugin)
     .use(searchHighlight)
     .use(headingFlashPlugin)
     .use(toolbarStatePlugin)
     // 语法揭示插件：Enter 键处理（揭示态内提交并吞掉换行）必须先于
     // enterSplitGuardPlugin 的规则扫描，避免揭示文本的字面量标记被误匹配
     .use(syntaxRevealPlugin)
+    // Typora 式转义输入：wysiwyg 敲 `\`+标点 → 即时消耗反斜杠、插入字面
+    // 标点（如 `\*` 显示 `*`）。排在 syntaxReveal 之后（揭示态优先），
+    // 且先于核心 customInputRules 收到 handleTextInput 才能阻止字面 `**`
+    // 触发 markRule。见 escape-input.ts。
+    .use(escapeInputPlugin)
+    // 代码块文档末尾哨兵段落：``` 位于文档末尾时块后补空段落，光标才能跳出
+    .use(codeBlockExitPlugin)
+    // Tab / Shift+Tab 缩进（列表内升降级，其余位置插入全角空格缩进）
+    .use(tabIndentPlugin)
     // 必须最后注册：handleKeyDown 按插件顺序处理，本守卫要在容器退出键位等
     // 自定义逻辑之后、核心 customInputRules（始终在 prosePlugins 之后）之前
     .use(enterSplitGuardPlugin)
 
   if (documentChangePlugin) editor = editor.use(documentChangePlugin)
   editorInstance = await editor.create()
+
+  // 序列化器修复：接管 remark.stringify 前的 mdast，合并 milkdown 序列化器
+  // moveSpaces 机制拆分的相邻同型 mark（粘贴 **…`*`…** 后切换源码会多出
+  // `**` 的根因，详见 serializer-fix.ts）。getMarkdown / getNodeMarkdown /
+  // listener（自动保存）/ clipboard（复制）都在调用时读取 serializerCtx，
+  // 替换后全部走修复路径。
+  editorInstance.action((ctx) => {
+    const remark = ctx.get(remarkCtx)
+    type StringifyInput = Parameters<typeof remark.stringify>[0]
+    ctx.set(
+      serializerCtx,
+      SerializerState.create(ctx.get(schemaCtx), {
+        stringify: (tree: StringifyInput) => {
+          fixMilkdownMarkSplits(tree)
+          // 标记转义还原：mdast-util-to-markdown / remark-gfm 对 phrasing 中的
+          // * ~ _ 无条件转义，侧翼规则下永不构成定界符的场景按 CommonMark
+          // 规则还原，保证源码往返原样（见 serializer-fix.ts）。
+          // 用户转义痕迹（escaped_literal mark）序列化为占位符 + 字符，
+          // 不会被上面的还原误伤，最后统一替换回反斜杠（escaped-literal.ts）。
+          return restoreEscapes(fixMarkerEscapes(remark.stringify(tree)))
+        },
+      } as unknown as typeof remark)
+    )
+  })
+
+  // GFM 删除线输入规则错配修复：`你~~hao~` 的 `~~` 被拆散错误配对成
+  // strike(~hao) 的根因。详见 strike-through-fix.ts。
+  editorInstance.action((ctx) => fixStrikeThroughInputRule(ctx))
+
+  // 格式类输入规则禁用（case1 修复）：strong/emphasis/inlineCode/strikethrough
+  // 等格式 mark 不再随手动输入触发，格式操作只能通过工具栏、快捷键或源码
+  // 模式。两个根因（markRule 吞 escaped_literal 转义、击键时刻无法预知
+  // intraword 上下文）详见 format-input-rules-off.ts。须在
+  // fixStrikeThroughInputRule 之后执行（删除线正则已被替换）。
+  editorInstance.action((ctx) => disableFormatInputRules(ctx))
 
   // Enhance clipboard with inline styles for rich text paste (e.g. WeChat)
   root.addEventListener('copy', enhanceClipboard)
@@ -1633,6 +2025,14 @@ export async function createEditor(
     })
   })
 
+  // 初次启动即捕获光标：wysiwyg 界面就绪即可直接输入，无需先点击页面
+  // （新建标签页的 plus 按钮已有同样逻辑，见 main.ts 的 focusEditor）。
+  // 延迟一拍等初始渲染 settle；启动期若排队的文件打开改写文档
+  // （replaceAll 只派发事务），焦点不会被夺走。
+  setTimeout(() => {
+    getEditorView()?.focus()
+  }, 50)
+
   return editorInstance
 }
 
@@ -1660,14 +2060,12 @@ function toggleTaskListItem(e: MouseEvent): void {
   })
 }
 
-// 去掉 * 和 ~ 前的反斜杠转义。
-// CommonMark 的 safe() 会把 text 节点里的 * / ~ 转义为 \* / \~，
-// 但在 ColaMD 中这些几乎都是「被错误转义的格式标记」（如 **@.x.@**
-// 因侧翼规则未被识别而留在 text 节点里）。统一还原，避免源码往返后
-// 语法失效。只去 * / ~ 前的反斜杠，不影响 \\、\(、\[ 等其他转义。
-function unescapeMarkers(markdown: string): string {
-  return markdown.replace(/\\([*~])/g, '$1')
-}
+// 去掉 * 和 ~ 前的反斜杠转义：仅供「源码揭示」显示口径（syntax-reveal.ts
+// 有独立副本）。序列化输出（getMarkdown / clipboard）与解析输入
+// （setMarkdown）一律不做还原——\* / \~ 转义是语义保真的正确形态，
+// 历史上「ColaMD 残留格式标记被错误转义」的场景已由 remarkResidualEmphasis
+// 在解析层修复（residual-emphasis.ts），全局还原反而会把用户书写的
+// 真转义（\*普通星号\*）吃掉，字面 * 重新解析变成斜体。
 
 export function getMarkdown(): string {
   if (!editorInstance) return ''
@@ -1677,7 +2075,7 @@ export function getMarkdown(): string {
     const view = ctx.get(editorViewCtx)
     markdown = serializer(view.state.doc)
   })
-  return unescapeMarkers(markdown)
+  return markdown
 }
 
 export function setMarkdown(content: string, flushHistory = false): void {
@@ -1685,8 +2083,9 @@ export function setMarkdown(content: string, flushHistory = false): void {
   // flush=true rebuilds the editor state, which also empties the undo stack.
   // Used when the document identity changes (file switch, new file, external
   // reload), so undo can never reach into a different document's content.
-  const cleaned = unescapeMarkers(content)
-  editorInstance.action(replaceAll(cleaned, flushHistory))
+  // content 原样解析：外部文件中的 \* 等转义是用户的字面字符语义，
+  // 不做任何还原（入口还原会把真转义变成格式标记，语义损坏）。
+  editorInstance.action(replaceAll(content, flushHistory))
 }
 
 export function getEditorView(): EditorView | null {
@@ -1707,7 +2106,7 @@ export function parseMarkdownToNodes(content: string): ProseMirrorNode[] {
   const nodes: ProseMirrorNode[] = []
   editorInstance.action((ctx) => {
     const parser = ctx.get(parserCtx)
-    const doc = parser(unescapeMarkers(content))
+    const doc = parser(content)
     doc.content.forEach((child) => { nodes.push(child) })
   })
   return nodes
@@ -1727,7 +2126,7 @@ export function serializeNodeToMarkdown(node: ProseMirrorNode): string {
     const doc = view.state.schema.topNodeType.create(null, node.content)
     markdown = serializer(doc)
   })
-  return unescapeMarkers(markdown).replace(/\n$/, '')
+  return markdown.replace(/\n$/, '')
 }
 
 // Put the caret in the document without touching its content. A brand-new tab

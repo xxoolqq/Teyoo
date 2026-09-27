@@ -5,6 +5,7 @@ import { join, basename, dirname, extname, isAbsolute, resolve, relative } from 
 import { fileURLToPath, pathToFileURL } from 'url'
 import { appendFile, readFile, writeFile, readdir, copyFile, mkdir, stat } from 'fs/promises'
 import { watch, FSWatcher, existsSync, readdirSync, readFileSync, writeFileSync, statSync } from 'fs'
+import { getUserSetting, getUserSettingByPath, setUserSetting, setUserSettingBatch } from './user-setting'
 
 const startupStartedAt = performance.now()
 const startupTraceEnabled = process.env.COLAMD_STARTUP_TRACE === '1'
@@ -953,16 +954,32 @@ ipcMain.handle('reveal-file', (event) => {
   }
 })
 
+// 偏好设置「启动 → 打开指定文件夹」的目标：只有选中该启动项、路径非空且
+// 目录仍然存在时才作为「文件 → 打开」对话框的默认位置（否则沿用系统记忆）。
+function preferredOpenFolder(): string | null {
+  if (getUserSettingByPath<string>('general.launchOnOpen') !== 'folder') return null
+  const folder = getUserSettingByPath<string>('general.launchFolder')
+  if (!folder) return null
+  try {
+    return statSync(folder).isDirectory() ? folder : null
+  } catch {
+    return null
+  }
+}
+
 ipcMain.handle('open-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
+  const startFolder = preferredOpenFolder()
   const result = await dialog.showOpenDialog(win, {
     filters: [
       { name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mkd'] },
       { name: 'Text', extensions: ['txt'] },
       { name: 'All Files', extensions: ['*'] }
     ],
-    properties: ['openFile']
+    properties: ['openFile'],
+    // 指定了文件夹：对话框（含其文件列表）直接落在该文件夹里
+    ...(startFolder ? { defaultPath: startFolder } : {})
   })
   if (result.canceled || result.filePaths.length === 0) return null
 
@@ -1161,7 +1178,7 @@ ipcMain.handle('save-file-as', async (event, content: string, expectedPath?: str
   return ok ? result.filePath : null
 })
 
-ipcMain.handle('export-docx', async (event, content: unknown) => {
+ipcMain.handle('export-docx', async (event, content: unknown, formulaEngine?: unknown) => {
   const win = getWinFromEvent(event)
   if (!win || typeof content !== 'string') return false
   win.show()
@@ -1177,7 +1194,14 @@ ipcMain.handle('export-docx', async (event, content: unknown) => {
   if (result.canceled || !result.filePath) return false
   try {
     const { markdownToDocx } = await import('./docx-export')
-    await writeFile(result.filePath, await markdownToDocx({ content, sourcePath: getState(win).filePath }))
+    // 渲染端传来的偏好是显示名 'Temml' / 'MathJax'，映射成注册表 id
+    // （'temml' / 'mathjax'）；渲染端没传时 fallback 读主进程 userSetting，
+    // 这样即使渲染端没参与偏好管理（如旧版本）也能正常按偏好导出。
+    const displayName = typeof formulaEngine === 'string'
+      ? formulaEngine
+      : getUserSettingByPath<string>('export.formulaEngine') ?? 'Temml'
+    const formulaConverter = displayName === 'MathJax' ? 'mathjax' : 'temml'
+    await writeFile(result.filePath, await markdownToDocx({ content, sourcePath: getState(win).filePath, formulaConverter }))
     shell.showItemInFolder(result.filePath)
     return true
   } catch (error) {
@@ -1190,6 +1214,78 @@ ipcMain.handle('export-docx', async (event, content: unknown) => {
     })
     return false
   }
+})
+
+// 导入 .docx 文档 → Markdown。主进程负责弹文件对话框 + 调用 mammoth 转换，
+// 转换结果通过 file-opened 事件发给 renderer，与普通 .md 打开走同一条渲染链。
+ipcMain.handle('import-docx', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  win.show()
+  win.focus()
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('导入 Word 文档', 'Import Word document'),
+    buttonLabel: uiText('导入', 'Import'),
+    filters: [
+      { name: 'Word Document', extensions: ['docx'] },
+    ],
+    properties: ['openFile'],
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  const filePath = result.filePaths[0]
+  try {
+    const { docxToMarkdown } = await import('./docx-import')
+    const imageFormulaMode = getUserSettingByPath<string>('markdown.imageFormula')
+    const { markdown, warnings } = await docxToMarkdown(filePath, {
+      imageFormulaOcr: imageFormulaMode === 'ocr',
+    })
+    if (warnings.length > 0) {
+      console.warn('[docx-import] warnings:', warnings)
+    }
+    return { path: filePath, content: markdown }
+  } catch (error) {
+    console.error('Word import failed', error)
+    await dialog.showMessageBox(win, {
+      type: 'error',
+      buttons: [uiText('好', 'OK')],
+      message: uiText('无法导入 Word 文档', 'Could not import the Word document'),
+      detail: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+})
+
+// 偏好设置「打开指定文件夹」的「浏览」：选一个目录，返回绝对路径。
+ipcMain.handle('pick-directory', async (event, current?: unknown) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  const start = typeof current === 'string' && current.length > 0 ? current : undefined
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('选择文件夹', 'Choose Folder'),
+    buttonLabel: uiText('选择文件夹', 'Choose Folder'),
+    properties: ['openDirectory', 'createDirectory'],
+    ...(start ? { defaultPath: start } : {})
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
+
+// 图片模态框的「浏览」按钮：打开系统文件对话框选一张本地图片，
+// 返回绝对路径（渲染端填入 src，插入模式下随即插入）。
+ipcMain.handle('pick-image-file', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('选择图片', 'Choose Image'),
+    buttonLabel: uiText('选择', 'Choose'),
+    properties: ['openFile'],
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
 })
 
 ipcMain.handle('export-image', async (event, snapshot: unknown, preset: unknown) => {
@@ -1248,6 +1344,25 @@ ipcMain.handle('export-image', async (event, snapshot: unknown, preset: unknown)
   }
 })
 
+// 打印用样式（导出 PDF 与打印预览共用）：主题背景跟着页面走，编辑区铺满
+// 内容不再留内边距/内部滚动。插入后必须由调用方 removeInsertedCSS 撤销。
+async function insertPrintCss(win: BrowserWindow): Promise<string> {
+  const background = await win.webContents.executeJavaScript('getComputedStyle(document.body).backgroundColor') as string
+  return await win.webContents.insertCSS(
+    `@media print {
+      /* The margins are the page's, so they repeat, and the page carries the
+         theme background: without it the margin area stays paper white and a
+         warm or dark theme ends up with a bright frame around every page. */
+      @page { margin: 20mm 18mm; background: ${background}; }
+      html, body, #editor { height: auto !important; overflow: visible !important; background: ${background} !important; }
+      #editor { margin: 0 !important; padding: 0 !important; }
+      #editor .ProseMirror { min-height: auto !important; }
+    }`
+  )
+}
+
+const PRINT_PDF_OPTIONS = { margins: { top: 0, bottom: 0, left: 0, right: 0 }, printBackground: true, pageSize: 'A4' } as const
+
 ipcMain.handle('export-pdf', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return false
@@ -1261,24 +1376,9 @@ ipcMain.handle('export-pdf', async (event) => {
   if (result.canceled || !result.filePath) return false
 
   try {
-    const background = await win.webContents.executeJavaScript('getComputedStyle(document.body).backgroundColor') as string
-    const cssKey = await win.webContents.insertCSS(
-      `@media print {
-        /* The margins are the page's, so they repeat, and the page carries the
-           theme background: without it the margin area stays paper white and a
-           warm or dark theme ends up with a bright frame around every page. */
-        @page { margin: 20mm 18mm; background: ${background}; }
-        html, body, #editor { height: auto !important; overflow: visible !important; background: ${background} !important; }
-        #editor { margin: 0 !important; padding: 0 !important; }
-        #editor .ProseMirror { min-height: auto !important; }
-      }`
-    )
+    const cssKey = await insertPrintCss(win)
     try {
-      const pdfData = await win.webContents.printToPDF({
-        margins: { top: 0, bottom: 0, left: 0, right: 0 },
-        printBackground: true,
-        pageSize: 'A4'
-      })
+      const pdfData = await win.webContents.printToPDF(PRINT_PDF_OPTIONS)
       await writeFile(result.filePath, pdfData)
       return true
     } finally {
@@ -1287,6 +1387,59 @@ ipcMain.handle('export-pdf', async (event) => {
   } catch {
     return false
   }
+})
+
+// 打印：直接开原生打印对话框。@media print（base.css）已把标题栏/工具栏/
+// 面板等界面元素隐藏，纸上只剩正文。
+function printWindow(win: BrowserWindow): boolean {
+  try {
+    win.webContents.print()
+    return true
+  } catch (error) {
+    console.error('Print failed', error)
+    return false
+  }
+}
+
+// 打印预览：Electron 没有内建预览窗口，先按打印样式生成 PDF 到临时目录，
+// 再交给系统 PDF 阅读器打开（阅读器自带打印预览）。
+async function printPreviewWindow(win: BrowserWindow): Promise<boolean> {
+  try {
+    const cssKey = await insertPrintCss(win)
+    let filePath = ''
+    try {
+      const pdfData = await win.webContents.printToPDF(PRINT_PDF_OPTIONS)
+      const dir = join(app.getPath('temp'), 'teyoo')
+      await mkdir(dir, { recursive: true })
+      // 名字带时间戳：系统阅读器可能仍占用上次预览的 PDF，覆盖会失败
+      filePath = join(dir, `${suggestFileName(win) ?? 'preview'}-${Date.now()}.pdf`)
+      await writeFile(filePath, pdfData)
+    } finally {
+      await win.webContents.removeInsertedCSS(cssKey)
+    }
+    if (!filePath) return false
+    await shell.openPath(filePath)
+    return true
+  } catch (error) {
+    console.error('Print preview failed', error)
+    return false
+  }
+}
+
+// 菜单「打印 / 打印预览」与主进程 IPC 共用上面两个实现：菜单项没有 event，
+// 取当前聚焦窗口（自定义顶部菜单栏弹出的原生子菜单也指向本窗口）。
+function focusedWindow(): BrowserWindow | null {
+  return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null
+}
+
+ipcMain.handle('print', (event) => {
+  const win = getWinFromEvent(event)
+  return win ? printWindow(win) : false
+})
+
+ipcMain.handle('print-preview', async (event) => {
+  const win = getWinFromEvent(event)
+  return win ? await printPreviewWindow(win) : false
 })
 
 function escapeHTML(value: string): string {
@@ -1558,7 +1711,7 @@ ipcMain.handle('popup-app-menu', (event) => {
 // 顶部五个一级标签（文件/编辑/视图/主题/帮助）由 renderer 绘制，二级菜单仍弹出
 // 原生菜单：复用全部 accelerator / checkbox / 动态子菜单（最近文件、主题）。
 // buildMenu 每次重建后按 key 保存当前顶层 MenuItem 引用。
-type MenubarKey = 'file' | 'edit' | 'format' | 'font' | 'fontSize' | 'view' | 'theme' | 'help'
+type MenubarKey = 'file' | 'edit' | 'format' | 'insert' | 'font' | 'fontSize' | 'view' | 'theme' | 'print' | 'help'
 let menubarItems: Partial<Record<MenubarKey, Electron.MenuItem>> = {}
 
 // renderer 拉取当前界面语言下的五个标签文本
@@ -1601,6 +1754,21 @@ ipcMain.handle('menubar-popup', (event, key: unknown, x: unknown, y: unknown) =>
 })
 
 ipcMain.handle('get-language', () => getPreferredLanguage())
+
+// ─── 用户偏好设置 IPC ────────────────────────────────────────────────────
+
+ipcMain.handle('get-preferences', () => getUserSetting())
+
+ipcMain.handle('set-preference', (_event, key: unknown, value: unknown) => {
+  if (typeof key !== 'string') return false
+  return setUserSetting(key, value)
+})
+
+ipcMain.handle('set-preferences-batch', (_event, changes: unknown) => {
+  if (!changes || typeof changes !== 'object') return false
+  setUserSettingBatch(changes as Record<string, unknown>)
+  return true
+})
 
 // Menu — targets the focused window
 
@@ -1706,13 +1874,21 @@ function buildMenu(): void {
   const preferredCheatsheetLanguage = getPreferredCheatsheetLanguage()
   const labels = preferredCheatsheetLanguage === 'zh'
     ? {
-        file: '文件', edit: '编辑', format: '格式', view: '视图', theme: '主题', window: '窗口', help: '帮助',
+        file: '文件', edit: '编辑', format: '格式', insert: '插入', view: '视图', theme: '主题', window: '窗口', help: '帮助',
+        print: '打印', printPage: '打印', printPreview: '打印预览',
         newFile: '新建', open: '打开...', save: '保存', saveAs: '另存为...',
         newTab: '新建标签页', closeTab: '关闭标签页',
         recentOpen: '最近打开', restoreOnLaunch: '启动时打开上次文档', clearRecent: '清除最近记录', noRecent: '没有最近打开的文件',
         exportPDF: '导出 PDF...', exportHTML: '导出 HTML...', exportWord: '导出 Word...', exportImageDesktop: '导出图片（电脑阅读）...', exportImageMobile: '导出图片（手机阅读）...', find: '查找',
+        importDocx: '导入 Word 文档...',
         setDefault: '设置为默认应用...',
         insertFormula: '插入公式', filePanel: '显示 / 隐藏文件列表', sourceMode: '切换 Markdown 源码',
+        // 菜单栏「格式」/「插入」里与工具栏一一对应的功能项
+        emphDot: '字下着重号', subscript: '下标', superscript: '上标', highlight: '高亮', taskList: '任务列表',
+        quote: '引用块', hr: '分割线', longUnderscore: '长下划线', longBlank: '长空白',
+        circledSup: '带圈序号…', pinyin: '拼音…', tianzi: '田字格…',
+        image: '图片…', table: '表格…', subblock: '子块…', cols: '分栏…',
+        latexFormula: 'LaTex公式…', bulletList: '无序列表', orderedList: '有序列表',
         light: '浅色', dark: '深色', elegant: '雅致',
         sepia: '羊皮纸', notion: '简白', bear: '熊红', writer: '作家',
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
@@ -1722,6 +1898,7 @@ function buildMenu(): void {
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
         actualSize: '实际大小', zoomIn: '放大', zoomOut: '缩小', fullscreen: '切换全屏',
+        devTools: '开发者工具',
         fontSettings: '编辑器字体…',
         toolbar: '工具栏',
         language: '界面语言', chinese: '中文', english: 'English',
@@ -1729,13 +1906,21 @@ function buildMenu(): void {
         minimize: '最小化', zoom: '缩放', front: '前置全部窗口',
       }
     : {
-        file: 'File', edit: 'Edit', format: 'Format', view: 'View', theme: 'Theme', window: 'Window', help: 'Help',
+        file: 'File', edit: 'Edit', format: 'Format', insert: 'Insert', view: 'View', theme: 'Theme', window: 'Window', help: 'Help',
+        print: 'Print', printPage: 'Print', printPreview: 'Print Preview',
         newFile: 'New', open: 'Open...', save: 'Save', saveAs: 'Save As...',
         newTab: 'New Tab', closeTab: 'Close Tab',
         recentOpen: 'Open Recent', restoreOnLaunch: 'Reopen last document at launch', clearRecent: 'Clear Recent', noRecent: 'No recent files',
         exportPDF: 'Export PDF...', exportHTML: 'Export HTML...', exportWord: 'Export Word...', exportImageDesktop: 'Export Image (Desktop)...', exportImageMobile: 'Export Image (Mobile)...', find: 'Find',
+        importDocx: 'Import Word Document...',
         setDefault: 'Set as Default...',
         insertFormula: 'Insert Formula', filePanel: 'Show / Hide File List', sourceMode: 'Toggle Markdown Source',
+        // Format / Insert menu counterparts of the toolbar buttons
+        emphDot: 'Emphasis Dot', subscript: 'Subscript', superscript: 'Superscript', highlight: 'Highlight', taskList: 'Task List',
+        quote: 'Blockquote', hr: 'Horizontal Rule', longUnderscore: 'Long Underscore', longBlank: 'Long Blank',
+        circledSup: 'Circled Number…', pinyin: 'Pinyin…', tianzi: 'Tianzi Grid…',
+        image: 'Image…', table: 'Table…', subblock: 'Sub-block…', cols: 'Columns…',
+        latexFormula: 'LaTeX Formula…', bulletList: 'Bullet List', orderedList: 'Ordered List',
         light: 'Light', dark: 'Dark', elegant: 'Elegant',
         sepia: 'Sepia', notion: 'Notion', bear: 'Bear', writer: 'Writer',
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
@@ -1745,6 +1930,7 @@ function buildMenu(): void {
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
         actualSize: 'Actual Size', zoomIn: 'Zoom In', zoomOut: 'Zoom Out', fullscreen: 'Toggle Full Screen',
+        devTools: 'Toggle Developer Tools',
         fontSettings: 'Editor Font…',
         toolbar: 'Toolbar',
         language: 'Language', chinese: '中文', english: 'English',
@@ -1814,6 +2000,10 @@ function buildMenu(): void {
           label: labels.open,
           accelerator: 'CmdOrCtrl+O',
           click: () => sendToFocused('menu-open')
+        },
+        {
+          label: labels.importDocx,
+          click: () => sendToFocused('menu-import-docx')
         },
         {
           label: labels.recentOpen,
@@ -1899,15 +2089,12 @@ function buildMenu(): void {
         { label: labels.paste, role: 'paste' },
         { label: labels.selectAll, role: 'selectAll' },
         { type: 'separator' },
+        // 「插入公式」原在这里，已移到「插入 → LaTex公式」（避免重复的
+        // CmdOrCtrl+Shift+E 快捷键；该快捷键现由插入菜单接管）。
         {
           label: labels.find,
           accelerator: 'CmdOrCtrl+F',
           click: () => sendToFocused('editor:search')
-        },
-        {
-          label: labels.insertFormula,
-          accelerator: 'CmdOrCtrl+Shift+E',
-          click: () => sendToFocused('editor:math')
         }
       ]
     },
@@ -1915,13 +2102,49 @@ function buildMenu(): void {
       // #58: discoverable format shortcuts; the menu is the documentation.
       label: labels.format,
       submenu: [
+        // 填空 / 标记类排在最前（教学场景高频）：长下划线、长空白、上标、下标、高亮
+        { label: labels.longUnderscore, click: () => sendToFocused('editor:format', 'longUnderscore') },
+        { label: labels.longBlank, click: () => sendToFocused('editor:format', 'longBlank') },
+        { type: 'separator' },
+        { label: labels.superscript, click: () => sendToFocused('editor:format', 'superscript') },
+        { label: labels.subscript, click: () => sendToFocused('editor:format', 'subscript') },
+        // ==text== 高亮（highlight mark，见 renderer/editor/highlight.ts）
+        { label: labels.highlight, click: () => sendToFocused('editor:format', 'highlight') },
+        { type: 'separator' },
         { label: preferredCheatsheetLanguage === 'zh' ? '加粗' : 'Bold', accelerator: 'CmdOrCtrl+B', click: () => sendToFocused('editor:format', 'bold') },
         { label: preferredCheatsheetLanguage === 'zh' ? '斜体' : 'Italic', accelerator: 'CmdOrCtrl+I', click: () => sendToFocused('editor:format', 'italic') },
+        { label: preferredCheatsheetLanguage === 'zh' ? '下划线' : 'Underline', accelerator: 'CmdOrCtrl+U', click: () => sendToFocused('editor:format', 'underline') },
         { label: preferredCheatsheetLanguage === 'zh' ? '行内代码' : 'Inline Code', accelerator: 'CmdOrCtrl+E', click: () => sendToFocused('editor:format', 'inlineCode') },
         { label: preferredCheatsheetLanguage === 'zh' ? '删除线' : 'Strikethrough', accelerator: 'CmdOrCtrl+Shift+X', click: () => sendToFocused('editor:format', 'strikethrough') },
-        { label: preferredCheatsheetLanguage === 'zh' ? '链接（网址取自剪贴板）' : 'Link (URL from clipboard)', accelerator: 'CmdOrCtrl+K', click: () => sendToFocused('editor:format', 'link') },
-        { label: preferredCheatsheetLanguage === 'zh' ? '无序列表' : 'Bullet List', accelerator: 'CmdOrCtrl+Shift+8', click: () => sendToFocused('editor:format', 'bulletList') },
-        { label: preferredCheatsheetLanguage === 'zh' ? '有序列表' : 'Ordered List', accelerator: 'CmdOrCtrl+Shift+7', click: () => sendToFocused('editor:format', 'orderedList') }
+        { label: preferredCheatsheetLanguage === 'zh' ? '链接' : 'Link', accelerator: 'CmdOrCtrl+K', click: () => sendToFocused('editor:format', 'link') },
+        // 以下是工具栏里其余的块级格式项：全部走同一条命令管线
+        // （renderer 的 runToolbarCommand），行为与工具栏按钮完全一致。
+        // 「插入」类项目（着重号、公式、图片、拼音、表格、带圈序号、田字格、
+        // 子块、分栏、任务列表、列表）已移到独立的「插入」菜单。
+        { type: 'separator' },
+        { label: labels.quote, click: () => sendToFocused('editor:format', 'quote') },
+        { label: labels.hr, click: () => sendToFocused('editor:format', 'hr') }
+      ]
+    },
+    {
+      // 「插入」：往文档里加新内容的项目（工具栏对应按钮的同一条命令管线）。
+      label: labels.insert,
+      submenu: [
+        { label: labels.emphDot, click: () => sendToFocused('editor:format', 'emphDot') },
+        { type: 'separator' },
+        { label: labels.latexFormula, accelerator: 'CmdOrCtrl+Shift+E', click: () => sendToFocused('editor:format', 'math') },
+        { label: labels.image, click: () => sendToFocused('editor:format', 'image') },
+        { label: labels.pinyin, click: () => sendToFocused('editor:format', 'pinyin') },
+        { label: labels.table, click: () => sendToFocused('editor:format', 'table') },
+        { label: labels.circledSup, click: () => sendToFocused('editor:format', 'circledSup') },
+        { label: labels.tianzi, click: () => sendToFocused('editor:format', 'tianzi') },
+        { type: 'separator' },
+        { label: labels.subblock, click: () => sendToFocused('editor:format', 'subblock') },
+        { label: labels.cols, click: () => sendToFocused('editor:format', 'cols') },
+        { type: 'separator' },
+        { label: labels.taskList, click: () => sendToFocused('editor:format', 'taskList') },
+        { label: labels.bulletList, accelerator: 'CmdOrCtrl+Shift+8', click: () => sendToFocused('editor:format', 'bulletList') },
+        { label: labels.orderedList, accelerator: 'CmdOrCtrl+Shift+7', click: () => sendToFocused('editor:format', 'orderedList') }
       ]
     },
     {
@@ -1932,10 +2155,16 @@ function buildMenu(): void {
         { label: '楷体 KaiTi', click: () => sendToFocused('editor:font', { family: 'KaiTi' }) },
         { label: '仿宋 FangSong', click: () => sendToFocused('editor:font', { family: 'FangSong' }) },
         { label: '微软雅黑 Microsoft YaHei', click: () => sendToFocused('editor:font', { family: 'Microsoft YaHei' }) },
+        // 开源替代字体：方正书宋→思源宋体、方正黑体→思源黑体、方正楷体→霞鹜文楷
+        { label: '思源宋体 Noto Serif SC', click: () => sendToFocused('editor:font', { family: 'Noto Serif SC' }) },
+        { label: '思源黑体 Noto Sans SC', click: () => sendToFocused('editor:font', { family: 'Noto Sans SC' }) },
+        { label: '霞鹜文楷 LXGW WenKai', click: () => sendToFocused('editor:font', { family: 'LXGW WenKai' }) },
         { type: 'separator' as const },
         { label: 'Times New Roman', click: () => sendToFocused('editor:font', { family: 'Times New Roman' }) },
         { label: 'Arial', click: () => sendToFocused('editor:font', { family: 'Arial' }) },
         { label: 'Courier New', click: () => sendToFocused('editor:font', { family: 'Courier New' }) },
+        // 数学字体：Cambria Math 的开源替代
+        { label: 'STIX Two Math', click: () => sendToFocused('editor:font', { family: 'STIX Two Math' }) },
         { type: 'separator' as const },
         { label: labels.clearFont, accelerator: 'CmdOrCtrl+Space', click: () => sendToFocused('editor:font', { clear: true }) },
       ]
@@ -1984,7 +2213,8 @@ function buildMenu(): void {
           ]
         },
         { type: 'separator' },
-        { label: labels.fullscreen, role: 'togglefullscreen' }
+        { label: labels.fullscreen, role: 'togglefullscreen' },
+        { label: labels.devTools, role: 'toggleDevTools' }
       ]
     },
     {
@@ -1999,6 +2229,21 @@ function buildMenu(): void {
     // the menu speaks the interface language like every other one (an English
     // "Window" sat between 主题 and 帮助 until 2026-09-15).
     ...(isMac ? [{ role: 'windowMenu' as const, label: labels.window }] : []),
+    {
+      label: labels.print,
+      submenu: [
+        // 「打印预览」已移除：Electron 没有内建预览窗口，原来的实现只是生成
+        // PDF 再交给系统阅读器，用处不大。printPreviewWindow 保留以备后用。
+        {
+          label: labels.printPage,
+          accelerator: 'CmdOrCtrl+P',
+          click: () => {
+            const win = focusedWindow()
+            if (win) printWindow(win)
+          }
+        }
+      ]
+    },
     {
       label: labels.help,
       submenu: [
@@ -2045,10 +2290,12 @@ function buildMenu(): void {
     file: menu.items.find((item) => item.label === labels.file),
     edit: menu.items.find((item) => item.label === labels.edit),
     format: menu.items.find((item) => item.label === labels.format),
+    insert: menu.items.find((item) => item.label === labels.insert),
     font: menu.items.find((item) => item.label === labels.font),
     fontSize: menu.items.find((item) => item.label === labels.fontSize),
     view: menu.items.find((item) => item.label === labels.view),
     theme: menu.items.find((item) => item.label === labels.theme),
+    print: menu.items.find((item) => item.label === labels.print),
     help: menu.items.find((item) => item.label === labels.help),
   }
   // 原生菜单关闭时通知 renderer 取消标签高亮

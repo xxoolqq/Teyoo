@@ -43,7 +43,19 @@ export interface ElectronAPI {
   saveFileAs: (content: string, expectedPath?: string) => Promise<string | null>
   exportPDF: () => Promise<boolean>
   exportHTML: (snapshot: { content: string; html: string; styles: string; bodyClass: string }) => Promise<boolean>
-  exportDOCX: (content: string) => Promise<boolean>
+  exportDOCX: (content: string, formulaEngine?: string) => Promise<boolean>
+  // 导入 .docx → Markdown（主进程弹对话框 + mammoth/dwml-ts 转换）
+  importDocx: () => Promise<{ path: string; content: string } | null>
+  // 图片模态框「浏览」：主进程弹系统文件对话框，返回图片绝对路径
+  pickImageFile: () => Promise<string | null>
+  // 偏好设置「打开指定文件夹」：选目录，返回绝对路径
+  pickDirectory: (current?: string) => Promise<string | null>
+  // 用户偏好设置（主进程 userSetting.json，经 IPC 访问）
+  getPreferences: () => Promise<Record<string, unknown>>
+  setPreference: (key: string, value: unknown) => Promise<boolean>
+  setPreferencesBatch: (changes: Record<string, unknown>) => Promise<boolean>
+  onPreferencesChanged: (callback: (payload: { key: string; value: unknown }) => void) => void
+  onPreferencesBatchChanged: (callback: (payload: { changes: Record<string, unknown> }) => void) => void
   exportImage: (snapshot: ImageExportSnapshot, preset: ImageExportPreset) => Promise<boolean>
   getLanguage: () => Promise<'zh' | 'en'>
   onLanguageChanged: (callback: (language: 'zh' | 'en') => void) => void
@@ -70,6 +82,7 @@ export interface ElectronAPI {
   onMenuExportPDF: (callback: () => void) => void
   onMenuExportHTML: (callback: () => void) => void
   onMenuExportDOCX: (callback: () => void) => void
+  onMenuImportDocx: (callback: () => void) => void
   onMenuExportImage: (callback: (preset: ImageExportPreset) => void) => void
   onSetTheme: (callback: (theme: string) => void) => void
   onSetCustomCSS: (callback: (css: string) => void) => void
@@ -127,7 +140,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFileAs: (content: string, expectedPath?: string) => ipcRenderer.invoke('save-file-as', content, expectedPath),
   exportPDF: () => ipcRenderer.invoke('export-pdf'),
   exportHTML: (snapshot: { content: string; html: string; styles: string; bodyClass: string }) => ipcRenderer.invoke('export-html', snapshot),
-  exportDOCX: (content: string) => ipcRenderer.invoke('export-docx', content),
+  exportDOCX: (content: string, formulaEngine?: string) => ipcRenderer.invoke('export-docx', content, formulaEngine),
+  importDocx: () => ipcRenderer.invoke('import-docx') as Promise<{ path: string; content: string } | null>,
+  pickImageFile: () => ipcRenderer.invoke('pick-image-file') as Promise<string | null>,
+  pickDirectory: (current?: string) => ipcRenderer.invoke('pick-directory', current) as Promise<string | null>,
+  getPreferences: () => ipcRenderer.invoke('get-preferences'),
+  setPreference: (key: string, value: unknown) => ipcRenderer.invoke('set-preference', key, value),
+  setPreferencesBatch: (changes: Record<string, unknown>) => ipcRenderer.invoke('set-preferences-batch', changes),
+  onPreferencesChanged: (callback: (payload: { key: string; value: unknown }) => void) => {
+    ipcRenderer.on('preferences-changed', (_event, payload: { key: string; value: unknown }) => callback(payload))
+  },
+  onPreferencesBatchChanged: (callback: (payload: { changes: Record<string, unknown> }) => void) => {
+    ipcRenderer.on('preferences-batch-changed', (_event, payload: { changes: Record<string, unknown> }) => callback(payload))
+  },
   exportImage: (snapshot: ImageExportSnapshot, preset: ImageExportPreset) => ipcRenderer.invoke('export-image', snapshot, preset),
   getLanguage: () => ipcRenderer.invoke('get-language') as Promise<'zh' | 'en'>,
   onLanguageChanged: (callback: (language: 'zh' | 'en') => void) => {
@@ -186,6 +211,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMenuExportDOCX: (callback: () => void) => {
     ipcRenderer.on('menu-export-docx', () => callback())
+  },
+  onMenuImportDocx: (callback: () => void) => {
+    ipcRenderer.on('menu-import-docx', () => callback())
   },
   onMenuExportImage: (callback: (preset: ImageExportPreset) => void) => {
     ipcRenderer.on('menu-export-image', (_event, preset) => {

@@ -1,0 +1,43 @@
+diff --git a/node_modules/mdast-util-gfm-autolink-literal/lib/index.js b/node_modules/mdast-util-gfm-autolink-literal/lib/index.js
+index c5ca771..a6da775 100644
+--- a/node_modules/mdast-util-gfm-autolink-literal/lib/index.js
++++ b/node_modules/mdast-util-gfm-autolink-literal/lib/index.js
+@@ -49,29 +49,15 @@ export function gfmAutolinkLiteralFromMarkdown() {
+  */
+ export function gfmAutolinkLiteralToMarkdown() {
+   return {
+-    unsafe: [
+-      {
+-        character: '@',
+-        before: '[+\\-.\\w]',
+-        after: '[\\-.\\w]',
+-        inConstruct,
+-        notInConstruct
+-      },
+-      {
+-        character: '.',
+-        before: '[Ww]',
+-        after: '[\\-.\\w]',
+-        inConstruct,
+-        notInConstruct
+-      },
+-      {
+-        character: ':',
+-        before: '[ps]',
+-        after: '\\/',
+-        inConstruct,
+-        notInConstruct
+-      }
+-    ]
++    // ColaMD patch: removed the original 3 unsafe rules for '@', '.', ':'.
++    //
++    // They escaped `foo\@bar.com`, `www\.x.com`, `http\://x.com` in text —
++    // but the from-markdown side (transformGfmAutolinkLiterals) is a
++    // post-parse find-and-replace that runs on text VALUES (where the
++    // backslashes are already consumed by the escape parser), so these
++    // escapes can never prevent linkification. They were pure source noise
++    // and broke ColaMD's character-fidelity round-trip guarantee.
++    unsafe: []
+   }
+ }
+ 

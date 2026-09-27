@@ -95,7 +95,7 @@ function splitLines(raw: string): Line[] {
 const RE_SUB_START = /^[ ]{0,3}@(box)?(#(left|center|right))?[ ]*$/
 const RE_COLS_START = /^[ ]{0,3}@@cols[ ]+(\d+|\d+:\d+)[ ]*$/
 const RE_COLS_END = /^[ ]{0,3}@@[ ]*$/
-/** 代码围栏行：0~3 空格 + 至少 3 个 ` 或 ~ */
+/** 代码围栏行前缀：0~3 空格 + 至少 3 个 ` 或 ~（由 FenceTracker 使用） */
 const RE_FENCE = /^[ ]{0,3}(`{3,}|~{3,})/
 
 interface SubStartMatch {
@@ -148,10 +148,45 @@ function matchColsEnd(text: string): { atIndex: number } | null {
   return { atIndex }
 }
 
-/** 返回代码围栏字符（'`' / '~'），非围栏行返回 null */
-function fenceChar(text: string): string | null {
-  const m = RE_FENCE.exec(text)
-  return m ? m[1][0] : null
+/**
+ * CommonMark 口径的代码围栏状态机（行级）。
+ * - 开栏：0~3 空格 + 3+ 个 ` 或 ~（可带信息串；反引号栏的信息串不得含
+ *   反引号，含则整行是普通文本，不是围栏行）。
+ * - 闭栏：与开栏同字符、长度不小于开栏、其后只允许空白（闭栏不得带
+ *   信息串）。长度不足（如 ```` 开、``` 关）或带信息串的行属于围栏
+ *   内容，不闭合。
+ *
+ * 供 scanSub / scanCols / scanRegions 与 font-style/normalize.ts 共用，
+ * 保证全部原始文本扫描器的围栏判定一致。
+ */
+export class FenceTracker {
+  private char: string | null = null
+  private len = 0
+
+  /**
+   * 用一行文本（不含换行符）推进状态机。
+   * 返回该行是否处于围栏语境（开栏行 / 闭栏行 / 围栏内容行）——
+   * 调用方对这类行应跳过子块 / 分栏 / 字体块等语法的识别。
+   */
+  skipLine(text: string): boolean {
+    const m = RE_FENCE.exec(text)
+    if (!m) return this.char !== null
+    const marker = m[1]
+    if (this.char === null) {
+      const info = text.slice(m[0].length)
+      // 反引号栏信息串含反引号 → 整行是普通文本（CommonMark）
+      if (marker[0] === '`' && info.includes('`')) return false
+      this.char = marker[0]
+      this.len = marker.length
+      return true
+    }
+    const rest = text.slice(m[0].length).trim()
+    if (rest === '' && marker[0] === this.char && marker.length >= this.len) {
+      this.char = null
+      this.len = 0
+    }
+    return true
+  }
 }
 
 // ─── 公共缩进去除 ───────────────────────────────────────────────────────────
@@ -248,16 +283,10 @@ function scanSub(
   startIdx: number,
   start: SubStartMatch
 ): ScanSubResult | null {
-  let fence: string | null = null
+  const fence = new FenceTracker()
   for (let j = startIdx + 1; j < lines.length; j++) {
     const line = lines[j]
-    const fc = fenceChar(line.text)
-    if (fc) {
-      if (!fence) fence = fc
-      else if (fence === fc) fence = null
-      continue
-    }
-    if (fence) continue
+    if (fence.skipLine(line.text)) continue
     const end = matchSubEnd(line.text)
     if (!end) continue
     // 命中结束行：内部原文 = 开始行换行之后 → 结束 @ 之前
@@ -308,18 +337,11 @@ function scanCols(
   spec: string
 ): ScanColsResult | null {
   const subs: ColsSub[] = []
-  let fence: string | null = null
+  const fence = new FenceTracker()
   let j = startIdx + 1
   while (j < lines.length) {
     const line = lines[j]
-    const fc = fenceChar(line.text)
-    if (fc) {
-      if (!fence) fence = fc
-      else if (fence === fc) fence = null
-      j += 1
-      continue
-    }
-    if (fence) {
+    if (fence.skipLine(line.text)) {
       j += 1
       continue
     }
@@ -365,18 +387,11 @@ function scanCols(
 export function scanRegions(raw: string): Region[] {
   const lines = splitLines(raw)
   const regions: Region[] = []
-  let fence: string | null = null
+  const fence = new FenceTracker()
   let i = 0
   while (i < lines.length) {
     const line = lines[i]
-    const fc = fenceChar(line.text)
-    if (fc) {
-      if (!fence) fence = fc
-      else if (fence === fc) fence = null
-      i += 1
-      continue
-    }
-    if (fence) {
+    if (fence.skipLine(line.text)) {
       i += 1
       continue
     }

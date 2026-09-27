@@ -118,8 +118,21 @@ function transformChildren(children: any[]): any[] {
       }
       flushContent(contentLines)
     } else {
-      // 递归处理非段落的容器节点（blockquote / subBlock / list_item 等）
+      // 容器节点（list / blockquote / subBlock 等）：
+      // 先按当前栈顶的冒号数尝试剥离被懒延续吞入容器末段的 ::: 结束行
+      //（栈为空时不剥离——无打开的 fontBlock，::: 是字面内容），
+      // 再递归处理容器；容器归位后若剥离成功则立即关闭当前 fontBlock。
+      let closeAfter = false
+      if (stack.length > 0) {
+        closeAfter = stripTrailingEndMarker(child, stack[stack.length - 1].colons)
+      }
       pushChild(transformNode(child))
+      if (closeAfter) {
+        const open = stack.pop()!
+        // 空容器注入空段落，保证光标可进入
+        const kids = open.kids.length > 0 ? open.kids : [{ type: 'paragraph', children: [] }]
+        pushChild({ type: 'fontBlock', family: open.attrs.family, size: open.attrs.size, align: open.attrs.align, children: kids })
+      }
     }
   }
 
@@ -148,6 +161,68 @@ function transformNode(node: any): any {
     return { ...node, children: transformChildren(node.children) }
   }
   return node
+}
+
+// ─── 被容器吞入的结束行剥离 ─────────────────────────────────────────────────
+//
+// CommonMark 的懒延续（lazy continuation）会把 fontBlock 末尾的 ::: 结束行
+// 吞进前一个块容器内部最后一个段落，例如：
+//
+//   :::font {family=黑体 size=12pt}
+//
+//   1. 阅读下文，完成第3－7题。（16分）
+//      :::
+//
+//   「   :::」与列表项之间无空行，被并入列表项的段落文本（"…（16分）\n:::"）。
+//   走 mdast 路径时该 ::: 不再是独立段落，上面的逐行配对在当前递归层看不到
+//   它（容器递归有自己独立的栈），fontBlock 永不闭合 → 回退为字面文本。
+//
+// 处理方式：遇到容器节点且当前栈上有打开的 fontBlock 时，检查容器文档序
+// 最后一个段落的最后一行是否恰好是匹配冒号数的结束标记；是则把该行从段落
+// 文本中剥离（段落因此变空时连同段落移除，空的 listItem/list/blockquote
+// 一并移除），容器处理完后立即关闭 fontBlock。这样「结束行写在容器内」
+// 也能正确闭块，与原始文本上 0~3 空格缩进的书写习惯一致。
+
+/**
+ * 尝试从 container 的文档序最后一个段落中剥离「::: 结束行」。
+ * 仅当该段落的最后一行（mdast 层前导缩进已被 CommonMark 剥离，此处仍
+ * 容忍 0~3 空格以防御性兜底）恰好是 expectColons 个冒号的结束标记时才
+ * 修改内容；不匹配时不做任何修改。
+ * 命中返回 true，否则返回 false。
+ */
+function stripTrailingEndMarker(container: any, expectColons: number): boolean {
+  const children = container?.children
+  if (!Array.isArray(children) || children.length === 0) return false
+  const last = children[children.length - 1]
+  if (last.type === 'paragraph') {
+    const kids = Array.isArray(last.children) ? last.children : []
+    const lastText = kids[kids.length - 1]
+    if (!lastText || lastText.type !== 'text') return false
+    const value = String(lastText.value ?? '')
+    const nl = value.lastIndexOf('\n')
+    const lastLine = nl >= 0 ? value.slice(nl + 1) : value
+    const m = /^[ ]{0,3}(:{3,})\s*$/.exec(lastLine)
+    if (!m || m[1].length !== expectColons) return false
+    const rest = nl >= 0 ? value.slice(0, nl) : ''
+    if (rest.trim() === '') {
+      // 该 text 节点只剩标记行：移除；段落随之变空则整段删除
+      kids.pop()
+      if (kids.length === 0) children.pop()
+    } else {
+      lastText.value = rest
+    }
+    return true
+  }
+  if (!Array.isArray(last.children)) return false
+  if (!stripTrailingEndMarker(last, expectColons)) return false
+  // 递归剥离后，末尾子容器可能变空（如只剩标记行的 listItem）
+  if (
+    last.children.length === 0 &&
+    (last.type === 'listItem' || last.type === 'list' || last.type === 'blockquote')
+  ) {
+    children.pop()
+  }
+  return true
 }
 
 export function remarkFontBlock(): (tree: unknown) => void {

@@ -10,5 +10,4 @@
 export { remarkEmphDot } from './remark'
 export { emphDotStringifyHandler } from './stringify'
 export { emphDotAttr, emphDotSchema } from './schema'
-export { emphDotInputRule } from './input-rule'
 export { emphDotPlugin } from './plugin'

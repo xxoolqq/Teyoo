@@ -14,6 +14,7 @@
 
 import { getEditorView } from './editor'
 import { isChinese, type UiLanguage } from '../ui-language'
+import { toFileUrl } from '../../extensions/image-style/lib'
 
 // 图片节点的全部 attrs（与 image-style/schema.ts 一致，不含 title）
 // title（悬停提示）不在模态框中编辑：编辑模式下保留节点已有 title，
@@ -56,6 +57,7 @@ export class ImageModal {
   private preview: HTMLImageElement
   private previewWrap: HTMLDivElement
   private srcInput: HTMLInputElement
+  private browseButton: HTMLButtonElement
   private convertButton: HTMLButtonElement
   private altInput: HTMLInputElement
   private widthInput: HTMLInputElement
@@ -74,6 +76,8 @@ export class ImageModal {
   private isInsertMode = false
   // Base64 转换进行中标记（防止重复点击）
   private converting = false
+  // 浏览本地文件对话框打开中标记（防止重复点击）
+  private browsing = false
 
   constructor() {
     this.container = document.createElement('div')
@@ -105,12 +109,18 @@ export class ImageModal {
     this.srcInput.type = 'text'
     this.srcInput.className = 'image-modal-input'
     this.srcInput.addEventListener('input', () => this.updatePreview())
+    // 「浏览」：打开系统文件对话框选本地图片，选中后填入 src（插入模式随即插入）
+    this.browseButton = document.createElement('button')
+    this.browseButton.type = 'button'
+    this.browseButton.className = 'image-modal-convert-btn image-modal-browse-btn'
+    this.browseButton.textContent = 'Browse'
+    this.browseButton.addEventListener('click', () => void this.browseLocalFile())
     this.convertButton = document.createElement('button')
     this.convertButton.type = 'button'
     this.convertButton.className = 'image-modal-convert-btn'
     this.convertButton.textContent = 'To Base64'
     this.convertButton.addEventListener('click', () => this.convertToBase64())
-    srcFlex.append(this.srcInput, this.convertButton)
+    srcFlex.append(this.srcInput, this.browseButton, this.convertButton)
     srcRow.col.appendChild(srcFlex)
     modal.appendChild(srcRow.row)
 
@@ -262,7 +272,10 @@ export class ImageModal {
       ? (zh ? '插入图片' : 'Insert Image')
       : (zh ? '编辑图片' : 'Edit Image')
     this.srcInput.placeholder = zh ? '本地路径或 URL' : 'Local path or URL'
-    // 转换按钮文案：转换中时不覆盖（convertToBase64 自行管理）
+    // 按钮文案：转换中/浏览中时不覆盖（各自的管理逻辑自行恢复）
+    if (!this.browsing) {
+      this.browseButton.textContent = zh ? '浏览' : 'Browse'
+    }
     if (!this.converting) {
       this.convertButton.textContent = zh ? '转 Base64' : 'To Base64'
     }
@@ -332,7 +345,44 @@ export class ImageModal {
       return
     }
     this.preview.style.display = ''
-    this.preview.src = src
+    // 本地绝对路径（C:\… 或相对路径）在 <img> 里加载不了，统一转成 file:// URL
+    this.preview.src = toFileUrl(src)
+  }
+
+  /**
+   * 「浏览」按钮：弹系统文件对话框选一张本地图片。
+   * - 填入 src（绝对路径）；alt 为空时用文件名兜底；
+   * - 插入模式：选中即插入并关闭（工具栏入口的预期行为）；
+   * - 编辑模式：只更新 src，等其他参数改完再点「更新」。
+   */
+  private async browseLocalFile(): Promise<void> {
+    if (this.browsing) return
+    const zh = this.currentLanguage === 'zh'
+    this.browsing = true
+    this.browseButton.disabled = true
+    this.browseButton.textContent = zh ? '选择中...' : 'Choosing...'
+    try {
+      const path = await window.electronAPI?.pickImageFile?.()
+      if (!path) {
+        // 用户取消
+        this.flashButton(zh ? '已取消' : 'Cancelled', 1200, this.browseButton)
+        return
+      }
+      this.srcInput.value = path
+      if (!this.altInput.value.trim()) {
+        const base = path.split(/[\\/]/).pop() ?? ''
+        this.altInput.value = base.replace(/\.[^.]+$/, '')
+      }
+      this.updatePreview()
+      if (this.isInsertMode) {
+        this.save()
+        return
+      }
+      this.flashButton(zh ? '已选择' : 'Picked', 1200, this.browseButton)
+    } finally {
+      this.browsing = false
+      this.browseButton.disabled = false
+    }
   }
 
   /**
@@ -432,12 +482,14 @@ export class ImageModal {
     })
   }
 
-  /** 短暂更改按钮文案，超时后恢复为当前语言对应文案。 */
-  private flashButton(text: string, duration = 1500): void {
-    this.convertButton.textContent = text
+  /** 短暂更改按钮文案，超时后恢复为当前语言对应文案（默认作用于转 Base64 按钮）。 */
+  private flashButton(text: string, duration = 1500, btn: HTMLButtonElement = this.convertButton): void {
+    btn.textContent = text
     setTimeout(() => {
       const zh = this.currentLanguage === 'zh'
-      this.convertButton.textContent = zh ? '转 Base64' : 'To Base64'
+      btn.textContent = btn === this.convertButton
+        ? (zh ? '转 Base64' : 'To Base64')
+        : (zh ? '浏览' : 'Browse')
     }, duration)
   }
 

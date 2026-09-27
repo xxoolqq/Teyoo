@@ -5,14 +5,15 @@
 // 具体引擎（KaTeX / MathJax）注册进 registry，由偏好设置运行时切换。
 //
 // 预留扩展点：
-// - MathOutputFormat：MathJax 的输出形态（当前仅实现 mathml，svg / chtml 后续接入）
+// - MathOutputFormat：MathJax 的输出形态（svg 已实现且为默认；chtml 后续接入。
+//   MathML 序列化需求由导出链路 src/main/formula 独立承担，预览端不走）
 // - 导出链路（Word/PDF）的公式转换器独立于本模块，
 //   集成点在 src/main/formula/registry.ts 的 registerFormulaConverter。
 
 export type MathEngineId = 'katex' | 'mathjax'
 
-/** MathJax 输出形态（预留）：mathml 已实现，svg / chtml 后续按需接入 */
-export type MathOutputFormat = 'mathml' | 'svg' | 'chtml'
+/** MathJax 输出形态：svg 已实现且为默认（自绘排版，质量与浏览器无关）；chtml 预留 */
+export type MathOutputFormat = 'svg' | 'chtml'
 
 export interface MathEngine {
   id: MathEngineId

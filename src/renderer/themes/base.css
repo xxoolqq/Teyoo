@@ -377,6 +377,40 @@ body.platform-win #titlebar {
   display: none;
 }
 
+/* 被偏好设置禁用（如未勾选「允许折叠和展开侧边栏的大纲视图」时的文件列表按钮）：
+   可见但明显不可用，悬停提示也不再弹出（disabled 控件不派发鼠标事件）。 */
+#titlebar > button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+/* 「提交」：「显示/隐藏文件列表」按钮左侧的文字按钮（打开提交表单标签页）。
+   特异性必须带上 #titlebar > button，否则共享规则的 width: 28px 胜出——
+   28px 里塞下左右各 10px 内边距后只剩 8px，中文逐字换行成了竖排。
+   外观按设计稿：蓝色实心、圆角、白字 + 上传图标（仅此按钮有填充色，
+   其余标题栏按钮保持无底色）。 */
+#titlebar > button.tab-submit-btn {
+  /* 主题色：整条按钮的蓝色（含 hover 加深）都由这里派生，换色只改一处 */
+  --submit-bg: #3b82f6;
+  --submit-bg-hover: #2f74e0;
+  width: auto;
+  min-width: 28px;
+  padding: 0 12px;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #fff;
+  background: var(--submit-bg);
+  border: none;
+  border-radius: 8px;
+  transition: background .12s ease;
+}
+
+#titlebar > button.tab-submit-btn:hover {
+  background: var(--submit-bg-hover);
+}
+
 /* ─── Typora 式顶部菜单栏 ───────────────────────────────────────────────────
    一行五个一级标签（文件/编辑/视图/主题/帮助），位于行首、标签页之前。
    二级菜单是原生弹出菜单（main 进程控制），这里只负责标签的静态外观与
@@ -390,6 +424,16 @@ body.platform-win #titlebar {
   -webkit-app-region: no-drag;
 }
 
+/* 菜单栏纯黑仅用于浅色主题；深色主题回退为主题前景色，保证可读 */
+body.theme-dark .menubar-item,
+body.theme-solarized-dark .menubar-item,
+body.theme-nord .menubar-item,
+body.theme-gruvbox .menubar-item,
+body.theme-dracula .menubar-item,
+body.theme-midnight .menubar-item {
+  color: var(--text-color);
+}
+
 #app-menubar[hidden] {
   display: none;
 }
@@ -397,7 +441,8 @@ body.platform-win #titlebar {
 .menubar-item {
   border: none;
   background: transparent;
-  color: var(--text-muted);
+  /* 菜单栏文字纯黑（用户要求），hover/active 仍是 --text-color */
+  color: #000;
   font-family: inherit;
   font-size: 12.5px;
   line-height: 1;
@@ -448,7 +493,7 @@ body:has(#source-editor.visible) #toolbar {
 .toolbar-sep {
   flex: none;
   width: 1px;
-  height: 16px;
+  height: 19px;
   margin: 0 5px;
   background: var(--shell-line);
 }
@@ -464,7 +509,8 @@ body:has(#source-editor.visible) #toolbar {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-muted);
+  /* 工具栏图标/文字加深一档（用户要求），hover/active 仍是 --text-color */
+  color: var(--text-secondary);
   cursor: default;
   transition: background 0.12s ease, color 0.12s ease;
 }
@@ -480,10 +526,16 @@ body:has(#source-editor.visible) #toolbar {
   color: var(--text-color);
 }
 
+/* 工具栏图标统一放大（SVG 均带 viewBox，按尺寸无损缩放） */
+.toolbar-btn svg {
+  width: 19px;
+  height: 19px;
+}
+
 /* B / I / S 文字按钮 */
 .toolbar-btn.tb-text {
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 15px;
 }
 
 .toolbar-btn .tb-strike {
@@ -491,18 +543,17 @@ body:has(#source-editor.visible) #toolbar {
   text-decoration-thickness: 1.2px;
 }
 
-/* 段落/标题下拉选择器：比图标宽，显示当前样式名 + 箭头 */
+/* 段落/标题下拉选择器：宽度包裹文字即可 */
 .heading-dropdown {
   position: relative;
 }
 
 .heading-select-btn {
   width: auto;
-  min-width: 76px;
-  padding: 0 8px;
-  gap: 5px;
+  min-width: 0;
+  padding: 0 6px;
   font-size: 12.5px;
-  justify-content: space-between;
+  font-family: 'SimHei', '黑体', sans-serif;
 }
 
 #heading-select-label {
@@ -536,7 +587,77 @@ body:has(#source-editor.visible) #toolbar {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
-.heading-menu[hidden] {
+/* ─── 插入符号面板（Ω 按钮） ─────────────────────────────────────────────── */
+.symbol-dropdown {
+  position: relative;
+}
+
+.tb-omega span {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.symbol-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0; /* 靠工具栏右端，避免超出窗口 */
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+  border-radius: 8px;
+  border: 1px solid var(--shell-line);
+  background: var(--chrome-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.symbol-group-label {
+  padding: 4px 2px 2px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-color);
+  opacity: .55;
+  white-space: nowrap;
+}
+
+.symbol-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 30px);
+  gap: 2px;
+}
+
+.symbol-item {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background .1s ease;
+}
+
+/* 多字符条目（如括号对「〔〕」）：占两列、宽度自适应 */
+.symbol-item.is-wide {
+  grid-column: span 2;
+  width: auto;
+}
+
+.symbol-item:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
+.heading-menu[hidden],
+.symbol-menu[hidden] {
   display: none;
 }
 
@@ -559,10 +680,53 @@ body:has(#source-editor.visible) #toolbar {
   background: color-mix(in srgb, var(--text-color) 9%, transparent);
 }
 
-.heading-menu-item.is-active {
+.heading-menu-item.is-active,
+.font-menu-item.is-active,
+.fontsize-menu-item.is-active {
   color: var(--text-color);
   font-weight: 600;
   background: color-mix(in srgb, var(--text-color) 7%, transparent);
+}
+
+/* ─── 字体 / 字号下拉（与标题下拉同构，紧随其后） ────────────────────────── */
+.font-select-btn,
+.fontsize-select-btn {
+  min-width: 50px;
+  padding: 0 6px;
+  gap: 3px;
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+}
+
+.font-menu-item,
+.fontsize-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-color);
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* 字号条目跟随界面字体；字体条目不加 inherit —— 内联 font-family
+   让每个选项用自身字体预览（参考 canvas-editor 工具栏）。 */
+.fontsize-menu-item {
+  font-family: inherit;
+}
+
+.font-menu-item:hover,
+.fontsize-menu-item:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
+.dropdown-sep {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--shell-line);
 }
 
 /* One focus ring for the whole shell, drawn in the theme's own ink. The platform
@@ -1182,6 +1346,7 @@ body.show-file-panel #source-editor {
 /* Table */
 #editor .ProseMirror table {
   border-collapse: collapse;
+  table-layout: fixed;
   width: 100%;
   margin: 1em 0;
 }
@@ -1196,6 +1361,49 @@ body.show-file-panel #source-editor {
 #editor .ProseMirror th {
   background: var(--table-header-bg);
   font-weight: 600;
+}
+
+/* Table floating toolbar (P1): 光标进入表格时浮现，提供增删行列/对齐/删表 */
+.colamd-table-toolbar {
+  position: fixed;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.colamd-table-toolbar .colamd-tb-btn {
+  min-width: 24px;
+  height: 26px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-color);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.colamd-table-toolbar .colamd-tb-btn:hover {
+  background: var(--hover-bg, rgba(0, 0, 0, 0.06));
+}
+
+.colamd-table-toolbar .colamd-tb-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--border-color);
 }
 
 /* HR */
@@ -1480,6 +1688,92 @@ body.web-playground *::-webkit-scrollbar-corner {
   background: var(--code-bg);
 }
 
+/* MathJax SVG 引擎（math-engine/mathjax-engine.ts）：convert() 直插 DOM，
+   不走 styleSheet 注入，此处手写 mathjax-full 的 SVG.commonStyles */
+mjx-container[jax='SVG'] {
+  direction: ltr;
+}
+mjx-container[jax='SVG'] > svg {
+  overflow: visible;
+  min-height: 1px;
+  min-width: 1px;
+}
+mjx-container[jax='SVG'] > svg a {
+  fill: blue;
+  stroke: blue;
+}
+
+/* ─── 图片 NodeView（extensions/image-style/node-view.ts）──────────────────
+   单击选中出现定位框，8 手柄拖拽调整尺寸。框画在节点包裹层内部，
+   天然跟随滚动/重排；pointer-events none 不挡点击，仅手柄可交互 */
+.colamd-image-view {
+  /* inline-block：包裹层必须是「实心」包含块。span 默认 inline，内部再放
+     块级 frame 会触发 block-in-inline 分裂，绝对定位的 frame 的包含块退化成
+     span 的空碎片，表现为定位框塌缩在图片下方一角、8 手柄全部挤在一起 */
+  display: inline-block;
+  position: relative;
+  /* 行内混排（如公式图与文字同段）：包裹层基线随内部 block img 退化为底边，
+     默认 baseline 对齐会让图片底部坐在文字基线上，公式图偏高时明显错位。
+     middle 让图片垂直中点对齐文字行中线；img-align-* 块级形态为
+     display:block，vertical-align 无效，自动豁免。 */
+  vertical-align: middle;
+}
+/* img 转块级：消除 inline 基线造成的下行字母空隙，让包裹层矩形 == 图片矩形 */
+.colamd-image-view img {
+  display: block;
+}
+/* 块级对齐（left/center/right）由包裹层承担：display:block 脱离行内流，
+   fit-content 让盒子收缩到图片宽度，margin:auto 才有居中/靠右的效果。
+   双 class 优先级高于 image-style/style.css 的单 class 规则，免受加载顺序影响 */
+.colamd-image-view.img-align-left,
+.colamd-image-view.img-align-center,
+.colamd-image-view.img-align-right {
+  display: block;
+  width: fit-content;
+}
+.colamd-image-view.img-align-left {
+  margin-left: 0;
+  margin-right: auto;
+}
+.colamd-image-view.img-align-center {
+  margin-left: auto;
+  margin-right: auto;
+}
+.colamd-image-view.img-align-right {
+  margin-left: auto;
+  margin-right: 0;
+}
+.colamd-image-frame {
+  display: none;
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--link-color);
+  pointer-events: none;
+  z-index: 5;
+}
+.colamd-image-view.is-selected .colamd-image-frame {
+  display: block;
+}
+.colamd-image-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  background: var(--bg-color);
+  border: 1.5px solid var(--link-color);
+  border-radius: 2px;
+  pointer-events: auto;
+  z-index: 6;
+}
+.colamd-image-handle[data-dir='nw'] { top: -5px; left: -5px; }
+.colamd-image-handle[data-dir='n']  { top: -5px; left: 50%; margin-left: -5px; }
+.colamd-image-handle[data-dir='ne'] { top: -5px; right: -5px; }
+.colamd-image-handle[data-dir='e']  { top: 50%; margin-top: -5px; right: -5px; }
+.colamd-image-handle[data-dir='se'] { bottom: -5px; right: -5px; }
+.colamd-image-handle[data-dir='s']  { bottom: -5px; left: 50%; margin-left: -5px; }
+.colamd-image-handle[data-dir='sw'] { bottom: -5px; left: -5px; }
+.colamd-image-handle[data-dir='w']  { top: 50%; margin-top: -5px; left: -5px; }
+
 /* 公式渲染失败（math-engine/ 各引擎共用）：红字展示 LaTeX 源码 */
 .math-render-error {
   color: #cc3d3d;
@@ -1491,7 +1785,9 @@ body.web-playground *::-webkit-scrollbar-corner {
 
 .math-modal-overlay {
   position: fixed;
-  inset: 0;
+  /* 顶部让出 40px 标题栏行（菜单栏 + 原生窗口按钮所在），
+     模态框上边缘对齐菜单栏下边缘，不遮挡窗口控制按钮 */
+  inset: 40px 0 0 0;
   z-index: 10000;
   display: flex;
   align-items: center;
@@ -1551,7 +1847,9 @@ body.web-playground *::-webkit-scrollbar-corner {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: 4px;
+  /* 固定高度的模态框（子块/圈号）中让按钮沉底；内容自适应高度的模态框无剩余空间，无副作用 */
+  margin-top: auto;
+  padding-top: 4px;
 }
 
 .math-modal-btn {
@@ -1743,12 +2041,30 @@ body.web-playground *::-webkit-scrollbar-corner {
 
 /* --- Circled number modal (reuses math-modal shell) --- */
 .circled-sup-modal {
-  width: 360px;
+  width: 480px;
+  height: 360px;
   gap: 12px;
 }
 
 .circled-sup-modal h3 {
   font-size: 15px;
+}
+
+/* 预览区：示例汉字 + 带圈序号，复用 circled-sup 扩展的 .circled-sup/.circled-num */
+.circled-sup-modal-preview {
+  flex-grow: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+}
+
+.circled-sup-modal-preview .circled-sup {
+  font-size: 26px;
 }
 
 .circled-sup-modal-input {
@@ -1780,9 +2096,91 @@ body.web-playground *::-webkit-scrollbar-corner {
   font-size: 15px;
 }
 
+/* --- Link modal（名称 + URL 双输入，尺寸与拼音弹窗一致） --- */
+.link-modal {
+  width: 420px;
+  gap: 12px;
+}
+
+.link-modal h3 {
+  font-size: 15px;
+}
+
+/* --- 未保存更改提示（自绘，替代原生 confirm） ---------------------------
+   版式对齐设计稿：左上标题 + 两行说明，底部左侧「保存 / 丢弃」、右侧
+   「取消」；主按钮实心蓝，次按钮浅灰底 + 细描边，方角（3px）。 */
+.unsaved-modal {
+  width: 460px;
+  gap: 16px;
+  padding: 22px 24px 20px;
+}
+
+.unsaved-modal h3 {
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.unsaved-modal-message {
+  margin: 0;
+  color: var(--text-color);
+  font-size: 14px;
+  line-height: 1.7;
+  /* 文案里的 \n 直接换行（「是否保存更改？」与后果说明分两行） */
+  white-space: pre-line;
+}
+
+.unsaved-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.unsaved-modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.unsaved-modal-btn {
+  min-width: 78px;
+  padding: 9px 18px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.unsaved-modal-btn.primary {
+  background: var(--link-color);
+  color: #fff;
+}
+
+.unsaved-modal-btn.secondary {
+  background: color-mix(in srgb, var(--text-color) 8%, var(--bg-color));
+  border-color: var(--border-color);
+  color: var(--text-color);
+}
+
+.unsaved-modal-btn.primary:hover {
+  opacity: .92;
+}
+
+.unsaved-modal-btn.secondary:hover {
+  background: color-mix(in srgb, var(--text-color) 14%, var(--bg-color));
+}
+
+.unsaved-modal-btn:focus-visible {
+  outline: 2px solid var(--link-color);
+  outline-offset: 1px;
+}
+
 /* 子块模态框 */
 .subblock-modal {
-  width: 460px;
+  width: 480px;
+  height: 360px;
   gap: 12px;
 }
 
@@ -1806,14 +2204,52 @@ body.web-playground *::-webkit-scrollbar-corner {
   resize: vertical;
 }
 
-/* 分栏模态框 */
+/* 分栏模态框 —— 与田字格模态框同尺寸 */
 .cols-modal {
-  width: 360px;
+  width: 480px;
+  min-height: 360px;
+  max-height: 560px;
   gap: 12px;
 }
 
 .cols-modal h3 {
   font-size: 15px;
+}
+
+/* 预览区：flex-grow 占剩余空间，内容区 overflow auto */
+.cols-modal-preview {
+  flex-grow: 1;
+  min-height: 120px;
+  max-height: 260px;
+  overflow: auto;
+  display: flex;
+  align-items: stretch;
+  padding: 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+}
+
+/* 预览网格：严格复用真实 cols 的 grid-template-columns */
+.cols-preview-grid {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-height: 80px;
+}
+
+/* 预览子块：实线外框 + 编号，模拟 sub-block */
+.cols-preview-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fafafa;
+  color: #888;
+  font-size: 13px;
+  font-weight: 500;
+  min-height: 60px;
 }
 
 .cols-modal-hint {
@@ -1824,7 +2260,9 @@ body.web-playground *::-webkit-scrollbar-corner {
 
 /* 田字格模态框 */
 .tianzi-modal {
-  width: 400px;
+  width: 480px;
+  min-height: 360px;
+  max-height: 560px;
   gap: 12px;
 }
 
@@ -1839,6 +2277,26 @@ body.web-playground *::-webkit-scrollbar-corner {
 
 .tianzi-modal-field {
   width: 100%;
+}
+
+/* 预览区：flex-grow 占剩余空间，内容区 overflow auto
+   复用 style.css 的 .tianzi-grid / .tz-cell / .tz-box / .tz-char / .tz-py */
+.tianzi-modal-preview {
+  flex-grow: 1;
+  min-height: 120px;
+  max-height: 260px;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+}
+
+.tianzi-modal-preview .tianzi-grid {
+  font-size: 22px;
 }
 
 /* 田字格形态 radio 互斥单选组 */
@@ -1868,12 +2326,38 @@ body.web-playground *::-webkit-scrollbar-corner {
   margin: 0;
 }
 
-/* 表格模态框标签 */
+/* 表格模态框 —— 与田字格/分栏模态框同尺寸（固定大小）。
+   height 固定而非 min-height：预览内容高度介于 [360, 上限] 区间时会把
+   min-height 容器撑高，直到预览滚动条出现才回落稳定——固定 height 后
+   模态框尺寸恒定，预览区被压缩并内部滚动。 */
+.table-modal {
+  width: 480px;
+  height: 360px;
+  gap: 12px;
+}
+
+.table-modal h3 {
+  font-size: 15px;
+}
+
+/* 行数 × 列数：横向并排一行 */
+.table-modal-fields {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.table-modal-times {
+  font-size: 14px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
 .table-modal-label {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
   color: var(--text-color);
   font-size: 13px;
 }
@@ -1881,6 +2365,155 @@ body.web-playground *::-webkit-scrollbar-corner {
 .table-modal-input {
   width: 60px !important;
   text-align: center;
+}
+
+/* 预览区：flex-grow 占满固定容器内的剩余空间，内容溢出时内部滚动
+   （min-height:0 允许 flex 压缩，配合 overflow:auto 始终不撑大模态框） */
+.table-modal-preview {
+  flex-grow: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+}
+
+/* 预览网格：模拟 GFM 表格（首行表头底色） */
+.table-preview-grid {
+  display: grid;
+  border-left: 1px solid var(--border-color);
+  border-top: 1px solid var(--border-color);
+}
+
+.table-preview-cell {
+  width: 56px;
+  height: 26px;
+  border-right: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.table-preview-cell.header {
+  background: rgba(127, 127, 127, 0.14);
+}
+
+/* ─── 提交标签页（表单视图） ───────────────────────────────────────────────
+   与源码模式同一手法：body class 收起工具栏并让出高度，编辑面
+   （#editor / #source-editor）由 main.ts 直接隐藏，表单视图接管编辑区。 */
+body.submit-view {
+  --toolbar-height: 0px;
+}
+
+body.submit-view #toolbar {
+  display: none;
+}
+
+/* 提交页铺满标题行以下的整个编辑区（与 #editor 同一高度算式），
+   左侧表单 + 右侧预览分栏；文件面板可见时同样让位。 */
+#submit-panel {
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px));
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 40px;
+  background: var(--bg-color);
+}
+
+#submit-panel[hidden] {
+  display: none;
+}
+
+body.show-file-panel #submit-panel {
+  margin-right: var(--file-panel-width, 220px);
+}
+
+/* 左侧表单列：固定宽（容纳 700px 输入框），输入框 700px × 500px，
+   提交按钮在其下方；右分隔线区分两栏。 */
+.submit-form {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-right: 1px solid var(--border-color);
+  padding-right: 20px;
+}
+
+/* 右侧预览区：#editor 的 DOM 被移入此处（main.ts），只读渲染输入内容。
+   固定高 700px，内容超出在栏内滚动。 */
+#submit-preview {
+  flex: 1;
+  min-width: 0;
+  height: 700px;
+  overflow-y: auto;
+}
+
+/* 预览态编辑器：高度随内容自适应、交出内部滚动（常规态是固定高度 +
+   内部 overflow-y: auto，其滚动条在 pointer-events: none 下点不到），
+   由外层 #submit-preview（固定 700px）统一滚动；不可交互（纯预览）。 */
+body.submit-view #editor {
+  height: auto;
+  overflow-y: visible;
+  pointer-events: none;
+  cursor: default;
+  /* 预览与左侧表单同起点：去掉编辑器自身的 40px 上留白（含 editor-top-gap
+     偏好），首行紧贴面板内边距，与左侧输入框外壳顶边齐平。 */
+  padding-top: 0;
+}
+
+/* 多行输入框（textarea）：700px × 250px（高度减半），文字从左上角开始、
+   可换行；两个输入框同尺寸，主输入框 #submit-input 预览，附加框独立。
+   禁用拖拽手柄（尺寸由布局固定），字体继承界面设置。 */
+#submit-input,
+#submit-input-secondary {
+  width: 700px;
+  max-width: 100%;
+  height: 250px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  outline: none;
+  resize: none;
+  box-sizing: border-box;
+}
+
+#submit-input:focus,
+#submit-input-secondary:focus {
+  border-color: var(--link-color);
+}
+
+#submit-btn {
+  align-self: flex-start;
+  flex: none;
+  padding: 6px 20px;
+  border: none;
+  border-radius: 6px;
+  background: var(--link-color);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+#submit-btn:hover {
+  opacity: 0.9;
+}
+
+#submit-feedback {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+#submit-feedback:empty {
+  display: none;
 }
 
 /* Update banner (weak, non-blocking) */
@@ -2064,8 +2697,8 @@ body.has-custom-font #source-editor {
 /* ======= 偏好设置弹窗（Typora 风格） ======= */
 .prefs-overlay {
   position: fixed;
-  /* 顶部让出 40px 标题栏行：Windows 的 titleBarOverlay 原生关闭/最大化/最小化
-     按钮在那一条的右上角，遮罩盖住会导致它们无法点击（2026-09-23）。 */
+  /* 顶部让出 40px 标题栏行（菜单栏 + 原生窗口按钮所在），
+     模态框上边缘对齐菜单栏下边缘，不遮挡窗口控制按钮 */
   inset: 40px 0 0 0;
   z-index: 10000;
   display: flex;
@@ -2079,8 +2712,6 @@ body.has-custom-font #source-editor {
   display: flex;
   flex-direction: column;
   width: 96vw;
-  /* 94% of the overlay (= viewport height minus the 40px titlebar row), so the
-     modal can never reach into the window-control cluster above it. */
   height: 94%;
   background: var(--bg-color);
   border: 1px solid var(--border-color);
@@ -2232,9 +2863,15 @@ body.has-custom-font #source-editor {
   cursor: pointer;
 }
 
-.prefs-row input[type="checkbox"]:disabled,
-.prefs-row input[type="checkbox"]:disabled + span {
+/* 禁用项：只有复选框本身变淡，后面的文字保持正常颜色（--text-color） */
+.prefs-row input[type="checkbox"]:disabled {
   opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.prefs-row input[type="checkbox"]:disabled + span {
+  opacity: 1;
+  color: var(--text-color);
   cursor: not-allowed;
 }
 
@@ -2278,6 +2915,114 @@ body.has-custom-font #source-editor {
   border-color: var(--text-muted);
 }
 
+/* ─── 登录 tab：浮起卡片布局（仿参考图），整体置于偏左区域 ──────────────── */
+.prefs-login {
+  display: flex;
+  flex-direction: row; /* 覆盖 .prefs-panel 的 column */
+  justify-content: flex-start; /* 偏左 */
+  /* 卡片左缘贴住侧边栏分界线、上缘贴住内容区顶部 */
+  padding: 0 0 28px 0;
+}
+
+.prefs-login-box {
+  width: 320px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 34px 32px 26px;
+  background: color-mix(in srgb, var(--bg-color) 94%, var(--text-color));
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+}
+
+.prefs-login-title {
+  margin: 0 0 14px;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+/* 下划线式输入框（仿参考图） */
+.prefs-login-input {
+  height: 38px;
+  padding: 0 2px;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  outline: none;
+  transition: border-color .12s ease;
+}
+
+.prefs-login-input::placeholder {
+  color: var(--text-muted);
+}
+
+.prefs-login-input:focus {
+  border-bottom-color: #8fa4f5;
+}
+
+/* 粉→蓝渐变 pill 主按钮（仿参考图） */
+.prefs-login-btn {
+  height: 40px;
+  margin-top: 8px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #dc8ec4, #8fa4f5);
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: filter .12s ease;
+}
+
+.prefs-login-btn:hover {
+  filter: brightness(1.06);
+}
+
+.prefs-login-btn:active {
+  filter: brightness(0.95);
+}
+
+.prefs-login-status {
+  min-height: 18px;
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.prefs-login-status-error {
+  color: #d64545;
+}
+
+.prefs-login-foot {
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.prefs-login-foot a {
+  color: #c77fb8;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.prefs-login-foot a:hover {
+  text-decoration: underline;
+}
+
+
 .prefs-row input[type="text"],
 .prefs-row input[type="number"],
 .prefs-row select {
@@ -2297,10 +3042,34 @@ body.has-custom-font #source-editor {
   border-color: var(--link-color);
 }
 
+/* 固定值控件（如文件编码固定 UTF-8）：可看清但明确不可改 */
+.prefs-row select:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--text-color) 5%, transparent);
+}
+
+/* 不可改的固定值（纯文本，无输入控件外观） */
+.prefs-fixed-value {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 /* 图像面板：路径输入组 */
 .prefs-insert-path {
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 「打开指定文件夹」的目标文件夹行：缩进一级，从属于上面的单选项 */
+.prefs-subrow {
+  display: flex;
+  flex-direction: column;
+  padding-left: 22px;
+}
+
+.prefs-subrow .prefs-inline {
+  gap: 8px;
 }
 
 .prefs-insert-path .prefs-label {

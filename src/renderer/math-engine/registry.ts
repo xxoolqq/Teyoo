@@ -1,14 +1,19 @@
 import type { MathEngine, MathEngineId } from './types'
 import { katexEngine } from './katex-engine'
 import { mathjaxEngine } from './mathjax-engine'
+import { getPrefs, setPrefsPath } from '../preferences-store'
 
 // 数学引擎注册表 —— 引擎切换的中枢
 // ────────────────────────────────────────────────────────────────────────────
 // - 引擎在模块加载时注册（katex / mathjax），后续新引擎在此追加
-// - 当前引擎 id 持久化在 localStorage（colamd-latex-engine）
+// - 当前引擎 id 持久化：主进程 userSetting.json（markdown.latexEngine）；
+//   兼容期仍写 localStorage 'colamd-latex-engine'，prefs-store 启动时会
+//   自动迁移到主进程 JSON 并清掉旧 key，之后不再写。
 // - 切换时同步通知所有监听者（nodeView 据此立即重渲染）
 
-export const MATH_ENGINE_STORAGE_KEY = 'colamd-latex-engine'
+// 兼容期旧 localStorage key（preferences-store 启动时迁移）
+const LEGACY_LS_KEY = 'colamd-latex-engine'
+const PREFS_PATH = 'markdown.latexEngine'
 
 const engines = new Map<MathEngineId, MathEngine>()
 const listeners = new Set<(id: MathEngineId) => void>()
@@ -20,15 +25,18 @@ export function registerMathEngine(engine: MathEngine): void {
 registerMathEngine(katexEngine)
 registerMathEngine(mathjaxEngine)
 
-function normalizeEngineId(raw: string | null): MathEngineId | null {
+function normalizeEngineId(raw: string | null | undefined): MathEngineId | null {
   return raw === 'katex' || raw === 'mathjax' ? raw : null
 }
 
 function loadInitialEngineId(): MathEngineId {
+  // 优先从 prefs-store（主进程 JSON）读；store 未就绪时回退 localStorage
+  const fromStore = normalizeEngineId(getPrefs<string>(PREFS_PATH))
+  if (fromStore) return fromStore
   try {
-    return normalizeEngineId(localStorage.getItem(MATH_ENGINE_STORAGE_KEY)) ?? 'katex'
+    return normalizeEngineId(localStorage.getItem(LEGACY_LS_KEY)) ?? 'mathjax'
   } catch {
-    return 'katex'
+    return 'mathjax'
   }
 }
 
@@ -46,13 +54,12 @@ export function getActiveMathEngineId(): MathEngineId {
   return activeEngineId
 }
 
-/** 切换引擎：持久化 + 立即通知所有监听者（nodeView 重渲染） */
+/** 切换引擎：持久化到主进程 JSON + 立即通知所有监听者（nodeView 重渲染） */
 export function setMathEngine(id: MathEngineId): void {
   if (!engines.has(id) || id === activeEngineId) return
   activeEngineId = id
-  try {
-    localStorage.setItem(MATH_ENGINE_STORAGE_KEY, id)
-  } catch { /* localStorage 不可用时仅内存态生效 */ }
+  // 写主进程偏好（异步，不阻塞）；写失败静默
+  void setPrefsPath(PREFS_PATH, id)
   for (const notify of listeners) notify(id)
 }
 
@@ -64,6 +71,6 @@ export function onMathEngineChange(listener: (id: MathEngineId) => void): () => 
 
 /** 用当前引擎渲染公式（nodeView 调用入口） */
 export function renderMath(latex: string, displayMode: boolean): HTMLElement {
-  const engine = engines.get(activeEngineId) ?? engines.get('katex')!
+  const engine = engines.get(activeEngineId) ?? engines.get('mathjax')!
   return engine.render(latex, displayMode)
 }

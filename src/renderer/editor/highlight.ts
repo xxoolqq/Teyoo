@@ -1,5 +1,4 @@
-import { markRule } from '@milkdown/kit/prose'
-import { $inputRule, $markAttr, $markSchema } from '@milkdown/kit/utils'
+import { $markAttr, $markSchema } from '@milkdown/kit/utils'
 import type { MilkdownPlugin } from '@milkdown/kit/ctx'
 import { visit, SKIP } from 'unist-util-visit'
 
@@ -26,14 +25,14 @@ export const highlightSchema = $markSchema('highlight', (ctx) => ({
   },
 }))
 
-// Typing ==text== (and a space) highlights the text in place
-export const highlightInputRule = $inputRule((ctx) => {
-  return markRule(/==([^=]+)==/, highlightSchema.type(ctx))
-})
+// 无输入规则：格式操作不允许手动输入触发（用户规约），== 高亮只能通过
+// 工具栏 / 快捷键或源码模式的 ==text== 语法（解析路径）获得。
+// markRule 亦不检查 escaped_literal，会吞掉用户转义的定界符（见
+// format-input-rules-off.ts）。
 
 // $markSchema's declared type is a tuple+helpers shape; it is a valid
 // MilkdownPlugin at runtime (same as preset-gfm's internal usage)
-export const highlight = [highlightAttr, highlightSchema, highlightInputRule] as unknown as MilkdownPlugin[]
+export const highlight = [highlightAttr, highlightSchema] as unknown as MilkdownPlugin[]
 
 // ─── remark side ────────────────────────────────────────────────────────────
 

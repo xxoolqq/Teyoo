@@ -1,9 +1,10 @@
-import { createEditor, flashHeadingOnArrival, focusEditor, getMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, runFormatCommand, applyFont, type FormatCommandId } from './editor/editor'
-import { setupToolbar, toggleToolbarVisible } from './toolbar'
+import { createEditor, flashHeadingOnArrival, focusEditor, getMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, applyFont } from './editor/editor'
+import { setupToolbar, toggleToolbarVisible, runToolbarCommand } from './toolbar'
 import { setCurrentImageFilePath } from '../extensions/image-style'
 import { detectMarkdownStyle } from './editor/markdown-style'
 import { SearchPanel } from './editor/search-panel'
-import { preferencesModal } from './preferences-modal'
+import { preferencesModal, getExportFormulaEnginePreference } from './preferences-modal'
+import { initPrefsStore, getPrefs, onPrefsChanged } from './preferences-store'
 import { applyTheme, loadSavedTheme } from './themes/theme-manager'
 import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
@@ -25,6 +26,12 @@ const saveStatusEl = () => document.getElementById('save-status') as HTMLElement
 const updateBannerEl = () => document.getElementById('update-banner') as HTMLElement
 const updateBannerTextEl = () => document.getElementById('update-banner-text') as HTMLElement
 const updateBannerActionEl = () => document.getElementById('update-banner-action') as HTMLButtonElement
+const submitPanelEl = () => document.getElementById('submit-panel') as HTMLElement
+const submitPreviewEl = () => document.getElementById('submit-preview') as HTMLElement
+const submitInputEl = () => document.getElementById('submit-input') as HTMLTextAreaElement
+const submitInputSecondaryEl = () => document.getElementById('submit-input-secondary') as HTMLTextAreaElement
+const submitBtnEl = () => document.getElementById('submit-btn') as HTMLButtonElement
+const submitFeedbackEl = () => document.getElementById('submit-feedback') as HTMLElement
 
 // --- Same-directory file panel ---
 let currentFilePath: string | null = null
@@ -96,7 +103,7 @@ function setMarkdownProgrammatically(content: string, flushHistory = false): voi
 }
 
 // --- Unsaved-state tracking + auto-save ---
-let autosaveTimer: ReturnType<typeof setTimeout> | null = null
+let autosaveTimer: ReturnType<typeof setInterval> | null = null
 let documentRevision = 0
 let saveQueue: Promise<void> = Promise.resolve()
 
@@ -149,10 +156,7 @@ function clearSaveStatus(): void {
 function raiseExternalConflict(): void {
   if (externalConflictPending) return
   externalConflictPending = true
-  if (autosaveTimer) {
-    clearTimeout(autosaveTimer)
-    autosaveTimer = null
-  }
+  clearAutosaveTimer()
   const el = saveStatusEl()
   if (el) {
     if (saveStatusTimer) {
@@ -174,6 +178,8 @@ function raiseExternalConflict(): void {
 // makes switching a capture/restore pair instead of a second document machine.
 interface DocumentTab {
   id: string
+  /** document: 编辑器标签页；submit: 提交表单标签页（非编辑器视图） */
+  kind: 'document' | 'submit'
   filePath: string | null
   dirty: boolean
   revision: number
@@ -209,6 +215,7 @@ function untitledLabel(): string {
 const DOCUMENT_SUFFIX = /\.(md|markdown|mdown|mkd)$/i
 
 function tabLabel(tab: DocumentTab): string {
+  if (tab.kind === 'submit') return isChinese() ? '提交' : 'Submit'
   if (!tab.filePath) return untitledLabel()
   const name = tab.filePath.split(/[\\/]/).pop() || tab.filePath
   return name.replace(DOCUMENT_SUFFIX, '')
@@ -219,6 +226,9 @@ function tabLabel(tab: DocumentTab): string {
 function captureActiveTab(): void {
   const tab = activeTab()
   if (!tab) return
+  // 提交页不是编辑器：模块级编辑器状态仍描述上一个文档标签页，不能写进
+  // 提交页的记录（否则它会被误判为可保存的文档）。
+  if (tab.kind === 'submit') return
   // The path is the tab's identity and only changes where a document is really
   // opened or saved; deriving it here would let a stray render rename a tab.
   tab.dirty = dirty
@@ -238,7 +248,7 @@ function captureActiveTab(): void {
 // keeps the primary save hint.
 function markActiveTabDirty(): void {
   const tab = activeTab()
-  if (!tab) return
+  if (!tab || tab.kind === 'submit') return
   tab.dirty = dirty
   const entry = tabBarEl().querySelector(`.tab-entry[data-tab-id="${tab.id}"]`)
   entry?.classList.toggle('dirty', dirty)
@@ -337,6 +347,25 @@ function plusGlyph(): SVGSVGElement {
   return svg
 }
 
+// 提交按钮的上传图标（向上箭头 + 底部横线），跟随按钮文字色（currentColor）。
+function uploadGlyph(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('width', '13')
+  svg.setAttribute('height', '13')
+  svg.setAttribute('viewBox', '0 0 16 16')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke', 'currentColor')
+  svg.setAttribute('stroke-width', '1.5')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+  for (const d of ['M8 11.4V4.4', 'M4.9 7.5 8 4.4l3.1 3.1', 'M3.8 12.6h8.4']) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('d', d)
+    svg.append(path)
+  }
+  return svg
+}
+
 function renderTabBar(): void {
   captureActiveTab()
   const bar = tabBarEl()
@@ -380,7 +409,8 @@ function renderTabBar(): void {
   // tabs scrolled it out of sight exactly when it was needed. It is one of the
   // row's icon controls, so the shared rule styles it and it keeps its gutter
   // from the last tab.
-  bar.parentElement?.querySelector('.tab-new-btn')?.remove()
+  const titlebar = bar.parentElement as HTMLElement | null
+  titlebar?.querySelector('.tab-new-btn')?.remove()
   const add = document.createElement('button')
   add.type = 'button'
   add.className = 'tab-new-btn'
@@ -390,6 +420,20 @@ function renderTabBar(): void {
   add.addEventListener('mouseenter', () => scheduleTip(add, isChinese() ? '新建标签页 · ⌘T' : 'New tab · ⌘T', 'below', TAB_TIP_DELAY))
   add.addEventListener('mouseleave', hideTip)
   bar.after(add)
+  // 「提交」放在「显示/隐藏文件列表」按钮左侧（右侧按钮组内）：
+  // 新建/聚焦提交表单标签页（非编辑器视图）。文字按钮，样式见 base.css。
+  titlebar?.querySelector('.tab-submit-btn')?.remove()
+  const submit = document.createElement('button')
+  submit.type = 'button'
+  submit.className = 'tab-submit-btn'
+  // 文字 + 上传图标（样式见 base.css：蓝色实心、圆角、白字）
+  submit.textContent = isChinese() ? '提交' : 'Submit'
+  submit.append(uploadGlyph())
+  submit.setAttribute('aria-label', isChinese() ? '新建提交标签页' : 'New submit tab')
+  submit.addEventListener('click', () => void openSubmitTab())
+  submit.addEventListener('mouseenter', () => scheduleTip(submit, isChinese() ? '提交' : 'Submit', 'below', TAB_TIP_DELAY))
+  submit.addEventListener('mouseleave', hideTip)
+  fileToggleBtnEl().before(submit)
   const active = bar.querySelector('.tab-entry.active')
   active?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   // Let the main process know which files this window holds in tabs, so opening
@@ -433,9 +477,31 @@ async function saveTabForLeaving(tab: DocumentTab | null): Promise<boolean> {
 // file seeds the first tab here, and a file that arrives later adopts it.
 function ensureTab(): DocumentTab {
   const existing = activeTab()
-  if (existing) return existing
+  if (existing && existing.kind !== 'submit') return existing
+  // 提交页是活动标签页时，到来的文档不能落在它身上：种一个新的文档
+  // 标签页接管活动位（提交页退回后台，供切回）。
+  if (existing) {
+    const tab: DocumentTab = {
+      id: `tab-${nextTabId++}`,
+      kind: 'document',
+      filePath: null,
+      dirty: false,
+      revision: documentRevision,
+      sourceMode: false,
+      sourceText: '',
+      content: '',
+      editorState: null,
+      diskContent: null,
+      scrollTop: 0
+    }
+    tabs.push(tab)
+    activeTabId = tab.id
+    hideSubmitView()
+    return tab
+  }
   const tab: DocumentTab = {
     id: `tab-${nextTabId++}`,
+    kind: 'document',
     filePath: null,
     dirty: false,
     revision: documentRevision,
@@ -455,8 +521,11 @@ async function openNewTab(): Promise<void> {
   const previous = activeTab()
   captureActiveTab()
   if (!await saveTabForLeaving(previous)) return
+  // 从提交页新建文档标签页时，先恢复编辑面（提交页退回后台）
+  hideSubmitView()
   const tab: DocumentTab = {
     id: `tab-${nextTabId++}`,
+    kind: 'document',
     filePath: null,
     dirty: false,
     revision: ++documentRevision,
@@ -479,6 +548,126 @@ async function openNewTab(): Promise<void> {
   focusEditor()
 }
 
+// ─── 提交标签页（非编辑器视图） ─────────────────────────────────────────
+// 「提交」按钮（+ 号右侧）打开的表单页：一个输入框 + 一个提交按钮，
+// 左侧是主编辑器只读预览（输入的 markdown 实时渲染）。它复用标签页
+// 的条/切换/关闭机制，但不承载文档内容。
+
+/** 提交页接管编辑区：主编辑器 #editor 的 DOM 移入左侧预览栏只读渲染
+ *  输入内容（ProseMirror 状态不随 DOM 移动丢失，文档 tab 的状态已由
+ *  调用前的 captureActiveTab 存好）；工具栏由 body class 收起。 */
+function showSubmitView(): void {
+  document.body.classList.add('submit-view')
+  // 从源码模式标签页直接切来时兜底退出（幂等）：预览的 setMarkdown
+  // 必须写向编辑器而不是源码 textarea。
+  exitSourceMode()
+  submitPreviewEl().appendChild(editorEl())
+  updateSubmitPreview()
+  submitPanelEl().hidden = false
+}
+
+/** 离开提交页：收回表单视图，把 #editor 移回 body 原位（#source-editor
+ *  之前）。幂等——文档标签页之间的切换调用它没有副作用；目标标签页的
+ *  文档内容由 activateTab 的 restore/setMarkdown 随后接管。 */
+function hideSubmitView(): void {
+  document.body.classList.remove('submit-view')
+  submitPanelEl().hidden = true
+  if (editorEl().parentElement === submitPreviewEl()) {
+    sourceEl().before(editorEl())
+  }
+  exitSourceMode()
+}
+
+/** 两个输入框的内容 → 左侧预览，中间用水平分界线（markdown 的 `---`）分隔。
+ *  前后空行确保 `---` 被解析为 thematic break 而不是 setext 标题下划线。
+ *  flushHistory=true：预览刷新不进 undo 栈。 */
+function updateSubmitPreview(): void {
+  const primary = submitInputEl().value
+  const secondary = submitInputSecondaryEl().value
+  const parts = [primary.trim(), secondary.trim()].filter((text) => text.length > 0)
+  if (parts.length === 2) {
+    setMarkdown(`${primary}\n\n---\n\n${secondary}`, true)
+  } else if (parts.length === 1) {
+    setMarkdown(parts[0], true)
+  } else {
+    setMarkdown('', true)
+  }
+}
+
+// 同一时刻只保留一个提交页（与「同一文件不重复开标签页」同一思路）：
+// 已存在就聚焦它，否则新建一个。
+async function openSubmitTab(): Promise<void> {
+  const existing = tabs.find((tab) => tab.kind === 'submit')
+  if (existing) {
+    await activateTab(existing.id)
+    return
+  }
+  const previous = activeTab()
+  captureActiveTab()
+  if (!await saveTabForLeaving(previous)) return
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'submit',
+    filePath: null,
+    dirty: false,
+    revision: documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  tabs.push(tab)
+  activeTabId = tab.id
+  currentFilePath = null
+  // 与未命名文档标签页同一规则：窗口停止指向上一个文档（watcher、标题、最近列表）
+  await window.electronAPI.activateFile(null)
+  showSubmitView()
+  document.title = isChinese() ? '提交' : 'Submit'
+  renderTabBar()
+  // 表单页存在的意义就是输入，焦点直接落到输入框
+  submitInputEl().focus()
+}
+
+// 提交动作：当前没有远端提交目标，先做本地反馈（记录 + 界面提示），
+// 后续接接口时替换这一处即可。
+function bindSubmitPanel(): void {
+  const feedback = submitFeedbackEl()
+  const submitValue = (): void => {
+    const value = [submitInputEl().value.trim(), submitInputSecondaryEl().value.trim()]
+      .filter((text) => text.length > 0)
+      .join('\n\n')
+    if (!value) {
+      feedback.textContent = isChinese() ? '请输入内容' : 'Nothing to submit'
+      return
+    }
+    console.log('[submit]', value)
+    feedback.textContent = isChinese() ? `已提交：${value}` : `Submitted: ${value}`
+    submitInputEl().value = ''
+    submitInputSecondaryEl().value = ''
+    updateSubmitPreview()
+  }
+  // 多行输入：普通 Enter 换行，Ctrl/Cmd+Enter 提交
+  const submitOnCtrlEnter = (e: KeyboardEvent): void => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      submitValue()
+    }
+  }
+  submitBtnEl().addEventListener('click', submitValue)
+  submitInputEl().addEventListener('keydown', submitOnCtrlEnter)
+  submitInputSecondaryEl().addEventListener('keydown', submitOnCtrlEnter)
+  // 两个输入框的内容都实时刷新预览（300ms 防抖：连续敲键不做逐键重建）
+  let previewTimer: ReturnType<typeof setTimeout> | null = null
+  const schedulePreview = (): void => {
+    if (previewTimer) clearTimeout(previewTimer)
+    previewTimer = setTimeout(updateSubmitPreview, 300)
+  }
+  submitInputEl().addEventListener('input', schedulePreview)
+  submitInputSecondaryEl().addEventListener('input', schedulePreview)
+}
+
 async function activateTab(id: string): Promise<void> {
   if (switchingTab || id === activeTabId) return
   const target = tabs.find((tab) => tab.id === id)
@@ -488,6 +677,21 @@ async function activateTab(id: string): Promise<void> {
   if (!await saveTabForLeaving(previous)) return
   switchingTab = true
   try {
+    // 提交表单标签页：不接管编辑器，只切换视图（编辑面由 CSS +
+    // showSubmitView 整体隐藏），也无 dirty/大纲/字数可谈。
+    if (target.kind === 'submit') {
+      await window.electronAPI.activateFile(null)
+      activeTabId = target.id
+      currentFilePath = null
+      showSubmitView()
+      document.title = isChinese() ? '提交' : 'Submit'
+      renderTabBar()
+      submitInputEl().focus()
+      return
+    }
+    // 回到文档标签页：先收回提交页并恢复编辑面默认（wysiwyg）可见性。
+    // 目标若是源码模式，下方分支会重新 enterSourceMode。
+    hideSubmitView()
     // Point the window at the incoming document first: this re-points the file
     // watcher, the title and the recent list, and reports whether the file
     // changed while this tab sat in the background. An untitled tab passes null
@@ -555,7 +759,6 @@ async function closeTab(id: string): Promise<void> {
   if (tab.id === activeTabId) {
     captureActiveTab()
     if (!await saveTabForLeaving(tab)) return
-    if (tab.dirty && !tab.filePath && !confirmDiscardUntitled()) return
   } else if (tab.dirty) {
     // A background tab is not the active document, so it is written straight to
     // its own path; an untitled one cannot be written without a dialog.
@@ -563,9 +766,17 @@ async function closeTab(id: string): Promise<void> {
       const saved = await window.electronAPI.saveFile(tab.content, tab.filePath, false, false)
       if (!saved) return
       tab.dirty = false
-    } else if (!confirmDiscardUntitled()) {
-      return
     }
+  }
+  // 未命名标签页没有路径可写：弹「保存 / 丢弃 / 取消」。后台标签页先切到
+  // 前台再问，保存动作才有可写的文档（取消时不会留在切换后的标签页——
+  // 切换本身是零副作用的视图操作，内容与脏标记都已随 capture 落盘到记录）。
+  if (tab.dirty && !tab.filePath) {
+    if (tab.id !== activeTabId) await activateTab(tab.id)
+    captureActiveTab()
+    const choice = await askUnsavedChanges()
+    if (choice === 'cancel') return
+    if (choice === 'save' && !await saveCurrent()) return
   }
   tabs.splice(index, 1)
   if (tabs.length === 0) {
@@ -583,10 +794,83 @@ async function closeTab(id: string): Promise<void> {
 }
 
 // An untitled tab has nowhere to go on disk, so closing it asks first.
-function confirmDiscardUntitled(): boolean {
-  return window.confirm(isChinese()
-    ? '这个标签页还没有保存，关闭会丢掉里面的内容。'
-    : 'This tab has unsaved content. Close it anyway?')
+// 自绘模态框（原生 confirm 只有「确定/取消」两键，且沿用系统外观，无法与
+// 设计稿一致）：版式对齐设计稿——标题 + 两行说明，底部左「保存 / 丢弃」、
+// 右「取消」，主按钮实心蓝。返回用户的选择。
+type UnsavedChoice = 'save' | 'discard' | 'cancel'
+
+function askUnsavedChanges(): Promise<UnsavedChoice> {
+  return new Promise((resolve) => {
+    const zh = isChinese()
+
+    const overlay = document.createElement('div')
+    overlay.className = 'math-modal-overlay'
+
+    const modal = document.createElement('div')
+    modal.className = 'math-modal unsaved-modal'
+    modal.setAttribute('role', 'dialog')
+    modal.setAttribute('aria-modal', 'true')
+
+    const title = document.createElement('h3')
+    title.textContent = zh ? '保存' : 'Save'
+
+    const message = document.createElement('p')
+    message.className = 'unsaved-modal-message'
+    message.textContent = zh
+      ? '是否保存更改？\n如果不保存，您的更改将会丢失。'
+      : 'Save your changes?\nIf you don\'t save, they will be lost.'
+
+    const footer = document.createElement('div')
+    footer.className = 'unsaved-modal-footer'
+    const left = document.createElement('div')
+    left.className = 'unsaved-modal-actions'
+    const right = document.createElement('div')
+    right.className = 'unsaved-modal-actions'
+
+    const finish = (choice: UnsavedChoice): void => {
+      document.removeEventListener('keydown', onKeydown, true)
+      overlay.remove()
+      resolve(choice)
+    }
+
+    const makeBtn = (label: string, kind: 'primary' | 'secondary', choice: UnsavedChoice): HTMLButtonElement => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = `unsaved-modal-btn ${kind}`
+      btn.textContent = label
+      btn.addEventListener('click', () => finish(choice))
+      return btn
+    }
+
+    const saveBtn = makeBtn(zh ? '保存' : 'Save', 'primary', 'save')
+    const discardBtn = makeBtn(zh ? '丢弃' : "Don't Save", 'secondary', 'discard')
+    const cancelBtn = makeBtn(zh ? '取消' : 'Cancel', 'secondary', 'cancel')
+
+    // Esc 等同取消；Enter 等同保存（主按钮）
+    const onKeydown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        finish('cancel')
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        finish('save')
+      }
+    }
+    document.addEventListener('keydown', onKeydown, true)
+
+    // 点遮罩即取消；框内点击不穿透
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) finish('cancel')
+    })
+
+    left.append(saveBtn, discardBtn)
+    right.append(cancelBtn)
+    footer.append(left, right)
+    modal.append(title, message, footer)
+    overlay.appendChild(modal)
+    document.body.appendChild(overlay)
+    saveBtn.focus()
+  })
 }
 
 // Open a file in a tab of its own. Reuses a blank current tab, and never opens
@@ -727,10 +1011,7 @@ function setDirty(): void {
 
 function clearDirty(): void {
   dirty = false
-  if (autosaveTimer) {
-    clearTimeout(autosaveTimer)
-    autosaveTimer = null
-  }
+  clearAutosaveTimer()
   reportDirty()
   markActiveTabDirty()
 }
@@ -749,20 +1030,51 @@ function enqueueSave(operation: () => Promise<string | null>): Promise<string | 
   return next
 }
 
+function clearAutosaveTimer(): void {
+  if (!autosaveTimer) return
+  clearInterval(autosaveTimer)
+  autosaveTimer = null
+}
+
+// 自动保存间隔（毫秒）：偏好设置「通用 → 自动保存间隔」的分钟数，0 = 不自动保存。
+// 1–5 分钟，越界值夹取（历史配置里可能存过 60）。
+function autoSaveIntervalMs(): number {
+  const minutes = getPrefs<number>('general.autoSaveIntervalMinutes') ?? 0
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0
+  return Math.min(5, Math.round(minutes)) * 60_000
+}
+
+// 有未保存修改时启动周期计时器（首次编辑时武装，保存成功即由 clearDirty 撤销）；
+// 间隔为 0 时不启动——用户选择了「不自动保存」。
 function scheduleAutosave(): void {
   if (!currentFilePath) return
   // Paused while an external-modification conflict is unresolved: the user
   // must decide between their version and the disk version first.
   if (externalConflictPending) return
-  if (autosaveTimer) clearTimeout(autosaveTimer)
-  autosaveTimer = setTimeout(() => {
-    autosaveTimer = null
+  const every = autoSaveIntervalMs()
+  if (every === 0) return
+  if (autosaveTimer) return // 周期计时器已在跑，等到点统一保存
+  autosaveTimer = setInterval(() => {
+    // 间隔被改成 0（关掉自动保存）→ 撤掉计时器，不再写盘
+    if (autoSaveIntervalMs() === 0) {
+      clearAutosaveTimer()
+      return
+    }
     void runAutosave()
-  }, 1000)
+  }, every)
+}
+
+// 「离开时自动保存」：窗口失焦（切到别的应用 / 另一个窗口）时立即落盘。
+function flushOnBlur(): void {
+  if (getPrefs<boolean>('general.autoSaveOnBlur') !== true) return
+  if (!dirty || !currentFilePath) return
+  if (externalConflictPending) return
+  void runAutosave()
 }
 
 async function runAutosave(): Promise<void> {
   if (!dirty || !currentFilePath) return
+  if (externalConflictPending) return
   const revision = documentRevision
   const filePath = currentFilePath
   const content = getContent()
@@ -824,9 +1136,19 @@ function countParagraphs(content: string): number {
   return normalized ? normalized.split(/\n\s*\n+/).filter((block) => block.trim()).length : 0
 }
 
+// 偏好设置「外观 → 状态栏 → 显示状态栏」：关掉时标题栏右侧的文档统计按钮
+// （窗口控制按钮往左数第 4 个）隐藏，统计计算一并跳过。
+function statusBarEnabled(): boolean {
+  return getPrefs<boolean>('appearance.showStatusBar') !== false
+}
+
 function updateWordCount(content?: string): void {
+  const el = wordCountEl()
+  const enabled = statusBarEnabled()
+  el.hidden = !enabled
+  if (!enabled) return
   const text = content ?? getContent()
-  const tip = wordCountEl().querySelector('.word-count-tip')
+  const tip = el.querySelector('.word-count-tip')
   if (!tip) return
   tip.textContent = isChinese()
     ? `${countCharacters(text)} 字 · ${countTokens(text)} 词 · ${countParagraphs(text)} 段`
@@ -891,6 +1213,9 @@ function restoreScrollRatio(el: HTMLElement, ratio: number): void {
 }
 
 function toggleSourceMode(): void {
+  // 提交页没有文档可切换（编辑器已整体隐藏），按钮与快捷键都不响应
+  const tab = activeTab()
+  if (tab && tab.kind === 'submit') return
   if (sourceModeActive) {
     // Source → WYSIWYG: 如果 textarea 内容自进入 Source 模式后未修改，跳过解析
     const currentText = sourceEl().value
@@ -1158,7 +1483,24 @@ function scheduleOutlineUpdate(): void {
   })
 }
 
+// 偏好设置「外观 → 侧边栏 → 允许折叠和展开侧边栏的大纲视图」：
+// 未勾选时禁用「显示 / 隐藏文件列表」按钮（含 ⌘\ 与菜单项），默认禁止。
+function filePanelToggleEnabled(): boolean {
+  return getPrefs<boolean>('appearance.allowCollapseOutline') === true
+}
+
+function updateFileToggleButton(): void {
+  const btn = fileToggleBtnEl()
+  const enabled = filePanelToggleEnabled()
+  btn.disabled = !enabled
+  btn.setAttribute('aria-disabled', String(!enabled))
+  btn.title = enabled
+    ? (isChinese() ? '显示 / 隐藏文件列表 (⌘\\)' : 'Show / hide file list (⌘\\)')
+    : (isChinese() ? '已在偏好设置中禁用：外观 → 侧边栏' : 'Disabled in Preferences: Appearance → Sidebar')
+}
+
 function togglePanel(): void {
+  if (!filePanelToggleEnabled()) return
   manualHidden = !manualHidden
   localStorage.setItem('file-panel-hidden', manualHidden ? '1' : '0')
   updatePanelVisibility()
@@ -1434,6 +1776,13 @@ async function setupMenubar(): Promise<void> {
     )
   }
 
+  // 与工具栏按钮同一手法：按下时不把焦点给菜单栏按钮，编辑器继续持有光标。
+  // 否则点击标签后 ProseMirror 失焦，菜单里的格式命令会被 hasFocus() 门控拦掉。
+  bar.addEventListener('mousedown', (e) => {
+    if (!(e.target as HTMLElement).closest('.menubar-item')) return
+    e.preventDefault()
+  })
+
   bar.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>('.menubar-item')
     if (!btn) return
@@ -1451,6 +1800,21 @@ async function setupMenubar(): Promise<void> {
     setActive(btn)
     popupAt(btn)
   })
+}
+
+// 原生菜单弹出再关闭后，编辑器常常已经失焦（焦点落在菜单栏按钮或窗口上），
+// 而格式命令由 view.hasFocus() 门控（防止误写进隐藏文档/搜索面板）。这里在
+// 「焦点不在任何输入控件」的前提下把光标还给编辑器，菜单项才能真正生效。
+function restoreEditorFocusForMenu(): void {
+  if (sourceModeActive) return
+  if (document.body.classList.contains('submit-view')) return
+  const active = document.activeElement as HTMLElement | null
+  if (active) {
+    const isField = active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable
+    // 正在别处输入（搜索框、弹窗表单）→ 不抢焦点，命令照旧被门控拦下
+    if (isField && !active.closest('#editor')) return
+  }
+  focusEditor()
 }
 
 function enterSourceMode(content: string, ratio = 0): void {
@@ -1568,6 +1932,9 @@ async function exportCurrentImage(preset: 'desktop' | 'mobile'): Promise<void> {
 
 async function init(): Promise<void> {
   const api = window.electronAPI
+  // 尽早初始化偏好 store（从主进程拉 userSetting.json + 迁移旧 localStorage key）；
+  // 后续 math-engine / preferences-modal 模块读取偏好依赖此快照已就绪。
+  await initPrefsStore()
   // macOS keeps its own overlay scrollbars (drawn while you scroll, no layout
   // space, never in the way). The thin custom scrollbar is only for Windows and
   // Linux, where the platform default is a chunky always-on bar.
@@ -1592,14 +1959,19 @@ async function init(): Promise<void> {
   } else {
     applyTheme(savedTheme)
   }
-  applyEditorFont(loadSavedEditorFont())
+  applyAppearanceFontSize()
 
   const searchPanel = new SearchPanel()
   searchPanel.setLanguage(language)
   setMathModalLanguage(language)
   api.onSearch(() => searchPanel.show())
   api.onMathModal(() => showMathModal())
-  api.onFormatCommand((id) => runFormatCommand(id as FormatCommandId))
+  // 菜单栏「格式」等菜单项与工具栏按钮共用同一条命令管线（runToolbarCommand），
+  // 所以菜单里可以有任务列表、引用、表格、弹窗类命令等全部工具栏功能。
+  api.onFormatCommand((id) => {
+    restoreEditorFocusForMenu()
+    runToolbarCommand(id)
+  })
   api.onFontCommand((attrs) => applyFont(attrs))
   updateUiLanguage()
 
@@ -1626,6 +1998,27 @@ async function init(): Promise<void> {
       tabs: tabs.filter((tab) => tab.dirty).map((tab) => ({ path: tab.filePath, content: tab.content }))
     })
   })
+  // 偏好设置「外观 → 字体大小」（Typora 式）：
+//   自动（推荐）→ 沿用主题自带字号；自定义 → 用 appearance.fontSizePx 作为
+//   编辑器正文字号。字体名偏好（编辑器字体弹窗里设的）两种模式下都保留。
+function applyAppearanceFontSize(): void {
+  const family = loadSavedEditorFont()?.family ?? ''
+  if (getPrefs<string>('appearance.fontSizeMode') !== 'custom') {
+    applyEditorFont(family ? { family, size: 0 } : null)
+    return
+  }
+  const raw = getPrefs<number>('appearance.fontSizePx') ?? 16
+  const size = Math.min(40, Math.max(10, Math.round(Number(raw) || 16)))
+  applyEditorFont({ family, size })
+}
+
+// 偏好设置「通用 → 离开时自动保存」：窗口失去焦点即落盘（浏览器窗口失焦
+  // 同样触发，故 web 版行为一致）。
+  window.addEventListener('blur', () => flushOnBlur())
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushOnBlur()
+  })
+
   // Report readiness only after every listener is registered — the main process
   // reacts to this signal by flushing queued tab-opens and by trusting the
   // window with close/quit flows. It sat mid-init once and the flush raced
@@ -1653,6 +2046,7 @@ async function init(): Promise<void> {
   })
 
   fileToggleBtnEl().addEventListener('click', togglePanel)
+  updateFileToggleButton()
   // Right-click on a file panel entry opens the native context menu. The
   // parent entry has no target worth acting on, so it keeps the default.
   fileListEl().addEventListener('contextmenu', (e) => {
@@ -1665,6 +2059,7 @@ async function init(): Promise<void> {
   })
   initPanelResize()
   bindTabBar(api)
+  bindSubmitPanel()
   // The launch document (the welcome screen or a restored file) is a tab from
   // the first frame, so the strip never renders without one.
   ensureTab()
@@ -1711,8 +2106,41 @@ async function init(): Promise<void> {
   api.onMenuSaveAs(() => { void saveCurrent(true) })
   api.onMenuExportPDF(() => api.exportPDF())
   api.onMenuExportHTML(() => { void exportCurrentHTML() })
-  api.onMenuExportDOCX(() => { void api.exportDOCX(getContent()) })
+  api.onMenuExportDOCX(() => { void api.exportDOCX(getContent(), getExportFormulaEnginePreference()) })
   api.onMenuExportImage((preset) => { void exportCurrentImage(preset) })
+  api.onMenuImportDocx(async () => {
+    releaseMermaidRenderer()
+    const result = await api.importDocx()
+    if (!result) return // 用户取消或转换失败
+    // 当前 tab 为空/未保存 → 复用它；否则新建 tab 避免覆盖未保存内容
+    //（提交页是表单视图，不能承载文档内容，一律走新建）
+    const current = activeTab()
+    if (current && current.kind !== 'submit' && !current.filePath && !current.dirty) {
+      currentFilePath = null
+      applyContent(result.content)
+      current.filePath = null
+      current.content = result.content
+      current.diskContent = null
+    } else {
+      await openNewTab()
+      applyContent(result.content)
+      const tab = activeTab()
+      if (tab) {
+        tab.filePath = null
+        tab.content = result.content
+        tab.diskContent = null
+      }
+    }
+    updateFileTitle()
+    updatePanelVisibility()
+    refreshSiblings()
+    scheduleOutlineUpdate()
+    renderTabBar()
+    // 导入结果以所见即所得呈现（applyContent → setContent 末尾已
+    // exitSourceMode）：转换后的 Markdown 由编辑器即时渲染，可直接校对版式。
+    const tab = activeTab()
+    if (tab) tab.sourceMode = false
+  })
 
   api.onNewFile(() => {
     releaseMermaidRenderer()
@@ -1801,6 +2229,12 @@ async function init(): Promise<void> {
   api.onOpenFontSettings(() => showFontSettingsModal())
   api.onToggleToolbar(() => toggleToolbarVisible())
   api.onEditorFontChanged((prefs) => applyEditorFont(prefs.family || prefs.size ? prefs : null))
+  // 偏好「外观 → 字体大小」改动即时生效（含本窗口与其它窗口的广播）
+  onPrefsChanged((key) => {
+    if (key === 'appearance.fontSizeMode' || key === 'appearance.fontSizePx') applyAppearanceFontSize()
+    if (key === 'appearance.showStatusBar') updateWordCount()
+    if (key === 'appearance.allowCollapseOutline') updateFileToggleButton()
+  })
   api.onSetCustomCSS((css) => {
     const theme = loadSavedTheme()
     applyTheme(theme, css)

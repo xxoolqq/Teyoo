@@ -11,9 +11,11 @@
 
 import { registerFormulaConverter } from './registry'
 import { temmlConverter } from './converters/temml-omml'
+import { mathjaxConverter } from './converters/mathjax-omml'
 
 export type { FormulaConverter, FormulaToOmmlOptions, FormulaConverterInfo } from './types'
 export { getFormulaConverter, listFormulaConverters, registerFormulaConverter } from './registry'
 
 // 注册内置方案；首个注册者自动成为默认，故无需 makeDefault 标记
 registerFormulaConverter(temmlConverter)
+registerFormulaConverter(mathjaxConverter)

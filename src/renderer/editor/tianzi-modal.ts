@@ -31,6 +31,7 @@ export class TianziModal {
   private blankInput: HTMLInputElement // N 个空白格（数字）
   private pinyinInput: HTMLInputElement // 拼音（tian1qi4）
   private hint: HTMLParagraphElement
+  private preview: HTMLDivElement // 预览区：显示田字格示例
   private cancelButton: HTMLButtonElement
   private saveButton: HTMLButtonElement
   private currentTarget: { pos: number } | null = null
@@ -83,7 +84,7 @@ export class TianziModal {
     this.charsInput.type = 'text'
     this.charsInput.className = 'image-modal-input tianzi-modal-field tianzi-modal-field-chars'
     this.charsInput.placeholder = 'e.g. 你好'
-    this.charsInput.addEventListener('input', () => this.updateHint())
+    this.charsInput.addEventListener('input', () => this.updatePreview())
 
     // 空白格数字输入
     this.blankInput = document.createElement('input')
@@ -93,7 +94,7 @@ export class TianziModal {
     this.blankInput.className = 'image-modal-input tianzi-modal-field tianzi-modal-field-blank'
     this.blankInput.placeholder = 'e.g. 3'
     this.blankInput.style.display = 'none'
-    this.blankInput.addEventListener('input', () => this.updateHint())
+    this.blankInput.addEventListener('input', () => this.updatePreview())
 
     // 拼音输入
     this.pinyinInput = document.createElement('input')
@@ -101,13 +102,17 @@ export class TianziModal {
     this.pinyinInput.className = 'image-modal-input tianzi-modal-field tianzi-modal-field-pinyin'
     this.pinyinInput.placeholder = 'e.g. tian1qi4'
     this.pinyinInput.style.display = 'none'
-    this.pinyinInput.addEventListener('input', () => this.updateHint())
+    this.pinyinInput.addEventListener('input', () => this.updatePreview())
 
     this.fieldsWrap = document.createElement('div')
     this.fieldsWrap.className = 'tianzi-modal-fields'
     this.fieldsWrap.append(this.charsInput, this.blankInput, this.pinyinInput)
 
-    // 提示 / 预览
+    // 预览区：实时渲染田字格示例（flex-grow 占剩余空间，overflow auto）
+    this.preview = document.createElement('div')
+    this.preview.className = 'tianzi-modal-preview'
+
+    // 提示（raw 格式说明 + 错误信息）
     this.hint = document.createElement('p')
     this.hint.className = 'tianzi-modal-hint'
 
@@ -127,7 +132,7 @@ export class TianziModal {
     saveBtn.addEventListener('click', () => this.save())
 
     footer.append(cancelBtn, saveBtn)
-    modal.append(header, this.modeWrap, this.fieldsWrap, this.hint, footer)
+    modal.append(header, this.modeWrap, this.fieldsWrap, this.preview, this.hint, footer)
     this.container.appendChild(modal)
 
     this.container.addEventListener('mousedown', (e) => {
@@ -174,7 +179,7 @@ export class TianziModal {
     this.blankInput.placeholder = zh ? '格数，如：3' : 'Count, e.g. 3'
     this.pinyinInput.placeholder = zh ? '如：tian1qi4（1阴平2阳平3上声4去声）' : 'e.g. tian1qi4 (1-4 tone)'
 
-    this.updateHint()
+    this.updatePreview()
   }
 
   /** 切换形态：显示对应输入框，隐藏其它 */
@@ -186,38 +191,111 @@ export class TianziModal {
     // 同步 radio 选中状态（parseRawToFields 直接调 switchMode 时需要）
     const radio = this.modeWrap.querySelector<HTMLInputElement>(`input[name="tianzi-mode"][value="${mode}"]`)
     if (radio) radio.checked = true
-    this.updateHint()
+    this.updatePreview()
   }
 
-  /** 根据当前输入实时预览格子数和 raw 格式 */
-  private updateHint(): void {
+  /** 实时渲染预览田字格 + 更新 hint 文本 */
+  private updatePreview(): void {
     const zh = this.currentLanguage === 'zh'
-    let raw = ''
-    let preview = ''
 
-    if (this.currentMode === 'chars') {
-      const v = this.charsInput.value.trim()
+    // 1) 确定当前输入（空时用该形态的示例，让切换形态总能看到对应示例）
+    let raw = ''
+    let useExample = false
+    const getInput = (): string => {
+      if (this.currentMode === 'chars') return this.charsInput.value.trim()
+      if (this.currentMode === 'blank') return this.blankInput.value.trim()
+      return this.pinyinInput.value.trim()
+    }
+    const v = getInput()
+    if (!v) {
+      // 空 → 显示示例
+      useExample = true
+      if (this.currentMode === 'chars') raw = '你好'
+      else if (this.currentMode === 'blank') raw = '(3)'
+      else raw = '(tian1qi4)'
+    } else if (this.currentMode === 'chars') {
       raw = v
-      preview = v ? `++${v}++ → ${Array.from(v).length} ${zh ? '格' : 'cells'}` : ''
-    } else if (this.currentMode === 'blank') {
-      const v = this.blankInput.value.trim()
-      if (/^\d+$/.test(v) && Number(v) > 0) {
-        raw = `(${v})`
-        preview = `++(${v})++ → ${v} ${zh ? '空白格' : 'blank cells'}`
-      }
-    } else if (this.currentMode === 'pinyin') {
-      const v = this.pinyinInput.value.trim()
+    } else {
       raw = `(${v})`
-      const model = parseCells(raw)
-      if (model) {
-        preview = `++(${v})++ → ${model.cells.length} ${zh ? '格' : 'cells'}（${zh ? '带拼音' : 'with pinyin'}）`
-      } else if (v) {
-        preview = zh ? '拼音格式无效：小写字母 + 可选 1-4 声调' : 'Invalid pinyin: lowercase letters + optional 1-4 tone'
+    }
+
+    // 2) 解析 + 渲染 DOM
+    const model = parseCells(raw)
+    this.preview.innerHTML = ''
+    if (model) {
+      const grid = document.createElement('span')
+      grid.className = 'tianzi-grid'
+      for (const cell of model.cells) {
+        grid.appendChild(this.renderCell(cell))
+      }
+      this.preview.appendChild(grid)
+    } else {
+      // 非法输入 → 显示示例的田字格（用户能看到期望形态）
+      const fallback = this.currentMode === 'chars' ? parseCells('你好')
+        : this.currentMode === 'blank' ? parseCells('(3)')
+        : parseCells('(tian1qi4)')
+      if (fallback) {
+        const grid = document.createElement('span')
+        grid.className = 'tianzi-grid'
+        for (const cell of fallback.cells) {
+          grid.appendChild(this.renderCell(cell))
+        }
+        this.preview.appendChild(grid)
       }
     }
 
-    this.hint.style.color = ''
-    this.hint.textContent = preview
+    // 3) hint 文本（raw 格式说明 + 非法时提示）
+    if (useExample) {
+      // 空输入 → 显示该形态示例说明
+      const exampleRaw = this.currentMode === 'chars' ? '++你好++'
+        : this.currentMode === 'blank' ? '++(3)++'
+        : '++(tian1qi4)++'
+      const exLabel = this.currentMode === 'chars'
+        ? (zh ? '示例（纯汉字，每字一格）' : 'Example: hanzi, each char → one cell')
+        : this.currentMode === 'blank'
+          ? (zh ? '示例（3 个空白格）' : 'Example: 3 blank cells')
+          : (zh ? '示例（拼音每音节一格，上方带调）' : 'Example: one cell per syllable, tone above')
+      this.hint.textContent = `${exLabel}　${exampleRaw}`
+      this.hint.style.color = ''
+    } else if (!model) {
+      // 非法输入
+      this.hint.style.color = '#d33'
+      if (this.currentMode === 'chars') {
+        this.hint.textContent = zh ? '请输入纯汉字' : 'Enter hanzi only'
+      } else if (this.currentMode === 'blank') {
+        this.hint.textContent = zh ? '请输入正整数' : 'Enter positive integer'
+      } else {
+        this.hint.textContent = zh ? '拼音格式无效：小写字母 + 可选 1-4 声调' : 'Invalid pinyin: lowercase letters + optional 1-4 tone'
+      }
+    } else {
+      // 合法输入
+      this.hint.style.color = ''
+      const cellsLabel = `${model.cells.length} ${zh ? '格' : 'cells'}`
+      const rawDisplay = this.currentMode === 'chars' ? v : raw
+      this.hint.textContent = `${rawDisplay} → ${cellsLabel}`
+    }
+  }
+
+  /** 渲染单个田字格 DOM（复用 style.css 的 tz-cell / tz-box / tz-char / tz-py） */
+  private renderCell(cell: { char?: string; pinyin?: string }): HTMLSpanElement {
+    const c = document.createElement('span')
+    c.className = 'tz-cell'
+    if (cell.pinyin) {
+      const py = document.createElement('span')
+      py.className = 'tz-py'
+      py.textContent = cell.pinyin
+      c.appendChild(py)
+    }
+    const box = document.createElement('span')
+    box.className = 'tz-box'
+    if (cell.char) {
+      const ch = document.createElement('span')
+      ch.className = 'tz-char'
+      ch.textContent = cell.char
+      box.appendChild(ch)
+    }
+    c.appendChild(box)
+    return c
   }
 
   /** 从 raw 字符串反推 mode 和字段值（编辑模式初始化用） */

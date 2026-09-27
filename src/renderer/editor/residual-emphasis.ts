@@ -68,10 +68,51 @@ function makePos(start: number, end: number): any {
   }
 }
 
+// 原文件中该 text 节点覆盖的区间内是否含 \* / \~ 转义序列。
+// true = 这些星号/波浪线在源文档里是「转义的字面字符」（如 \*普通星号\*），
+// 不是残留的格式标记——未转义 pattern 的匹配必须跳过，否则字面 * 会被
+// 误配对成 emphasis/strong/delete，语义在解析层就损坏（转义丢失）。
+function isEscapedLiteral(node: any, fileValue?: string): boolean {
+  if (!fileValue) return false
+  const start = node.position?.start?.offset
+  const end = node.position?.end?.offset
+  if (typeof start !== 'number' || typeof end !== 'number') return false
+  if (start < 0 || end > fileValue.length || end <= start) return false
+  return /\\[~*]/.test(fileValue.slice(start, end))
+}
+
+// ─── CommonMark 侧翼规则 ────────────────────────────────────────────────────
+// 残留标记重配对必须校验侧翼：`* 内侧左空格斜体*` 这类「失效演示」文本
+// （opener 后是空白，本就不构成强调）不能被强行配对成 mark——那会让
+// 转义丢失、空格被 moveSpaces 挪移，源码往返变形。
+const RE_PUNCT = /[\p{P}\p{S}]/u
+const isWs = (c: string): boolean => c === '\n' || /\s/.test(c)
+
+/** 未转义匹配的侧翼校验：opener 须 left-flanking、closer 须 right-flanking。
+ *  delimLen 为定界符宽度；value 为所在 text 的完整值，[start, end) 为匹配区间。 */
+function flanksOk(value: string, start: number, end: number, delimLen: number): boolean {
+  const prevOfOpen = start > 0 ? value[start - 1] : '\n'
+  const nextOfOpen = value[start + delimLen] ?? '\n'
+  // left-flanking: 后非空白 && (后非标点 || 前空白/标点)
+  const leftFlank = !isWs(nextOfOpen) && (!RE_PUNCT.test(nextOfOpen) || isWs(prevOfOpen) || RE_PUNCT.test(prevOfOpen))
+  const prevOfClose = value[end - delimLen - 1] ?? '\n'
+  const nextOfClose = value[end] ?? '\n'
+  // right-flanking: 前非空白 && (前非标点 || 后空白/标点)
+  const rightFlank = !isWs(prevOfClose) && (!RE_PUNCT.test(prevOfClose) || isWs(nextOfClose) || RE_PUNCT.test(nextOfClose))
+  return leftFlank && rightFlank
+}
+
 // 递归拆分单个 text 节点内的残余标记。
 function splitResidual(value: string, base: number, fileValue?: string): any[] | null {
   const hit = findEarliest(value)
   if (!hit) return null
+
+  // 侧翼校验（仅未转义形态）：失效的标记形态（如 `* 内侧左空格斜体*`，
+  // opener 后空白）不是残留格式，保持字面。整个 text 跳过——混合形态
+  // 强行继续匹配易错杀，保守不修复。
+  if (!hit.escaped && !flanksOk(value, hit.start, hit.end, hit.type === 'emphasisStrong' ? 3 : hit.type === 'emphasis' ? 1 : 2)) {
+    return null
+  }
 
   const parts: any[] = []
   if (hit.start > 0) {
@@ -323,6 +364,8 @@ function processCrossSibling(parent: any, fileValue?: string): void {
   while (i < children.length) {
     const node = children[i]
     if (!node || node.type !== 'text') { i++; continue }
+    // 原文件该区间含 \* / \~ 转义时跳过（用户字面字符，非残留标记）
+    if (isEscapedLiteral(node, fileValue)) { i++; continue }
 
     const value = String(node.value ?? '')
     const openInfo = findMarkerInText(value)
@@ -337,6 +380,7 @@ function processCrossSibling(parent: any, fileValue?: string): void {
     for (let j = i + 1; j < children.length && !closeFound; j++) {
       const closeNode = children[j]
       if (!closeNode || closeNode.type !== 'text') continue
+      if (isEscapedLiteral(closeNode, fileValue)) continue
       const closeVal = String(closeNode.value ?? '')
 
       const closeIdx = findClosingMarker(closeVal, type, escaped, 0)
@@ -501,9 +545,12 @@ export function remarkResidualEmphasis(): (tree: unknown, file: any) => void {
     // 避免单 text 内的 ** 和 ** 被误配对（如 "** 和 **"）。
     processTree(tree, fileValue)
 
-    // 第四步：单 text 节点内的残余标记重解析
+    // 第四步：单 text 节点内的残余标记重解析。
+    // 原文件该区间含 \* / \~ 转义时跳过——那是用户书写的字面字符，
+    // 不是残留的格式标记（见 isEscapedLiteral 注释）。
     visit(tree as any, 'text', (node: any, index: any, parent: any) => {
       if (!parent || index === undefined || index === null) return undefined
+      if (isEscapedLiteral(node, fileValue)) return undefined
       const value = String(node.value ?? '')
       const base = node.position?.start?.offset ?? 0
       const parts = splitResidual(value, base, fileValue)

@@ -1,6 +1,6 @@
 {
   "name": "teyoo",
-  "version": "2.4.3",
+  "version": "3.0.0",
   "description": "A free, elegant Markdown editor for macOS, Windows and Linux. Simple by design, always in sync with the file on disk.",
   "main": "dist/main/index.js",
   "author": {
@@ -15,6 +15,7 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
+    "postinstall": "patch-package",
     "build": "electron-vite build",
     "check:theme-colors": "node scripts/check-theme-colors.mjs",
     "preview": "electron-vite preview",
@@ -28,22 +29,27 @@
   "dependencies": {
     "@milkdown/kit": "^7.19.2",
     "@milkdown/plugin-math": "^7.5.9",
+    "@napi-rs/canvas": "^1.0.9",
     "docx": "^9.7.1",
+    "dwml-ts": "^0.5.3",
     "electron-updater": "^6.8.9",
     "katex": "^0.16.47",
+    "mammoth": "^1.12.3",
     "mathjax-full": "^3.2.1",
     "mathml2omml": "^0.5.0",
     "mermaid": "^11.17.0",
     "pinyin-pro": "^3.29.4",
     "remark-breaks": "^4.0.0",
     "remark-math": "^6.0.0",
-    "temml": "^0.13.5"
+    "temml": "^0.13.5",
+    "wmf-emf-renderer": "^0.2.1"
   },
   "devDependencies": {
     "@types/katex": "^0.16.8",
     "electron": "^44.3.0",
     "electron-builder": "^26.16.1",
     "electron-vite": "^3.0.0",
+    "patch-package": "^8.0.1",
     "typescript": "^5.7.0",
     "vite": "^6.0.0"
   }

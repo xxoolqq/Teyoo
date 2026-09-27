@@ -8,7 +8,7 @@
 
 import { getEditorView } from './editor'
 import { type UiLanguage } from '../ui-language'
-import { isValidSpec, columnCount } from '../../extensions/columns/schema'
+import { isValidSpec, columnCount, gridTemplate } from '../../extensions/columns/schema'
 
 export interface ColsAttrs {
   spec: string // '2' | '3' | '1:2' | '2:3' 等
@@ -21,6 +21,7 @@ export class ColsModal {
   private header: HTMLHeadingElement
   private specInput: HTMLInputElement
   private hint: HTMLParagraphElement
+  private preview: HTMLDivElement // 预览区：实时渲染分栏示例
   private cancelButton: HTMLButtonElement
   private saveButton: HTMLButtonElement
   private currentTarget: { pos: number } | null = null
@@ -47,6 +48,11 @@ export class ColsModal {
     this.specInput.type = 'text'
     this.specInput.className = 'image-modal-input'
     this.specInput.placeholder = 'e.g. 2, 3, 1:2, 2:3'
+    this.specInput.addEventListener('input', () => this.updatePreview())
+
+    // 预览区
+    this.preview = document.createElement('div')
+    this.preview.className = 'cols-modal-preview'
 
     // 提示文案
     this.hint = document.createElement('p')
@@ -68,7 +74,7 @@ export class ColsModal {
     saveBtn.addEventListener('click', () => this.save())
 
     footer.append(cancelBtn, saveBtn)
-    modal.append(header, specLabel, this.specInput, this.hint, footer)
+    modal.append(header, specLabel, this.specInput, this.preview, this.hint, footer)
     this.container.appendChild(modal)
 
     this.container.addEventListener('mousedown', (e) => {
@@ -100,6 +106,7 @@ export class ColsModal {
       : 'Equal N columns (e.g. 2) or A:B ratio (e.g. 1:2)'
     this.cancelButton.textContent = zh ? '取消' : 'Cancel'
     this.saveButton.textContent = zh ? (this.isInsertMode ? '插入' : '更新') : (this.isInsertMode ? 'Insert' : 'Update')
+    this.updatePreview()
   }
 
   show(attrs?: ColsAttrs | null, targetPos?: number | null): void {
@@ -113,6 +120,7 @@ export class ColsModal {
     this.header.textContent = zh ? (this.isInsertMode ? '插入分栏' : '编辑分栏') : (this.isInsertMode ? 'Insert Columns' : 'Edit Columns')
     this.saveButton.textContent = zh ? (this.isInsertMode ? '插入' : '更新') : (this.isInsertMode ? 'Insert' : 'Update')
 
+    this.updatePreview()
     this.container.style.display = 'flex'
     setTimeout(() => {
       this.specInput.focus()
@@ -122,6 +130,55 @@ export class ColsModal {
 
   hide(): void {
     this.container.style.display = 'none'
+  }
+
+  /** 实时渲染预览分栏 + 更新 hint 文本 */
+  private updatePreview(): void {
+    const zh = this.currentLanguage === 'zh'
+    const v = this.specInput.value.trim()
+    this.preview.innerHTML = ''
+
+    const valid = isValidSpec(v)
+    if (valid) {
+      // 合法 spec：渲染 grid，每格一个子块示例
+      const count = columnCount(v)
+      const grid = document.createElement('div')
+      grid.className = 'cols-preview-grid'
+      grid.style.gridTemplateColumns = gridTemplate(v)
+      for (let i = 0; i < count; i++) {
+        const cell = document.createElement('div')
+        cell.className = 'cols-preview-cell'
+        cell.textContent = zh ? `子块${i + 1}内容` : `Column ${i + 1} content`
+        grid.appendChild(cell)
+      }
+      this.preview.appendChild(grid)
+      this.hint.style.color = ''
+      this.hint.textContent = v.includes(':')
+        ? (zh ? `比例分栏：${v}（左:右）` : `Ratio columns: ${v} (left:right)`)
+        : (zh ? `等宽分栏：${count} 列` : `Equal columns: ${count} columns`)
+    } else {
+      // 非法或空：显示默认 2 列示例 + 错误/提示
+      const grid = document.createElement('div')
+      grid.className = 'cols-preview-grid'
+      grid.style.gridTemplateColumns = gridTemplate('2')
+      for (let i = 0; i < 2; i++) {
+        const cell = document.createElement('div')
+        cell.className = 'cols-preview-cell'
+        cell.textContent = zh ? `子块${i + 1}内容` : `Column ${i + 1} content`
+        grid.appendChild(cell)
+      }
+      this.preview.appendChild(grid)
+      this.hint.style.color = v ? '#d33' : ''
+      if (v) {
+        this.hint.textContent = zh
+          ? '格式无效：请输入数字（如 2）或 数字:数字（如 1:2）'
+          : 'Invalid spec: use number (e.g. 2) or N:N ratio (e.g. 1:2)'
+      } else {
+        this.hint.textContent = zh
+          ? '示例：2 列等宽（输入数字 N 或 数字:数字 比例）'
+          : 'Example: 2 equal columns (enter N or N:N ratio)'
+      }
+    }
   }
 
   private save(): void {
@@ -136,13 +193,6 @@ export class ColsModal {
       const zh = this.currentLanguage === 'zh'
       this.hint.style.color = '#d33'
       this.hint.textContent = zh ? '格式无效：请输入数字（如 2）或 数字:数字（如 1:2）' : 'Invalid spec: use number (e.g. 2) or N:N ratio (e.g. 1:2)'
-      setTimeout(() => {
-        const zh2 = this.currentLanguage === 'zh'
-        this.hint.style.color = ''
-        this.hint.textContent = zh2
-          ? 'N 列等宽（如 2）或 A:B 两列比例（如 1:2）'
-          : 'Equal N columns (e.g. 2) or A:B ratio (e.g. 1:2)'
-      }, 2000)
       return
     }
 

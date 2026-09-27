@@ -23,6 +23,7 @@ export class CircledSupModal {
   private header: HTMLHeadingElement
   private input: HTMLInputElement
   private hint: HTMLParagraphElement
+  private preview: HTMLDivElement // 预览区：实时渲染汉字+带圈序号示例
   private cancelButton: HTMLButtonElement
   private saveButton: HTMLButtonElement
   private currentLanguage: UiLanguage = 'en'
@@ -45,6 +46,11 @@ export class CircledSupModal {
     this.input.inputMode = 'numeric'
     this.input.pattern = '\\d+'
     this.input.placeholder = 'e.g. 12'
+    this.input.addEventListener('input', () => this.updatePreview())
+
+    // 预览区：复用 circled-sup 扩展的 DOM 结构（span.circled-sup > char + sup.circled-num）
+    this.preview = document.createElement('div')
+    this.preview.className = 'circled-sup-modal-preview'
 
     // 提示文字：解释依赖光标前汉字
     this.hint = document.createElement('p')
@@ -66,7 +72,7 @@ export class CircledSupModal {
     saveBtn.addEventListener('click', () => this.save())
 
     footer.append(cancelBtn, saveBtn)
-    modal.append(header, this.input, this.hint, footer)
+    modal.append(header, this.input, this.preview, this.hint, footer)
     this.container.appendChild(modal)
 
     this.container.addEventListener('mousedown', (e) => {
@@ -101,10 +107,30 @@ export class CircledSupModal {
       : 'Place cursor right after a Chinese character, then enter the number'
     this.cancelButton.textContent = zh ? '取消' : 'Cancel'
     this.saveButton.textContent = zh ? '插入' : 'Insert'
+    this.updatePreview()
+  }
+
+  /** 实时渲染预览：示例汉字 + 输入数字的带圈上标（空输入用示例 12） */
+  private updatePreview(): void {
+    const num = this.input.value.trim()
+    const displayNum = /^\d+$/.test(num) ? num : '12'
+
+    this.preview.innerHTML = ''
+    const wrap = document.createElement('span')
+    wrap.className = 'circled-sup'
+    const charSpan = document.createElement('span')
+    charSpan.className = 'circled-sup-char'
+    charSpan.textContent = '字'
+    const sup = document.createElement('sup')
+    sup.className = 'circled-num'
+    sup.textContent = displayNum
+    wrap.append(charSpan, sup)
+    this.preview.appendChild(wrap)
   }
 
   show(): void {
     this.input.value = ''
+    this.updatePreview()
     this.container.style.display = 'flex'
     setTimeout(() => {
       this.input.focus()

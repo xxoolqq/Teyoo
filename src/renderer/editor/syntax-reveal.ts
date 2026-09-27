@@ -525,7 +525,12 @@ export const syntaxRevealPlugin = $prose((ctx: Ctx) => new Plugin<RevealState>({
         return
       }
 
-      maybeEnterReveal(view, ctx)
+      // 文档发生变化（输入规则生成 mark / 打字 / 粘贴 / 撤销重做）时不自动
+      // 揭示：markRule 刚生成的 mark 会被立即序列化回灰色源码（如敲完
+      // ~~hao~~ 的瞬间变回 ~~hao~~ 源码态），光标被困在揭示节点里。
+      // 只在纯选区移动（点击 / 方向键移入标记文字）时进入揭示——这正是
+      // 「光标点进带标记文字」的设计语义。
+      if (view.state.doc === prevState.doc) maybeEnterReveal(view, ctx)
     },
   }),
 }))

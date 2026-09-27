@@ -4,6 +4,10 @@
 // Markdown」（vfile.value）上找出全部合法区域，把整篇文档的根 children
 // 重组为：[普通片段解析…, subBlock/cols 节点, …]。
 //
+// 另承担规约H 定界符行隔离（font-style/normalize.ts）：本插件是解析链中
+// 第一个基于原始文本工作的 transformer，在其区域扫描前对 :::font / :::
+// 定界符行补空行（详见 normalize.ts 的说明），保证 lexer 与后续解析一致。
+//
 // 区域内部内容通过 processor.parse + processor.runSync 递归处理——必须带上
 // runSync：milkdown 的解析管线是 remark.runSync(remark.parse(md), md)，
 // 所有行内扩展（着重号 / 拼音 / 填空线等）都是「树 transformer」，仅 parse
@@ -21,6 +25,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { VFile } from 'vfile'
 import { scanRegions } from './lexer'
+import { normalizeFontMarkerLines } from '../font-style/normalize'
 
 // 内层解析标记（见上）
 const INSIDE_FLAG = '__insideColumns'
@@ -56,11 +61,20 @@ export function remarkColumns(this: unknown) {
     // 内层（区域内部）解析：跳过容器识别，仅让其它 transformer 正常运行
     if (file?.data?.[INSIDE_FLAG]) return
 
-    const raw = String(file?.value ?? '')
-    // 快速失败：不含 @ 的文档无需扫描
-    if (!raw.includes('@')) return
+    const raw0 = String(file?.value ?? '')
+    // 快速失败：不含 @（规约F）也不含 :::（规约H 定界符）的文档无需扫描
+    if (!raw0.includes('@') && !raw0.includes(':::')) return
+    // 规约H 定界符行隔离：定界符与相邻内容仅隔单换行时（外部粘贴折叠空行/
+    // 手写漏空行），先补空行再扫描区域。必须在本插件（链中第一个基于原始
+    // 文本工作的 transformer）内做，保证 lexer 与后续解析看到同一份文本；
+    // 同步改写 vfile.value，使 remarkMarker / remarkFontSpan 等基于 position
+    // 偏移回查原文的插件读到与最终树一致的内容。
+    const raw = normalizeFontMarkerLines(raw0)
     const regions = scanRegions(raw)
-    if (regions.length === 0) return
+    if (regions.length === 0 && raw === raw0) return
+    if (raw !== raw0) {
+      file.value = raw
+    }
 
     // 递归解析一段原文：parse（micromark）+ runSync（全部树 transformer），
     // 但用 VFile 标记禁用本插件的容器识别，杜绝嵌套。

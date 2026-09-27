@@ -33,10 +33,12 @@
       <button class="menubar-item" type="button" role="menuitem" data-menu="file">文件</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="edit">编辑</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="format">格式</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="insert">插入</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="font">字体</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="fontSize">字号</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="view">视图</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="theme">主题</button>
+      <button class="menubar-item" type="button" role="menuitem" data-menu="print">打印</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="help">帮助</button>
     </div>
     <div id="tab-bar" hidden></div>
@@ -83,12 +85,9 @@
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
     <div class="toolbar-group">
-      <div class="heading-dropdown">
-        <button type="button" id="heading-select-btn" class="toolbar-btn heading-select-btn" aria-haspopup="true" aria-expanded="false" title="段落样式">
-          <span id="heading-select-label">正文</span>
-          <svg class="heading-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="2.5 3.8 5 6.3 7.5 3.8"/>
-          </svg>
+      <div class="heading-dropdown" id="heading-dropdown">
+        <button type="button" id="heading-select-btn" class="toolbar-btn heading-select-btn" aria-haspopup="true" aria-expanded="false" title="标题大小">
+          <span id="heading-select-label">标题</span>
         </button>
         <div id="heading-menu" class="heading-menu" role="menu" hidden>
           <button type="button" role="menuitem" class="heading-menu-item" data-block="paragraph">正文</button>
@@ -100,6 +99,52 @@
           <button type="button" role="menuitem" class="heading-menu-item" data-block="heading6">标题 6</button>
         </div>
       </div>
+      <div class="heading-dropdown" id="font-dropdown">
+        <button type="button" id="font-select-btn" class="toolbar-btn heading-select-btn font-select-btn" aria-haspopup="true" aria-expanded="false" title="字体">
+          <span id="font-select-label">字体</span>
+        </button>
+        <div id="font-menu" class="heading-menu" role="menu" hidden>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="SimSun" style="font-family: 'SimSun', '宋体', serif">宋体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="SimHei" style="font-family: 'SimHei', '黑体', sans-serif">黑体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="KaiTi" style="font-family: 'KaiTi', '楷体', serif">楷体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="FangSong" style="font-family: 'FangSong', '仿宋', serif">仿宋</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Microsoft YaHei" style="font-family: 'Microsoft YaHei', sans-serif">微软雅黑</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Noto Serif SC" style="font-family: 'Noto Serif SC', serif">思源宋体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Noto Sans SC" style="font-family: 'Noto Sans SC', sans-serif">思源黑体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="LXGW WenKai" style="font-family: 'LXGW WenKai', serif">霞鹜文楷</button>
+          <div class="dropdown-sep" role="separator"></div>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Times New Roman" style="font-family: 'Times New Roman', serif">Times New Roman</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Arial" style="font-family: Arial, sans-serif">Arial</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Courier New" style="font-family: 'Courier New', monospace">Courier New</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="STIX Two Math" style="font-family: 'STIX Two Math', serif">STIX Two Math</button>
+        </div>
+      </div>
+      <div class="heading-dropdown" id="fontsize-dropdown">
+        <button type="button" id="fontsize-select-btn" class="toolbar-btn heading-select-btn fontsize-select-btn" aria-haspopup="true" aria-expanded="false" title="字号">
+          <span id="fontsize-select-label">小四</span>
+        </button>
+        <div id="fontsize-menu" class="heading-menu" role="menu" hidden>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="36pt">小初 36pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="26pt">一号 26pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="24pt">小一 24pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="22pt">二号 22pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="18pt">小二 18pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="16pt">三号 16pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="15pt">小三 15pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="14pt">四号 14pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="12pt">小四 12pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="10.5pt">五号 10.5pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="9pt">小五 9pt</button>
+        </div>
+      </div>
+      <button type="button" class="toolbar-btn" data-tb-cmd="clearFont" title="清除字体样式 (Ctrl+空格)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.6 11.5 6.6 4l3 7.5"/>
+          <path d="M4.7 9.1h3.8"/>
+          <line x1="11.6" y1="4.6" x2="14.4" y2="7.4"/>
+          <line x1="14.4" y1="4.6" x2="11.6" y2="7.4"/>
+        </svg>
+      </button>
       <button type="button" class="toolbar-btn" data-tb-cmd="quote" title="引用块">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="none">
           <path d="M7.2 3.2C4.9 3.7 3.7 5.5 3.7 8v4.3h3.6V8.4H5.4c0-1.4.6-2.4 2-2.7l-.2-2.5zm5.6 0c-2.3.5-3.5 2.3-3.5 4.8v4.3h3.6V8.4H11c0-1.4.6-2.4 2-2.7l-.2-2.5z"/>
@@ -115,6 +160,7 @@
     <div class="toolbar-group">
       <button type="button" class="toolbar-btn tb-text" data-tb-cmd="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
       <button type="button" class="toolbar-btn tb-text" data-tb-cmd="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
       <button type="button" class="toolbar-btn tb-text" data-tb-cmd="strikethrough" title="删除线 (Ctrl+Shift+X)"><span class="tb-strike">S</span></button>
       <button type="button" class="toolbar-btn" data-tb-cmd="emphDot" title="字下着重号（@.文字.@）">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
@@ -125,18 +171,22 @@
           <circle cx="10.2" cy="12.3" r="1.05" fill="currentColor" stroke="none"/>
         </svg>
       </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="subscript" title="下标（_{x}）">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <text x="1.5" y="13" font-size="11" font-weight="600" fill="currentColor" font-style="italic">x</text>
+          <text x="9.5" y="15" font-size="7.5" font-weight="600" fill="currentColor">2</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="superscript" title="上标（^{x}）">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <text x="1.5" y="13" font-size="11" font-weight="600" fill="currentColor" font-style="italic">x</text>
+          <text x="9.5" y="8.5" font-size="7.5" font-weight="600" fill="currentColor">2</text>
+        </svg>
+      </button>
       <button type="button" class="toolbar-btn" data-tb-cmd="inlineCode" title="行内代码 (Ctrl+E)">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 4.5 2.5 8 6 11.5"/>
           <polyline points="10 4.5 13.5 8 10 11.5"/>
-        </svg>
-      </button>
-      <button type="button" class="toolbar-btn" data-tb-cmd="clearFont" title="清除字体样式 (Ctrl+空格)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3.6 11.5 6.6 4l3 7.5"/>
-          <path d="M4.7 9.1h3.8"/>
-          <line x1="11.6" y1="4.6" x2="14.4" y2="7.4"/>
-          <line x1="14.4" y1="4.6" x2="11.6" y2="7.4"/>
         </svg>
       </button>
       <button type="button" class="toolbar-btn" data-tb-cmd="link" title="链接 (Ctrl+K)">
@@ -145,6 +195,37 @@
           <path d="M9.2 6.8a2.6 2.6 0 0 0-3.7-.3l-1.2 1.2a2.6 2.6 0 0 0 3.7 3.7l.9-.9"/>
         </svg>
       </button>
+    </div>
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn" data-tb-cmd="longBlank" title="插入长空白（10 个全角空格）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 6H5v12h4"/>
+          <path d="M15 6h4v12h-4"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="longUnderscore" title="插入长下划线（填空线）">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="8" x2="6" y2="13"/>
+          <line x1="12" y1="8" x2="12" y2="13"/>
+          <line x1="18" y1="8" x2="18" y2="13"/>
+          <line x1="3" y1="17" x2="21" y2="17"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="circledSup" title="汉字右上角带圈序号（光标置于汉字后）">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <text x="5" y="18" font-size="15" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">字</text>
+          <circle cx="18" cy="5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <text x="18" y="6.8" text-anchor="middle" font-size="5" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">1</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="pinyin" title="汉字拼音（上方 / 同行）"><b>P</b></button>
+      <div class="symbol-dropdown">
+        <button type="button" class="toolbar-btn tb-omega" data-tb-cmd="symbol" aria-haspopup="true" aria-expanded="false" title="插入符号">
+          <span>Ω</span>
+        </button>
+        <div id="symbol-menu" class="symbol-menu" role="menu" hidden></div>
+      </div>
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
     <div class="toolbar-group">
@@ -180,20 +261,6 @@
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
     <div class="toolbar-group">
-      <button type="button" class="toolbar-btn" data-tb-cmd="longBlank" title="插入长空白（10 个全角空格）">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 6H5v12h4"/>
-          <path d="M15 6h4v12h-4"/>
-        </svg>
-      </button>
-      <button type="button" class="toolbar-btn" data-tb-cmd="longUnderscore" title="插入长下划线（填空线）">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="6" y1="8" x2="6" y2="13"/>
-          <line x1="12" y1="8" x2="12" y2="13"/>
-          <line x1="18" y1="8" x2="18" y2="13"/>
-          <line x1="3" y1="17" x2="21" y2="17"/>
-        </svg>
-      </button>
       <button type="button" class="toolbar-btn" data-tb-cmd="math" title="公式 (Ctrl+Shift+E)">
         <svg width="20" height="20" viewBox="0 0 24 24">
           <text x="8" y="15" text-anchor="middle" font-size="16" fill="currentColor" font-family="Georgia,'Times New Roman',serif" font-style="italic">∑</text>
@@ -206,14 +273,6 @@
           <path d="M3 17l5-5 4 4 3-3 6 6"/>
         </svg>
       </button>
-      <button type="button" class="toolbar-btn" data-tb-cmd="circledSup" title="汉字右上角带圈序号（光标置于汉字后）">
-        <svg width="20" height="20" viewBox="0 0 24 24">
-          <text x="5" y="18" font-size="15" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">字</text>
-          <circle cx="18" cy="5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
-          <text x="18" y="6.8" text-anchor="middle" font-size="5" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">1</text>
-        </svg>
-      </button>
-      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="pinyin" title="汉字拼音（上方 / 同行）"><b>P</b></button>
       <button type="button" class="toolbar-btn" data-tb-cmd="subblock" title="子块（带边框/对齐）">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="5" width="18" height="14" rx="1" />
@@ -256,6 +315,20 @@
   <div id="panel-resizer" aria-hidden="true"></div>
   <div id="editor"></div>
   <textarea id="source-editor" spellcheck="false"></textarea>
+  <!-- 提交标签页：非编辑器的表单视图（输入框 + 提交按钮），由 main.ts
+       在「提交」标签页激活时显示。整页铺满编辑区：左侧表单列、右侧预览区
+       （主编辑器 #editor 的 DOM 被移入此处，只读渲染输入内容）。 -->
+  <div id="submit-panel" hidden>
+    <div class="submit-form">
+      <textarea id="submit-input" autocomplete="off" spellcheck="false"
+                aria-label="提交内容"></textarea>
+      <textarea id="submit-input-secondary" autocomplete="off" spellcheck="false"
+                aria-label="附加内容"></textarea>
+      <button id="submit-btn" type="button">提交</button>
+      <p id="submit-feedback" aria-live="polite"></p>
+    </div>
+    <div id="submit-preview"></div>
+  </div>
   <div id="update-banner" hidden>
     <span id="update-banner-text">发现新版本</span>
     <button id="update-banner-action" type="button">更新</button>
