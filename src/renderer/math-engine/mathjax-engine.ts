@@ -26,15 +26,17 @@ import { renderError } from './katex-engine'
 // fontCache 保持默认 'local'：每个 SVG 自带字形 path，自包含，适配编辑器
 // 节点频繁创建/销毁/移动的场景（'global' 依赖 document 级共享缓存节点）。
 //
-// TeX 包列表取 AllPackages 并剔除 require / autoload：
-// 这两个包依赖运行时动态加载组件，与 Vite 打包方式不兼容；
-// 其余（mhchem、cancel、mathtools、physics 等）全部静态可用。
+// TeX 包列表：AllPackages 剔除 require / autoload（这两个依赖运行时动态加载
+// 组件，与 Vite 打包方式不兼容），再手动补上 physics。
+// 补 physics 的原因：mathjax-full 3.2 的 AllPackages 只有 30 个包，里面
+// 有 mhchem 却没有 physics（physics 在 v3 里不属于 "all"，要单独加载）。
 // bussproofs 曾因「直出 MathML 时代无 OutputJax，其编译期 postfilter 调
 // outputJax.getBBox() 会抛错」被剔除；换 SVG 输出后 CommonOutputJax 提供
 // getBBox，已恢复。
-const TEX_PACKAGES = AllPackages.filter(
-  (name) => name !== 'require' && name !== 'autoload',
-)
+const TEX_PACKAGES = [
+  ...AllPackages.filter((name) => name !== 'require' && name !== 'autoload'),
+  'physics', // 导数 \dv / 狄拉克符号 \bra / 矢量 \va 等；AllPackages 里没有
+]
 
 // mathjax 实例懒初始化：选 KaTeX 的用户不为 MathJax 付出启动开销
 let compiled: { doc: ReturnType<typeof mathjax.document> } | null = null

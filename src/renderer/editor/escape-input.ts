@@ -38,8 +38,6 @@
 // 环境排除（不消耗反斜杠，保持字面编辑语义）：
 //   - 代码块（parent.type.spec.code）、行内代码 / 行内公式（inlineCode、
 //     math_inline 等含 code/math 名的 textblock）——代码内容必须逐字保真
-//   - md_source 揭示态（syntax-reveal：揭示态内编辑的就是源码字面量，
-//     其 handleTextInput 先注册先返回 true，此处为防御性兜底）
 //
 // 已知取舍：
 //   - 替换选区（from < to）时敲 `\` 不追踪 pending：覆盖选区后紧敲标点
@@ -65,17 +63,12 @@ interface EscapeMeta {
 
 export const escapeInputPluginKey = new PluginKey<EscapeInputState>('escape-input')
 
-/** 光标是否处于不应消耗转义的环境（代码 / 公式 / 揭示态） */
+/** 光标是否处于不应消耗转义的环境（代码 / 公式） */
 function inLiteralContext(state: EditorState, from: number): boolean {
   const $from = state.doc.resolve(from)
   // 块级代码块与各种行内代码/公式容器：内容逐字保真
   if ($from.parent.type.spec.code) return true
-  if (/(code|math)/i.test($from.parent.type.name)) return true
-  // md_source 揭示态（防御性：syntax-reveal 的 handleTextInput 先拦截）
-  for (let d = $from.depth; d >= 1; d--) {
-    if ($from.node(d).type.name === 'md_source') return true
-  }
-  return false
+  return /(code|math)/i.test($from.parent.type.name)
 }
 
 /** 插入转义产生的字面字符：替换 pending 处的 `\` 为 char + escaped mark */

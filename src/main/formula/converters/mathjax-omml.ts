@@ -23,9 +23,13 @@ import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js'
 import { mml2omml } from 'mathml2omml'
 import type { FormulaConverter, FormulaToOmmlOptions } from '../types'
 
-const TEX_PACKAGES = AllPackages.filter(
-  (name) => name !== 'require' && name !== 'autoload' && name !== 'bussproofs',
-)
+// 与预览端（src/renderer/math-engine/mathjax-engine.ts）保持同一套包：
+// bussproofs 在无 OutputJax 时 getBBox() 会抛，导出链路本来就剔掉了它；
+// physics 不在 AllPackages 里，手动补上。
+const TEX_PACKAGES = [
+  ...AllPackages.filter((name) => name !== 'require' && name !== 'autoload' && name !== 'bussproofs'),
+  'physics',
+]
 
 // 懒初始化的单例；主进程可能并发导出，但 convert 为同步纯函数调用，
 // 单例复用安全（不持有请求级状态）。

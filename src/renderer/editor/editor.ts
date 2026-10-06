@@ -1,7 +1,7 @@
 import { Editor, rootCtx, defaultValueCtx, editorViewCtx, serializerCtx, parserCtx, remarkCtx, schemaCtx, remarkPluginsCtx, remarkStringifyOptionsCtx, inputRulesCtx } from '@milkdown/kit/core'
 import { SerializerState } from '@milkdown/kit/transformer'
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@milkdown/kit/prose/state'
-import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model'
+import type { Node as ProseMirrorNode, MarkType, ResolvedPos } from '@milkdown/kit/prose/model'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import remarkBreaks from 'remark-breaks'
 import { commonmark } from '@milkdown/kit/preset/commonmark'
@@ -17,6 +17,7 @@ import { liftTarget, findWrapping } from '@milkdown/kit/prose/transform'
 import { Selection, TextSelection } from '@milkdown/kit/prose/state'
 import { remarkMathPlugin, katexOptionsCtx, mathInlineSchema, mathBlockSchema } from '@milkdown/plugin-math'
 import { mathInlineView, mathBlockView } from '../math-engine'
+import { PHYSICS_MACROS } from '../math-engine/physics-macros'
 import { htmlView } from './html-view'
 import { mermaidView } from './mermaid-view'
 import { codeBlockExitPlugin } from './code-block-exit'
@@ -26,6 +27,8 @@ import { orderedListFixSchema } from './ordered-list-fix'
 import { releaseMermaidRenderer as releaseMermaidRendererBridge } from './mermaid-bridge'
 import { mathModal } from './math-modal'
 import { imageModal } from './image-modal'
+// 图片内嵌与压缩（粘贴 / 工具栏插入共用同一套阈值）
+import { fileToEmbeddableDataUrl, readFileAsDataUrl } from './image-embed'
 import { circledSupModal } from './circled-sup-modal'
 import { pinyinModal } from './pinyin-modal'
 import { subBlockModal } from './subblock-modal'
@@ -33,9 +36,9 @@ import { colsModal } from './cols-modal'
 import { tianziModal } from './tianzi-modal'
 import { tableModal } from './table-modal'
 import { remarkMathFalsePositiveGuard } from './math-guard'
+import { pasteMathPlugin } from './paste-math'
 import { remarkResidualEmphasis } from './residual-emphasis'
 import { highlight, remarkHighlight, highlightStringifyHandler } from './highlight'
-import { syntaxRevealPlugin, syntaxRevealPluginKey, mdSourceSchema } from './syntax-reveal'
 import { escapeInputPlugin } from './escape-input'
 import { escapedLiteralMark, remarkEscapedLiteral, restoreEscapes } from './escaped-literal'
 import { fixStrikeThroughInputRule } from './strike-through-fix'
@@ -55,6 +58,7 @@ import { tianziGridPlugin, remarkTianziGrid, tianziGridStringifyHandler } from '
 import { imageStylePlugin, imageResizeView, setCurrentImageFilePath } from '../../extensions/image-style'
 import { type MarkdownStyle } from './markdown-style'
 import { isChinese } from '../ui-language'
+import { blockLinkProse } from '../block-link'
 
 import 'katex/dist/katex.min.css'
 import '@milkdown/kit/prose/view/style/prosemirror.css'
@@ -155,7 +159,8 @@ export function onEditorJumpPhase(listener: ((phase: EditorJumpPhase) => void) |
 // the flash until the smooth scroll settles (`scrollend`) instead of playing
 // it while the target is still off-screen (#64).
 export function flashHeadingOnArrival(heading: Element): void {
-  const container = document.getElementById('editor')
+  // 滚动容器不再是写死的 #editor：一页多个编辑器时，用标题自己所在的那个。
+  const container = heading.closest<HTMLElement>('.editor-root') ?? document.getElementById('editor')
   if (!container) return
   editorJumpPhaseListener?.('start')
   let startTop = container.scrollTop
@@ -670,12 +675,58 @@ export function releaseMermaidRenderer(): void {
   releaseMermaidRendererBridge()
 }
 
-let editorInstance: Editor | null = null
+// 编辑器实例登记表。
+//
+// 桌面版一个窗口只有一个实例；WebView2 宿主页一页有两个（习题 / 答案），
+// 共用同一条工具栏。所以「当前操作谁」由焦点决定：createEditor 在 root 上挂
+// focusin → setActiveEditor(rootId)。
+//
+// 这里取代了原来的 editorInstance 单例。所有导出 API 默认作用于活跃实例，
+// 因此只有一个实例时（桌面版）行为与从前完全一致；也可以显式传 target
+// 操作后台那一个，不扰动焦点（setMarkdown / getMarkdown 的可选末参）。
+type EditorRecord = {
+  root: HTMLElement
+  editor: Editor
+  // 每篇文档自己的 markdown 风格（bullet/strong/… 标记写法），互不覆盖。
+  markdownStyle: MarkdownStyle
+}
 
-// Serialiser options as configured at creation (handlers included). The
-// per-document Markdown style is layered on top of these, never replacing them.
-let baseStringifyOptions: Record<string, unknown> = {}
-let markdownStyleOptions: MarkdownStyle = {}
+const editorRecords = new Map<string, EditorRecord>()
+let activeEditorId: string | null = null
+
+/** 取记录：不给 target 就取当前活跃实例。 */
+function recordOf(target?: string): EditorRecord | null {
+  const id = target ?? activeEditorId
+  return id ? editorRecords.get(id) ?? null : null
+}
+
+/** 当前活跃实例的 Editor；传 id 则指名取那个。一个都还没有时是 null。 */
+function activeEditor(target?: string): Editor | null {
+  return recordOf(target)?.editor ?? null
+}
+
+/**
+ * 切换活跃实例。工具栏按下态随之刷新（走 toolbarStateListeners）——
+ * 弹窗、applyFont 这些最终都调 getEditorView()，所以通知一处就够。
+ */
+export function setActiveEditor(id: string): void {
+  if (activeEditorId === id) return
+  if (!editorRecords.has(id)) return
+  activeEditorId = id
+  for (const listener of toolbarStateListeners) listener()
+}
+
+export function getActiveEditorId(): string | null {
+  return activeEditorId
+}
+
+/** 某个编辑器是否已创建（宿主用它判断这一路是否就绪）。 */
+export function hasEditor(id: string): boolean {
+  return editorRecords.has(id)
+}
+
+// Per-document Markdown style for the instance being created; layered on top of
+// baseStringifyOptions by applyMarkdownStyle.
 
 const inlineStyles: Record<string, string> = {
   'h1': 'font-size:1.8em;margin:1em 0 .5em;padding-bottom:.3em;border-bottom:1px solid #eee;',
@@ -739,9 +790,10 @@ function enhanceClipboard(e: ClipboardEvent): void {
 
 // ─── 粘贴图片 → base64 内嵌 ──────────────────────────────────────────────────
 // 用户从剪贴板粘贴截图/复制的图片时，浏览器 ClipboardEvent 的 clipboardData.items
-// 里会有一条 type: "image/xxx" 的条目。将其读为 FileReader Data URL（base64），
-// 直接作为 image 节点的 src 插入编辑器——Markdown 文本里以
-// ![image](data:image/png;base64,...) 形式存在，保存/导出/源码模式折叠均已支持。
+// 里会有一条 type: "image/xxx" 的条目。经 image-embed 读成 base64 data URL
+// （超过长边 1600px / 1MB 才等比压缩，小图一个字节不动），直接作为 image 节点
+// 的 src 插入编辑器——Markdown 文本里以 ![image](data:image/png;base64,...)
+// 形式存在，保存/导出/源码模式折叠均已支持。
 //
 // 如果剪贴板同时带文本（如从网页复制的图文混排），优先让 milkdown 的内置 paste
 // 处理文本/HTML；仅当没有文本 flavour 时才走图片分支。
@@ -767,22 +819,22 @@ function handlePasteImage(e: ClipboardEvent): void {
   e.preventDefault()
   e.stopPropagation()
 
-  const reader = new FileReader()
-  reader.onload = () => {
-    const dataUrl = reader.result
-    if (typeof dataUrl !== 'string') return
-    // 从 MIME 推导 alt 文本，如 "image" + 扩展名
-    const ext = file.type.split('/')[1] || 'png'
-    const alt = `image-${ext}`
-    insertImageAtCursor(dataUrl, alt)
-  }
-  reader.readAsDataURL(file)
+  // 与工具栏「图片」按钮同一套内嵌规则（压缩阈值见 image-embed.ts）
+  const ext = file.type.split('/')[1] || 'png'
+  const alt = `image-${ext}`
+  void fileToEmbeddableDataUrl(file)
+    .then((result) => insertImageAtCursor(result.dataUrl, alt))
+    .catch(async (err: unknown) => {
+      // 压缩环节失败（比如 canvas 不可用）时退回「原样内嵌」，别把图丢了
+      console.error('粘贴图片处理失败，退回原样内嵌:', err)
+      insertImageAtCursor(await readFileAsDataUrl(file), alt)
+    })
 }
 
 // 在当前光标处插入一个 image 节点（base64 data URL 作为 src）。
 // 若选区非空则替换选区内容；插入后将光标移到图片之后。
 function insertImageAtCursor(src: string, alt: string): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const imageType = view.state.schema.nodes.image
     if (!imageType) return
@@ -823,27 +875,24 @@ async function copyText(text: string): Promise<void> {
 // triggered an infinite rebuild loop — observed as 100% CPU with any fenced
 // code block). No MutationObserver is used to avoid self-triggering loops;
 // instead the button follows the hovered block and repositions on scroll.
-let copyButton: HTMLButtonElement | null = null
-let copyButtonPre: HTMLPreElement | null = null
-let copyButtonResetTimer: ReturnType<typeof setTimeout> | null = null
-
-function editorRect(): DOMRect {
-  return (document.getElementById('editor') as HTMLElement).getBoundingClientRect()
+// 每个实例一套状态：这三个原先是模块级变量，第二个编辑器会把第一个的按钮
+// 顶下来变成孤儿。
+type CopyButtonState = {
+  pre: HTMLPreElement | null
+  resetTimer: ReturnType<typeof setTimeout> | null
 }
 
-function positionCopyButton(pre: HTMLPreElement): void {
-  if (!copyButton) return
-  const editor = document.getElementById('editor') as HTMLElement
+function positionCopyButton(root: HTMLElement, button: HTMLButtonElement, pre: HTMLPreElement): void {
   const rect = pre.getBoundingClientRect()
-  const base = editorRect()
-  // The button is absolutely positioned inside the scroll container #editor, so
+  const base = root.getBoundingClientRect()
+  // The button is absolutely positioned inside the scroll container root, so
   // its top/left are measured from the scroll-content origin, not from the
   // editor's border box. Add the scroll offsets so it tracks the block.
-  copyButton.style.left = `${rect.left - base.left + editor.scrollLeft + rect.width - 8}px`
-  copyButton.style.top = `${rect.top - base.top + editor.scrollTop + 8}px`
+  button.style.left = `${rect.left - base.left + root.scrollLeft + rect.width - 8}px`
+  button.style.top = `${rect.top - base.top + root.scrollTop + 8}px`
 }
 
-function createCopyButton(): HTMLButtonElement {
+function createCopyButton(root: HTMLElement, state: CopyButtonState): HTMLButtonElement {
   const button = document.createElement('button')
   button.type = 'button'
   button.className = 'code-copy-btn'
@@ -855,47 +904,47 @@ function createCopyButton(): HTMLButtonElement {
   button.addEventListener('click', async (event) => {
     event.preventDefault()
     event.stopPropagation()
-    if (!copyButtonPre) return
-    const code = copyButtonPre.querySelector('code')?.textContent ?? ''
+    if (!state.pre) return
+    const code = state.pre.querySelector('code')?.textContent ?? ''
     try {
       await copyText(code)
       button.textContent = isChinese() ? '已复制 ✓' : 'Copied ✓'
       button.classList.add('copied')
-      if (copyButtonResetTimer) clearTimeout(copyButtonResetTimer)
-      copyButtonResetTimer = setTimeout(() => {
+      if (state.resetTimer) clearTimeout(state.resetTimer)
+      state.resetTimer = setTimeout(() => {
         button.textContent = isChinese() ? '复制' : 'Copy'
         button.classList.remove('copied')
       }, 1500)
     } catch {
       button.textContent = isChinese() ? '复制失败' : 'Copy failed'
-      if (copyButtonResetTimer) clearTimeout(copyButtonResetTimer)
-      copyButtonResetTimer = setTimeout(() => { button.textContent = isChinese() ? '复制' : 'Copy' }, 1500)
+      if (state.resetTimer) clearTimeout(state.resetTimer)
+      state.resetTimer = setTimeout(() => { button.textContent = isChinese() ? '复制' : 'Copy' }, 1500)
     }
   })
-  document.getElementById('editor')?.appendChild(button)
+  root.appendChild(button)
   return button
 }
 
 function setupCodeBlockCopy(root: HTMLElement): void {
-  copyButton = createCopyButton()
-  const btn = copyButton
+  const state: CopyButtonState = { pre: null, resetTimer: null }
+  const btn = createCopyButton(root, state)
 
   const inButton = (node: Node | null): boolean =>
     !!node && (node === btn || btn.contains(node))
 
   const showFor = (pre: HTMLPreElement): void => {
-    copyButtonPre = pre
+    state.pre = pre
     btn.classList.add('hovering')
-    positionCopyButton(pre)
+    positionCopyButton(root, btn, pre)
   }
 
   const hide = (): void => {
-    copyButtonPre = null
+    state.pre = null
     btn.classList.remove('hovering')
   }
 
   const positionActive = (): void => {
-    if (copyButtonPre) positionCopyButton(copyButtonPre)
+    if (state.pre) positionCopyButton(root, btn, state.pre)
   }
 
   // Show the copy button when the pointer enters a fenced code block.
@@ -911,7 +960,7 @@ function setupCodeBlockCopy(root: HTMLElement): void {
   // `:hover` or the button disappears mid-interaction (original bug).
   root.addEventListener('mouseout', (event) => {
     const from = (event.target as Element | null)?.closest?.('pre') as HTMLPreElement | null
-    if (!from || from !== copyButtonPre) return
+    if (!from || from !== state.pre) return
     const to = event.relatedTarget as Node | null
     if (inButton(to)) return
     if (to && from.contains(to)) return
@@ -920,11 +969,11 @@ function setupCodeBlockCopy(root: HTMLElement): void {
 
   btn.addEventListener('mouseout', (event) => {
     const to = event.relatedTarget as Node | null
-    if (copyButtonPre && to && copyButtonPre.contains(to)) return
+    if (state.pre && to && state.pre.contains(to)) return
     hide()
   })
 
-  // #editor is the scroll container; reposition when the block moves.
+  // root is the scroll container; reposition when the block moves.
   root.addEventListener('scroll', positionActive, { passive: true })
   window.addEventListener('scroll', positionActive, { passive: true })
   const resizeObserver = new ResizeObserver(positionActive)
@@ -1074,8 +1123,9 @@ function setupFootnotePreview(root: HTMLElement): void {
 export type FormatCommandId = 'bold' | 'italic' | 'inlineCode' | 'strikethrough' | 'emphDot' | 'underline' | 'subscript' | 'superscript' | 'highlight' | 'link' | 'bulletList' | 'orderedList'
 
 export function runFormatCommand(id: FormatCommandId): void {
-  if (!editorInstance) return
-  editorInstance.action((ctx) => {
+  const target = activeEditor()
+  if (!target) return
+  target.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     // Menu accelerators are window-global. Without focus in the editor they
     // would write marks into the hidden ProseMirror document (source mode
@@ -1180,6 +1230,8 @@ export interface ToolbarState {
   fontFamily: string | null
   /** 光标/选区处的字号（同上），无则为 null */
   fontSize: string | null
+  /** 光标/选区处的对齐方式（同上，left/center/right/justify），无则为 null */
+  fontAlign: string | null
   block: ToolbarBlockKind
 }
 
@@ -1187,14 +1239,14 @@ function emptyToolbarState(): ToolbarState {
   return {
     bold: false, italic: false, strike: false, code: false, emphDot: false, underline: false, subscript: false, superscript: false, link: false,
     bulletList: false, orderedList: false, taskList: false, quote: false, font: false,
-    fontFamily: null, fontSize: null,
+    fontFamily: null, fontSize: null, fontAlign: null,
     block: 'paragraph',
   }
 }
 
 // 撤销/重做。工具栏按钮 mousedown 已 preventDefault，焦点仍在编辑器里。
 export function runHistoryCommand(id: 'undo' | 'redo'): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const cmd = id === 'undo' ? pmUndo : pmRedo
     cmd(view.state, view.dispatch)
@@ -1204,7 +1256,7 @@ export function runHistoryCommand(id: 'undo' | 'redo'): void {
 
 // 段落/标题切换。milkdown commonmark 的 heading 是单一节点类型 + level 属性。
 export function setBlockKind(kind: ToolbarBlockKind): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const schema = view.state.schema
@@ -1217,7 +1269,7 @@ export function setBlockKind(kind: ToolbarBlockKind): void {
 
 // 引用块 toggle：在引用内则提升出去，否则用 blockquote 包裹当前块。
 export function toggleBlockquote(): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const blockquote = view.state.schema.nodes.blockquote
@@ -1238,7 +1290,7 @@ export function toggleBlockquote(): void {
 // 分割线：复刻 commonmark insertHrCommand —— 插入 hr 并在其前补一个空段落
 // 承接光标（hr 是 atom 块，直接替换选区后光标无处可放）。
 export function insertHorizontalRule(): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const schema = view.state.schema
@@ -1263,7 +1315,7 @@ const LONG_UNDERSCORE = '＿'.repeat(10)
 // 在光标处插入长下划线（填空线）。选区非空时替换选区；insertText 后选区
 // 自动折叠到插入文本末尾，用户可直接继续输入。
 export function insertLongUnderscore(): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const { from, to } = view.state.selection
@@ -1285,7 +1337,7 @@ const LONG_BLANK = '　'.repeat(10)
 
 // 在光标处插入长空白（留空）。选区非空时替换选区，语义同 insertLongUnderscore。
 export function insertLongBlank(): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const { from, to } = view.state.selection
@@ -1298,9 +1350,9 @@ export function insertLongBlank(): void {
 
 // 在光标处插入任意文本（插入符号面板等入口）。选区非空时替换选区，
 // 光标折叠到插入文本末尾，语义同 insertLongUnderscore。
-export function insertTextAtCursor(text: string): void {
+export function insertTextAtCursor(text: string, target?: string): void {
   if (!text) return
-  editorInstance?.action((ctx) => {
+  activeEditor(target)?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const { from, to } = view.state.selection
@@ -1311,11 +1363,69 @@ export function insertTextAtCursor(text: string): void {
   })
 }
 
+// 取当前选区的 Markdown。走编辑器自己的序列化器，所以加粗、字体/字号标记
+// （{= size=16pt : …}）、着重号这些都原样保留 —— 两栏之间搬运内容要用的就是
+// 这个，纯 textContent 会把标记全丢掉。
+// 不选 target 时读活跃那一栏；空选区降级为光标所在的那个块（一段/一个表格），
+// 比「点了没反应」好用。
+export function getSelectionMarkdown(target?: string): string {
+  const view = getEditorView(target)
+  if (!view) return ''
+  if (!view.state.selection.empty) {
+    const nodes: ProseMirrorNode[] = []
+    view.state.selection.content().content.forEach((child) => { nodes.push(child) })
+    const wrapper = view.state.schema.topNodeType.create(null, nodes)
+    return serializeNodeToMarkdown(wrapper, target)
+  }
+  const $from = view.state.selection.$from
+  if ($from.depth === 0) return ''
+  return serializeNodeToMarkdown($from.node(1), target)
+}
+
+// 把一段 Markdown 插到光标处（选区非空则替换）。解析走编辑器完整的 remark
+// 管线，与 getSelectionMarkdown 成对：搬运过去还是原来的格式。
+export function insertMarkdownAtCursor(markdown: string, target?: string): void {
+  if (!markdown) return
+  const nodes = parseMarkdownToNodes(markdown, target)
+  if (!nodes.length) return
+  activeEditor(target)?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { selection } = view.state
+    // 光标折叠 → 整块插到当前段之后；选区非空 → 替换选区。都不要在段落
+    // 中间劈一刀：那会把一段切成「空段 + 新内容」，文档里凭空多一个 <br />。
+    const $from = selection.$from
+    const from = selection.empty ? ($from.depth > 0 ? $from.after(1) : 0) : selection.from
+    const to = selection.empty ? from : selection.to
+
+    const tr = view.state.tr.delete(from, to)
+    // 删完之后插入点可能正落在一个空段落里（目标本来就空，或整篇被替换掉，
+    // ProseMirror 会补一个空段）：连这个空段一起吃掉，否则还是在它内部劈刀。
+    let pos = from
+    const onlyEmptyBlock =
+      tr.doc.childCount === 1 && tr.doc.firstChild?.isTextblock === true && tr.doc.firstChild.content.size === 0
+    if (onlyEmptyBlock) {
+      // 空文档自带一个空段落（条形码里就是 <br />）。内容要进来，它得让位。
+      pos = 0
+      tr.delete(0, tr.doc.content.size)
+    } else {
+      const $at = tr.doc.resolve(Math.min(from, tr.doc.content.size))
+      const block = $at.depth > 0 ? $at.node(1) : null
+      if (block && block.isTextblock && block.content.size === 0) {
+        pos = $at.before(1)
+        tr.delete(pos, $at.after(1))
+      }
+    }
+    tr.insert(pos, nodes)
+    tr.scrollIntoView()
+    view.dispatch(tr)
+  })
+}
+
 // 任务列表 toggle：gfm 的任务列表 = bullet_list 内嵌带 checked 属性的
 // list_item（checked=null 为普通列表项，false/true=任务项）。
 // 不在列表内 → 包裹为任务列表；在列表内 → 在「普通列表项」与「任务项」间切换。
 export function toggleTaskList(): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const schema = view.state.schema
@@ -1380,7 +1490,7 @@ export function toggleTaskList(): void {
 // 插入表格：用 GFM schema 创建 rows×cols 空表格并替换当前选区。
 // 默认 3 行 3 列（首行为表头行）。
 export function insertTable(rows = 3, cols = 3): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const schema = view.state.schema
@@ -1423,7 +1533,7 @@ export function insertTable(rows = 3, cols = 3): void {
 // 正确做法：修改该列的 header cell 的 alignment，插件会自动把同列所有 body cell
 // 同步为相同的值。这也与 GFM Markdown 序列表头对齐语义一致（| :---: | 决定整列）。
 export function setTableAlignment(alignment: 'left' | 'center' | 'right'): void {
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const { state } = view
     const $head = state.selection.$head
@@ -1482,20 +1592,57 @@ export function setTableAlignment(alignment: 'left' | 'center' | 'right'): void 
   })
 }
 
+// 光标所在的整条行内 font_span run（「连续同 mark run」口径：相邻子节点只要含
+// 同一 mark 即延续）：
+// 空选区下「改 / 清这一段的行内字体样式」的作用范围。光标不在任何 font_span
+// run 上时返回 null（此时字体命令只能影响后续输入，见 applyFont）。
+function fontSpanRunAt(
+  state: EditorState,
+  $from: ResolvedPos,
+  markType: MarkType
+): { from: number; to: number; attrs: { family?: string; size?: string; align?: string } } | null {
+  const parent = $from.parent
+  const contentStart = $from.start()
+  const children: { node: ProseMirrorNode; start: number; end: number }[] = []
+  parent.forEach((child, offset) => {
+    children.push({ node: child, start: offset, end: offset + child.nodeSize })
+  })
+  if (children.length === 0) return null
+  const parentOffset = $from.parentOffset
+  let idx = children.findIndex((c) => parentOffset < c.end)
+  if (idx === -1) idx = children.length - 1
+  // 光标恰在两个子节点边界时优先左侧子节点
+  if (idx > 0 && children[idx].start === parentOffset) idx -= 1
+  const child = children[idx]
+  if (!child?.node.isText) return null
+  const mark = child.node.marks.find((m) => m.type === markType)
+  if (!mark) return null
+  let i0 = idx
+  let i1 = idx
+  while (i0 > 0 && children[i0 - 1].node.marks.some((m) => m.eq(mark))) i0 -= 1
+  while (i1 < children.length - 1 && children[i1 + 1].node.marks.some((m) => m.eq(mark))) i1 += 1
+  return {
+    from: contentStart + children[i0].start,
+    to: contentStart + children[i1].end,
+    attrs: mark.attrs as { family?: string; size?: string },
+  }
+}
+
 // 应用字体样式（规约H 双轨体系）：
 // - 同一段落内的局部选区 → 行内 font_span mark（{= :} 标记）；
 // - 跨越块边界（多个段落/列表项等）的选区 → 块级容器 font_block（:::font 指令），
 //   对应 Word「段落样式」；若选区恰好覆盖某个已有容器的全部内容，则直接更新
 //   该容器的属性（合并），避免产生冗余嵌套。
-// 可分别设置 family 和 size（合并已有 attrs），也可用 clear: true 清除。
-// 空选区时操作 storedMarks（影响后续输入）。
-export function applyFont(attrs: { family?: string; size?: string; clear?: boolean }): void {
-  editorInstance?.action((ctx) => {
+// 可分别设置 family / size / align（合并已有 attrs），也可用 clear: true 清除。
+// align 取 left|center|right|justify（规约H 1.3/2.2）；行内 mark 的 align 仅做
+// 标记透传，最终对齐由外层块/段落生效。空选区时操作 storedMarks（影响后续输入）。
+export function applyFont(attrs: { family?: string; size?: string; align?: string; clear?: boolean }): void {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     // 原生菜单点击后编辑器会短暂失焦，但不能因此跳过操作——
     // 选区仍在 state 中，mark 操作不依赖 DOM 焦点。
     const state = view.state
-    const { from, to, empty } = state.selection
+    const { from, to, empty, $from } = state.selection
     const markType = state.schema.marks['font_span']
     const blockType = state.schema.nodes['font_block']
     if (!markType) return
@@ -1509,7 +1656,32 @@ export function applyFont(attrs: { family?: string; size?: string; clear?: boole
 
     if (attrs.clear) {
       if (empty) {
-        view.dispatch(state.tr.removeStoredMark(markType))
+        // 空选区（「点进带样式的段落」的常见情形）：清掉光标所在这一段的样式——
+        // 命中 :::font 容器 → 提升撤掉容器；否则清掉光标所在的整条行内
+        // font_span run。同时移除 storedMark，避免后续输入继续沿用旧样式。
+        const tr = state.tr.removeStoredMark(markType)
+        let lifted = false
+        if (blockType) {
+          for (let depth = $from.depth; depth > 0; depth -= 1) {
+            const node = $from.node(depth)
+            if (node.type !== blockType) continue
+            const pos = $from.before(depth)
+            const innerFrom = pos + 1
+            const innerTo = pos + node.nodeSize - 1
+            const range = tr.doc.resolve(innerFrom).blockRange(tr.doc.resolve(innerTo))
+            const target = range ? liftTarget(range) : null
+            if (!range || target == null) break
+            tr.lift(range, target)
+            lifted = true
+            break
+          }
+        }
+        if (!lifted) {
+          // 行内：清掉光标所在的整条 font_span run（不牵连同段内其他 run）
+          const run = fontSpanRunAt(state, $from, markType)
+          if (run) tr.removeMark(run.from, run.to, markType)
+        }
+        view.dispatch(tr.scrollIntoView())
         return
       }
       const tr = state.tr
@@ -1547,12 +1719,52 @@ export function applyFont(attrs: { family?: string; size?: string; clear?: boole
     }
 
     if (empty) {
+      // 光标落在某个 :::font 容器内（点击段落的情形）：直接改这个块容器，
+      // 否则「修改样式」在空选区下只能改到后续输入的文字，
+      // 点进带样式的段落却改不动它。（clear 已在上面先行处理并返回。）
+      if (blockType) {
+        for (let depth = $from.depth; depth > 0; depth -= 1) {
+          const node = $from.node(depth)
+          if (node.type !== blockType) continue
+          const pos = $from.before(depth)
+          view.dispatch(
+            state.tr.setNodeMarkup(pos, undefined, {
+              ...node.attrs,
+              family: attrs.family ?? node.attrs.family,
+              size: attrs.size ?? node.attrs.size,
+              align: attrs.align ?? node.attrs.align,
+            }).scrollIntoView()
+          )
+          return
+        }
+      }
+      // 行内：光标落在某条 font_span run 上 → 改这条 run（未指定的字段保留原值），
+      // 否则「点进带样式的文字改不动它」；光标处没有 run 才回落到 storedMarks。
+      const run = fontSpanRunAt(state, $from, markType)
+      if (run) {
+        view.dispatch(
+          state.tr
+            .removeMark(run.from, run.to, markType)
+            .addMark(
+              run.from,
+              run.to,
+              markType.create({
+                family: attrs.family ?? run.attrs.family ?? '',
+                size: attrs.size ?? run.attrs.size ?? '',
+                align: attrs.align ?? run.attrs.align ?? '',
+              })
+            )
+            .scrollIntoView()
+        )
+        return
+      }
       // 空选区：更新 storedMarks
       const stored = state.storedMarks ?? []
       const current = stored.find((m) => m.type === markType)
       const newAttrs = {
         family: attrs.family ?? current?.attrs.family ?? '',
         size: attrs.size ?? current?.attrs.size ?? '',
+        align: attrs.align ?? current?.attrs.align ?? '',
       }
       view.dispatch(
         state.tr.removeStoredMark(markType).addStoredMark(markType.create(newAttrs))
@@ -1578,6 +1790,7 @@ export function applyFont(attrs: { family?: string; size?: string; clear?: boole
                 ...node.attrs,
                 family: attrs.family ?? node.attrs.family,
                 size: attrs.size ?? node.attrs.size,
+                align: attrs.align ?? node.attrs.align,
               })
               .scrollIntoView()
           )
@@ -1590,7 +1803,7 @@ export function applyFont(attrs: { family?: string; size?: string; clear?: boole
       const wrapping = findWrapping(selRange, blockType, {
         family: attrs.family ?? '',
         size: attrs.size ?? '',
-        align: '',
+        align: attrs.align ?? '',
       })
       if (wrapping) {
         view.dispatch(state.tr.wrap(selRange, wrapping).scrollIntoView())
@@ -1606,6 +1819,7 @@ export function applyFont(attrs: { family?: string; size?: string; clear?: boole
     const newAttrs = {
       family: attrs.family ?? existing?.attrs.family ?? '',
       size: attrs.size ?? existing?.attrs.size ?? '',
+      align: attrs.align ?? existing?.attrs.align ?? '',
     }
     view.dispatch(
       state.tr
@@ -1615,10 +1829,22 @@ export function applyFont(attrs: { family?: string; size?: string; clear?: boole
   })
 }
 
+/**
+ * 正文默认字号（16px = 12pt，小四）：无字号标记的普通文本即此字号。
+ * 工具栏字号下拉与「修改样式」弹窗共用，未检测到字号时回落到它。
+ */
+export const DEFAULT_FONT_SIZE = '12pt'
+
+/** 默认对齐方式（规约H 2.2：align 缺省为 left） */
+export const DEFAULT_FONT_ALIGN = 'left'
+
+/** 默认字体（宋体）：规约H 示例的基准字体，未检测到字体时回落到它 */
+export const DEFAULT_FONT_FAMILY = 'SimSun'
+
 // 查询光标/选区当前命中的标记与块，供工具栏按钮按下态高亮。
 export function getToolbarState(): ToolbarState {
   const result = emptyToolbarState()
-  editorInstance?.action((ctx) => {
+  activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     if (!view.hasFocus()) return
     const state = view.state
@@ -1667,25 +1893,27 @@ export function getToolbarState(): ToolbarState {
     // applyFont 合并语义一致），缺失字段由 font_block 祖先链从内向外补齐。
     const fontMarkType = state.schema.marks['font_span']
     if (fontMarkType) {
-      let markAttrs: { family?: string; size?: string } | null = null
+      let markAttrs: { family?: string; size?: string; align?: string } | null = null
       if (empty) {
         const m = [...(state.storedMarks ?? []), ...$from.marks()].find((x) => x.type === fontMarkType)
-        if (m) markAttrs = m.attrs as { family?: string; size?: string }
+        if (m) markAttrs = m.attrs as { family?: string; size?: string; align?: string }
       } else {
         const $inside = state.doc.resolve(Math.min(from + 1, to))
         const m = $inside.marks().find((x) => x.type === fontMarkType)
-        if (m) markAttrs = m.attrs as { family?: string; size?: string }
+        if (m) markAttrs = m.attrs as { family?: string; size?: string; align?: string }
       }
       if (markAttrs?.family) result.fontFamily = markAttrs.family
       if (markAttrs?.size) result.fontSize = markAttrs.size
+      if (markAttrs?.align) result.fontAlign = markAttrs.align
     }
-    if (!result.fontFamily || !result.fontSize) {
+    if (!result.fontFamily || !result.fontSize || !result.fontAlign) {
       for (let depth = $from.depth; depth > 0; depth -= 1) {
         const node = $from.node(depth)
         if (node.type.name === 'font_block') {
           if (!result.fontFamily && node.attrs.family) result.fontFamily = node.attrs.family
           if (!result.fontSize && node.attrs.size) result.fontSize = node.attrs.size
-          if (result.fontFamily && result.fontSize) break
+          if (!result.fontAlign && node.attrs.align) result.fontAlign = node.attrs.align
+          if (result.fontFamily && result.fontSize && result.fontAlign) break
         }
       }
     }
@@ -1748,14 +1976,7 @@ export async function createEditor(
       state: {
         init: () => null,
         apply(tr, value) {
-          if (tr.docChanged) {
-            // 语法揭示的进入/接管事务、以及内容未被编辑的提交事务，序列化
-            // 结果不变（md_source 原样输出 markdown），不应把文档标记为已修改；
-            // changed=true 表示用户在揭示态真的改了内容，照常计脏。
-            const revealMeta = tr.getMeta(syntaxRevealPluginKey) as { changed?: boolean } | undefined
-            if (revealMeta?.changed === false) return value
-            onDocumentChange()
-          }
+          if (tr.docChanged) onDocumentChange()
           return value
         }
       }
@@ -1814,10 +2035,14 @@ export async function createEditor(
         { plugin: remarkTianziGrid, options: {} },
         { plugin: remarkMathFalsePositiveGuard, options: {} },
       ])
-      ctx.set(katexOptionsCtx.key, { throwOnError: false })
+      // 公式实际渲染走 math-engine（下面 mathInlineView / mathBlockView 覆盖了
+      // plugin-math 的默认 nodeView），这里的 ctx 是兜底：万一某条路径还用
+      // plugin-math 自带渲染，也要有同样的 physics 宏，避免两种结果。
+      ctx.set(katexOptionsCtx.key, { throwOnError: false, macros: PHYSICS_MACROS })
       // Teach remark-stringify how to emit our custom ==highlight== node
       const stringifyOptions = ctx.get(remarkStringifyOptionsCtx)
-      baseStringifyOptions = {
+      // 每次创建都重新算一遍并只喂给这一个实例：改成全局两个实例会互相覆盖。
+      const baseStringifyOptions = {
         ...stringifyOptions,
         // Keep the editor's smart line breaks as plain Markdown newlines.
         // remark-breaks restores them on parse, so source mode never leaks `\`.
@@ -1840,7 +2065,7 @@ export async function createEditor(
           break: () => '\n'
         } as typeof stringifyOptions.handlers
       }
-      ctx.set(remarkStringifyOptionsCtx, { ...baseStringifyOptions, ...markdownStyleOptions })
+      ctx.set(remarkStringifyOptionsCtx, { ...baseStringifyOptions })
       if (onChange) {
         ctx.get(listenerCtx).markdownUpdated((_ctx, markdown) => {
           onChange(markdown)
@@ -1878,14 +2103,15 @@ export async function createEditor(
     .use(fontStylePlugin)
     .use(tianziGridPlugin)
     .use(imageStylePlugin)
-    // 语法揭示的 md_source 行内节点 schema（toMarkdown 原样输出，见 syntax-reveal.ts）
-    .use(mdSourceSchema)
     .use(history)
     .use(listener)
     .use(clipboard)
     .use(htmlView)
     .use(mermaidView)
     .use([remarkMathPlugin, katexOptionsCtx, mathInlineSchema, mathBlockSchema].flat())
+    // 粘贴网页公式：把 KaTeX/MathJax 的排版 DOM 换成公式节点（否则 LaTeX 源码
+    // 裸露成普通文本，既没 $ 定界符也不渲染，见 paste-math.ts）
+    .use(pasteMathPlugin)
     // 公式 nodeView：渲染改道 math-engine（KaTeX/MathJax 可切换），立即生效
     .use(mathInlineView)
     .use(mathBlockView)
@@ -1901,14 +2127,12 @@ export async function createEditor(
     .use(tableFloatingToolbarPlugin)
     .use(searchHighlight)
     .use(headingFlashPlugin)
+    // PDF 矩形框 ↔ 正文块的双向定位标记（悬停高亮，点击才滚）
+    .use(blockLinkProse)
     .use(toolbarStatePlugin)
-    // 语法揭示插件：Enter 键处理（揭示态内提交并吞掉换行）必须先于
-    // enterSplitGuardPlugin 的规则扫描，避免揭示文本的字面量标记被误匹配
-    .use(syntaxRevealPlugin)
     // Typora 式转义输入：wysiwyg 敲 `\`+标点 → 即时消耗反斜杠、插入字面
-    // 标点（如 `\*` 显示 `*`）。排在 syntaxReveal 之后（揭示态优先），
-    // 且先于核心 customInputRules 收到 handleTextInput 才能阻止字面 `**`
-    // 触发 markRule。见 escape-input.ts。
+    // 标点（如 `\*` 显示 `*`）。必须排在核心 customInputRules 之前收到
+    // handleTextInput，才能阻止字面 `**` 触发 markRule。见 escape-input.ts。
     .use(escapeInputPlugin)
     // 代码块文档末尾哨兵段落：``` 位于文档末尾时块后补空段落，光标才能跳出
     .use(codeBlockExitPlugin)
@@ -1919,14 +2143,21 @@ export async function createEditor(
     .use(enterSplitGuardPlugin)
 
   if (documentChangePlugin) editor = editor.use(documentChangePlugin)
-  editorInstance = await editor.create()
+  const created = await editor.create()
+  editorRecords.set(rootId, { root, editor: created, markdownStyle: {} })
+  // 第一个创建的即默认活跃实例；之后由焦点决定。
+  // focusin 覆盖键盘/编程式聚焦，捕获阶段的 mousedown 覆盖「点在正文外沿」
+  // 这种不产生 focusin 的情形（ProseMirror 的 dom 不一定拿到焦点）。
+  if (activeEditorId === null) activeEditorId = rootId
+  root.addEventListener('focusin', () => setActiveEditor(rootId))
+  root.addEventListener('mousedown', () => setActiveEditor(rootId), true)
 
   // 序列化器修复：接管 remark.stringify 前的 mdast，合并 milkdown 序列化器
   // moveSpaces 机制拆分的相邻同型 mark（粘贴 **…`*`…** 后切换源码会多出
   // `**` 的根因，详见 serializer-fix.ts）。getMarkdown / getNodeMarkdown /
   // listener（自动保存）/ clipboard（复制）都在调用时读取 serializerCtx，
   // 替换后全部走修复路径。
-  editorInstance.action((ctx) => {
+  created.action((ctx) => {
     const remark = ctx.get(remarkCtx)
     type StringifyInput = Parameters<typeof remark.stringify>[0]
     ctx.set(
@@ -1947,14 +2178,14 @@ export async function createEditor(
 
   // GFM 删除线输入规则错配修复：`你~~hao~` 的 `~~` 被拆散错误配对成
   // strike(~hao) 的根因。详见 strike-through-fix.ts。
-  editorInstance.action((ctx) => fixStrikeThroughInputRule(ctx))
+  created.action((ctx) => fixStrikeThroughInputRule(ctx))
 
   // 格式类输入规则禁用（case1 修复）：strong/emphasis/inlineCode/strikethrough
   // 等格式 mark 不再随手动输入触发，格式操作只能通过工具栏、快捷键或源码
   // 模式。两个根因（markRule 吞 escaped_literal 转义、击键时刻无法预知
   // intraword 上下文）详见 format-input-rules-off.ts。须在
   // fixStrikeThroughInputRule 之后执行（删除线正则已被替换）。
-  editorInstance.action((ctx) => disableFormatInputRules(ctx))
+  created.action((ctx) => disableFormatInputRules(ctx))
 
   // Enhance clipboard with inline styles for rich text paste (e.g. WeChat)
   root.addEventListener('copy', enhanceClipboard)
@@ -2007,8 +2238,7 @@ export async function createEditor(
   root.addEventListener('keydown', (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.key !== 'Enter') return
     e.preventDefault()
-    if (!editorInstance) return
-    editorInstance.action((ctx) => {
+    created.action((ctx) => {
       const view = ctx.get(editorViewCtx)
       const $pos = view.state.doc.resolve(view.state.selection.from)
       for (let d = $pos.depth; d >= 0; d--) {
@@ -2029,16 +2259,19 @@ export async function createEditor(
   // （新建标签页的 plus 按钮已有同样逻辑，见 main.ts 的 focusEditor）。
   // 延迟一拍等初始渲染 settle；启动期若排队的文件打开改写文档
   // （replaceAll 只派发事务），焦点不会被夺走。
+  // 只有自己是活跃实例才抢焦点：一页两个编辑器时，第二个实例不该在
+  // 初始化时把光标从第一个那里夺走。
   setTimeout(() => {
-    getEditorView()?.focus()
+    if (getActiveEditorId() === rootId) created.action((ctx) => ctx.get(editorViewCtx).focus())
   }, 50)
 
-  return editorInstance
+  return created
 }
 
 function toggleTaskListItem(e: MouseEvent): void {
-  if (!editorInstance) return
-  editorInstance.action((ctx) => {
+  const target = activeEditor()
+  if (!target) return
+  target.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     // posAtDOM(li, 0) lands inside the li (on its first child), not on the
     // list_item node itself — locate by click coordinates instead and walk up
@@ -2060,17 +2293,18 @@ function toggleTaskListItem(e: MouseEvent): void {
   })
 }
 
-// 去掉 * 和 ~ 前的反斜杠转义：仅供「源码揭示」显示口径（syntax-reveal.ts
-// 有独立副本）。序列化输出（getMarkdown / clipboard）与解析输入
+// 去掉 * 和 ~ 前的反斜杠转义：仅供显示口径（源码模式）。序列化输出
+// （getMarkdown / clipboard）与解析输入
 // （setMarkdown）一律不做还原——\* / \~ 转义是语义保真的正确形态，
 // 历史上「ColaMD 残留格式标记被错误转义」的场景已由 remarkResidualEmphasis
 // 在解析层修复（residual-emphasis.ts），全局还原反而会把用户书写的
 // 真转义（\*普通星号\*）吃掉，字面 * 重新解析变成斜体。
 
-export function getMarkdown(): string {
-  if (!editorInstance) return ''
+export function getMarkdown(target?: string): string {
+  const inst = activeEditor(target)
+  if (!inst) return ''
   let markdown = ''
-  editorInstance.action((ctx) => {
+  inst.action((ctx) => {
     const serializer = ctx.get(serializerCtx)
     const view = ctx.get(editorViewCtx)
     markdown = serializer(view.state.doc)
@@ -2078,20 +2312,22 @@ export function getMarkdown(): string {
   return markdown
 }
 
-export function setMarkdown(content: string, flushHistory = false): void {
-  if (!editorInstance) return
+export function setMarkdown(content: string, flushHistory = false, target?: string): void {
+  const inst = activeEditor(target)
+  if (!inst) return
   // flush=true rebuilds the editor state, which also empties the undo stack.
   // Used when the document identity changes (file switch, new file, external
   // reload), so undo can never reach into a different document's content.
   // content 原样解析：外部文件中的 \* 等转义是用户的字面字符语义，
   // 不做任何还原（入口还原会把真转义变成格式标记，语义损坏）。
-  editorInstance.action(replaceAll(content, flushHistory))
+  inst.action(replaceAll(content, flushHistory))
 }
 
-export function getEditorView(): EditorView | null {
-  if (!editorInstance) return null
+export function getEditorView(target?: string): EditorView | null {
+  const inst = activeEditor(target)
+  if (!inst) return null
   let view: EditorView | null = null
-  editorInstance.action((ctx) => {
+  inst.action((ctx) => {
     view = ctx.get(editorViewCtx)
   })
   return view
@@ -2101,10 +2337,11 @@ export function getEditorView(): EditorView | null {
 // using the editor's full remark pipeline — marks (bold, italic, emphDot, …)
 // are preserved. Used by modals (sub-block, cols) that previously created
 // plain text nodes with schema.text(line), losing all inline marks.
-export function parseMarkdownToNodes(content: string): ProseMirrorNode[] {
-  if (!editorInstance) return []
+export function parseMarkdownToNodes(content: string, target?: string): ProseMirrorNode[] {
+  const inst = activeEditor(target)
+  if (!inst) return []
   const nodes: ProseMirrorNode[] = []
-  editorInstance.action((ctx) => {
+  inst.action((ctx) => {
     const parser = ctx.get(parserCtx)
     const doc = parser(content)
     doc.content.forEach((child) => { nodes.push(child) })
@@ -2116,10 +2353,11 @@ export function parseMarkdownToNodes(content: string): ProseMirrorNode[] {
 // marks (bold, italic, emphDot, …). The inverse of
 // parseMarkdownToNodes — used to populate modal textareas with the existing
 // markdown instead of node.textContent which strips all marks.
-export function serializeNodeToMarkdown(node: ProseMirrorNode): string {
-  if (!editorInstance) return ''
+export function serializeNodeToMarkdown(node: ProseMirrorNode, target?: string): string {
+  const inst = activeEditor(target)
+  if (!inst) return ''
   let markdown = ''
-  editorInstance.action((ctx) => {
+  inst.action((ctx) => {
     const serializer = ctx.get(serializerCtx)
     const view = ctx.get(editorViewCtx)
     // Wrap the node's content in a doc so the serializer can process it
@@ -2159,13 +2397,17 @@ export function restoreEditorState(state: EditorState): void {
 // Follow the style of the document being opened. Called on load, on external
 // reload and when switching back to a tab, so each document keeps its own
 // markers instead of being normalised to the serialiser's defaults.
-export function applyMarkdownStyle(style: MarkdownStyle): void {
-  markdownStyleOptions = style
-  if (!editorInstance) return
-  editorInstance.action((ctx) => {
-    const options = ctx.get(remarkStringifyOptionsCtx) as Record<string, unknown>
-    // Milkdown builds its remark processor once at init and keeps this object,
-    // so the style is applied by mutating it in place.
-    Object.assign(options, { bullet: undefined, rule: undefined, emphasis: undefined, strong: undefined, fence: undefined }, style)
-  })
+export function applyMarkdownStyle(style: MarkdownStyle, applyTo?: string): void {
+  // 风格记在各自的实例上：习题与答案是两篇文档，标记写法不该互相覆盖。
+  // 不传 applyTo 时对所有实例生效（桌面版只有一个实例，行为与从前一致）。
+  const records = applyTo ? [recordOf(applyTo)].filter((r): r is EditorRecord => !!r) : [...editorRecords.values()]
+  for (const record of records) {
+    record.markdownStyle = style
+    record.editor.action((ctx) => {
+      const options = ctx.get(remarkStringifyOptionsCtx) as Record<string, unknown>
+      // Milkdown builds its remark processor once at init and keeps this object,
+      // so the style is applied by mutating it in place.
+      Object.assign(options, { bullet: undefined, rule: undefined, emphasis: undefined, strong: undefined, fence: undefined }, style)
+    })
+  }
 }

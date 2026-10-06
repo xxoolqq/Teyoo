@@ -16,6 +16,8 @@ import { mathjaxConverter } from './converters/mathjax-omml'
 export type { FormulaConverter, FormulaToOmmlOptions, FormulaConverterInfo } from './types'
 export { getFormulaConverter, listFormulaConverters, registerFormulaConverter } from './registry'
 
-// 注册内置方案；首个注册者自动成为默认，故无需 makeDefault 标记
+// 注册内置方案。MathJax 显式设为默认：宏覆盖面最广（physics 等官方包），
+// 与预览端默认引擎（markdown.latexEngine = 'mathjax'）一致。
+// Temml 是 KaTeX 的 MathML 分支，设置面板下拉里显示为 KaTeX。
+registerFormulaConverter(mathjaxConverter, { makeDefault: true })
 registerFormulaConverter(temmlConverter)
-registerFormulaConverter(mathjaxConverter)

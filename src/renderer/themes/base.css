@@ -56,6 +56,13 @@ body {
      different lines where the surface changed — the panel's edge read lighter
      below the row than in it, and looked like two lines meeting (2026-09-15). */
   --shell-line: color-mix(in srgb, var(--text-color) 5%, var(--chrome-bg));
+  /* JSON 视图的着色（浅色一组；深色系主题在文件末尾整体换一组）。同样必须写在
+     body 上 —— 主题是在 body.theme-* 上覆盖 --bg-color 的。 */
+  --json-key: #0451a5;
+  --json-string: #a31515;
+  --json-number: #098658;
+  --json-bool: #0000ff;
+  --json-punct: var(--text-muted);
   /* Every icon control in the row — the plus, the word count, the source
      toggle, the file-panel toggle — reads at this one grey. They report nothing
      by weight: no hover step, no lit on-state, no dimmed disabled step. */
@@ -389,7 +396,8 @@ body.platform-win #titlebar {
    28px 里塞下左右各 10px 内边距后只剩 8px，中文逐字换行成了竖排。
    外观按设计稿：蓝色实心、圆角、白字 + 上传图标（仅此按钮有填充色，
    其余标题栏按钮保持无底色）。 */
-#titlebar > button.tab-submit-btn {
+#titlebar > button.tab-submit-btn,
+#titlebar > button.tab-submitted-btn {
   /* 主题色：整条按钮的蓝色（含 hover 加深）都由这里派生，换色只改一处 */
   --submit-bg: #3b82f6;
   --submit-bg-hover: #2f74e0;
@@ -407,7 +415,8 @@ body.platform-win #titlebar {
   transition: background .12s ease;
 }
 
-#titlebar > button.tab-submit-btn:hover {
+#titlebar > button.tab-submit-btn:hover,
+#titlebar > button.tab-submitted-btn:hover {
   background: var(--submit-bg-hover);
 }
 
@@ -536,6 +545,25 @@ body:has(#source-editor.visible) #toolbar {
 .toolbar-btn.tb-text {
   font-family: inherit;
   font-size: 15px;
+}
+
+/* 「清除样式 / 修改样式」：宽度包裹文字；未检测到字体样式时禁用 */
+.toolbar-btn.font-style-btn {
+  width: auto;
+  height: 26px;
+  padding: 0 9px;
+  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.toolbar-btn.font-style-btn:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.toolbar-btn.font-style-btn:disabled:hover {
+  background: transparent;
 }
 
 .toolbar-btn .tb-strike {
@@ -691,7 +719,9 @@ body:has(#source-editor.visible) #toolbar {
 /* ─── 字体 / 字号下拉（与标题下拉同构，紧随其后） ────────────────────────── */
 .font-select-btn,
 .fontsize-select-btn {
-  min-width: 50px;
+  /* 这两个下拉换成纯图标后（桌面版与 WebView2 宿主页一致），不再需要为
+     「字体」「小四」这批文字预留宽度，收成贴合图标 */
+  min-width: 0;
   padding: 0 6px;
   gap: 3px;
   font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
@@ -1426,20 +1456,6 @@ body.show-file-panel #source-editor {
   background: var(--selection-bg);
 }
 
-/* ======= 语法揭示（span 级 Markdown 源码态） ======= */
-/* 揭示态节点：等宽 + 次要文字色；标记字符（**、== 等）再弱一档。
-   对 span[data-md-source] 恒定生效——孤立的揭示节点（粘贴副本/撤销恢复）
-   也保持揭示外观，光标进入后由插件接管。 */
-#editor .ProseMirror span[data-md-source] {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
-  font-size: 0.92em;
-  color: var(--text-secondary, var(--text-color));
-  white-space: pre-wrap;
-}
-#editor .ProseMirror span[data-md-source] .md-reveal-marker {
-  opacity: 0.6;
-}
-
 /* ======= THEMES ======= */
 
 :root, body.theme-light {
@@ -2106,6 +2122,16 @@ mjx-container[jax='SVG'] > svg a {
   font-size: 15px;
 }
 
+/* --- 修改样式（字体 + 字号 + 对齐，尺寸与插入拼音弹窗一致） --- */
+.font-style-modal {
+  width: 420px;
+  gap: 12px;
+}
+
+.font-style-modal h3 {
+  font-size: 15px;
+}
+
 /* --- 未保存更改提示（自绘，替代原生 confirm） ---------------------------
    版式对齐设计稿：左上标题 + 两行说明，底部左侧「保存 / 丢弃」、右侧
    「取消」；主按钮实心蓝，次按钮浅灰底 + 细描边，方角（3px）。 */
@@ -2450,6 +2476,422 @@ body.show-file-panel #submit-panel {
   overflow-y: auto;
 }
 
+/* ─── PDF 对照视图（导入 PDF 文档） ────────────────────────────────────────
+   左 PDF 源文件 + 右编辑器。与提交页同一手法：body class 收起不该出现的
+   chrome，编辑面用 margin-left 让位。工具栏保留（要在右侧改 Markdown）。 */
+/* 默认左右各一半。这里不声明 --pdf-panel-width：一旦在 body 上写了值，就会盖住
+   pdf-view.ts 设在 :root 上的拖拽结果（自定义属性在 body 上重新声明即胜出）。
+   所以默认值只作为各处的 var() 兜底出现，拖过之后才由 JS 写死像素。 */
+
+/* 对照标签页里没有文件面板：左边已经是源文件，右边就是要编辑的那一个文档。
+   标签条与「新建 / 提交」必须留着 —— PDF 对照现在是窗口里的一个标签页，
+   要能切回别的文档、也能再开一个。 */
+body.pdf-view #file-toggle-btn,
+body.pdf-view #file-panel,
+body.pdf-view #panel-resizer {
+  display: none;
+}
+
+/* 左侧「源文件」条和右侧顶部条共用这一个高度，两条的下边缘才会齐；右侧顶部条
+   自己在流里占掉一行，编辑器高度也要减掉它（见文件末尾的 body.pdf-view #editor）。 */
+body.pdf-view {
+  --doc-bar-height: 40px;
+}
+
+/* JSON 模式：编辑面换成只读的 JSON 视图；工具栏留在原位（高度照旧，编辑区与
+   侧栏的 calc 不用改）但整条置灰不可用 —— 格式按钮对 JSON 没有意义。main.ts
+   同时把里面的控件设为 disabled：禁用控件不派发点击，悬停提示也跟着不弹。 */
+body.doc-json #toolbar {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+body.doc-json #editor,
+body.doc-json #source-editor {
+  display: none;
+}
+
+body.doc-json #doc-json {
+  display: block;
+}
+
+#pdf-panel {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
+  bottom: 0;
+  left: 0;
+  width: var(--pdf-panel-width, 50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-color);
+  border-right: 1px solid var(--shell-line);
+}
+
+#pdf-panel[hidden] {
+  display: none;
+}
+
+/* 定高而非自适应：右边顶部条是 40px，这一条必须同高，否则两条底部的分隔线
+   差几像素。改用居中而不是基线对齐 —— 条内所有文字同字号，居中和基线看不出
+   差别，但 20px 的圆按钮在 39px 的内容盒里放得下。 */
+.pdf-panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--doc-bar-height, 40px);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--shell-line);
+}
+
+.pdf-panel-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pdf-source-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-meta {
+  flex: none;
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+/* 头部是 baseline 对齐（标题/文件名/页码一行字看着齐），按钮组要自己居中，
+   否则会跟着文字基线上下漂。 */
+.pdf-zoom {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pdf-zoom-btn {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pdf-zoom-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.pdf-zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pdf-zoom-level {
+  flex: none;
+  align-self: center;
+  min-width: 32px;
+  font-size: 12px;
+  opacity: 0.55;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「在线解析」：同排的圆角按钮，进度文字走左边的 #pdf-meta，所以这里只放按钮。
+   推到最右（margin-left:auto），与左边的缩放按钮组分开。 */
+.pdf-parse-btn {
+  flex: none;
+  margin-left: auto;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pdf-parse-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.pdf-parse-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pdf-pages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  /* 槽位常驻：宽度是在清空容器后量的，那时还没有纵向滚动条；等页面填进去滚动
+     条一出现，可用宽度就窄了几像素，页面反而撑出一条横向滚动条。 */
+  scrollbar-gutter: stable;
+}
+
+/* 纸张：白底 + 一道投影，滚过去时一页和一页分得开。缩小后居中，放大后超出
+   容器的部分由 .pdf-pages 横向滚动。 */
+.pdf-page {
+  position: relative;
+  margin: 0 auto 12px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+/* 位图按栏宽铺满：拖动分隔条时由 CSS 先缩放（略糊），松手后重新渲染变清晰。 */
+.pdf-page canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── PDF ↔ 正文双向定位：左栏的块级矩形层 ──────────────────────────────
+   平时完全透明、不挡 canvas 上的滚动与拖拽，只有矩形本体收鼠标事件；
+   悬停/联动时才把框画出来。 */
+.pdf-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.pdf-bbox rect {
+  fill: transparent;
+  stroke: transparent;
+  stroke-width: 1;
+  /* 层本身不收事件，矩形收 —— 否则整页都被这一层盖住，滚不动也选不了。 */
+  pointer-events: all;
+}
+
+.pdf-bbox.is-hover rect {
+  fill: rgba(37, 99, 235, 0.18);
+  stroke: #2563eb;
+}
+
+/* 右栏正文里被指到的那一块 */
+.pdf-block.is-linked-hover {
+  background: rgba(37, 99, 235, 0.12);
+  box-shadow: inset 2px 0 0 #2563eb;
+}
+
+.pdf-error {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-color);
+  opacity: 0.75;
+}
+
+/* PDF 栏空态：菜单「PDF转md」直接进来、还没选源文件时显示。
+   flex:1 与 .pdf-pages 同权重，顶掉页面栏的位置。 */
+.pdf-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 32px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.pdf-empty[hidden],
+.pdf-pages[hidden] {
+  display: none;
+}
+
+.pdf-empty-text {
+  margin: 0;
+  text-align: center;
+  white-space: pre-line;
+}
+
+.pdf-open-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pdf-open-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+#pdf-resizer {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
+  bottom: 0;
+  left: calc(var(--pdf-panel-width, 50%) - 4px);
+  width: 7px;
+  cursor: col-resize;
+  z-index: 6;
+  background: transparent;
+}
+
+#pdf-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+#pdf-resizer:hover::after,
+#pdf-resizer.dragging::after {
+  background: color-mix(in srgb, var(--text-color) 24%, transparent);
+}
+
+body.pdf-resizing {
+  cursor: col-resize;
+}
+
+/* ─── 右侧栏顶部条：文档格式切换 + 复制 ────────────────────────────────────
+   只在 PDF 对照窗口出现。它和左侧「源文件」条同高、同底色，横向拼成一条完整的
+   顶栏；left 让位给 PDF 栏，和编辑器用同一个算式。 */
+#doc-bar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  height: var(--doc-bar-height, 40px);
+  padding: 0 10px;
+  margin-left: var(--pdf-panel-width, 50%);
+  background: var(--bg-color);
+  border-bottom: 1px solid var(--shell-line);
+}
+
+body.pdf-view #doc-bar {
+  display: flex;
+}
+
+/* 分段控件：一条浅灰蓝的轨道，选中项是白色药丸 + 蓝字（如同 MinerU 顶栏）。 */
+.doc-mode-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-color) 6%, var(--bg-color));
+}
+
+.doc-mode-btn {
+  height: 24px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.doc-mode-btn.is-active {
+  background: var(--bg-color);
+  color: var(--link-color);
+  font-weight: 500;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-color) 12%, transparent);
+}
+
+/* 保存 + 复制：一组靠右的图标按钮，margin-left:auto 由最左边那个（保存）承担。 */
+.doc-save-btn,
+.doc-copy-btn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color);
+  cursor: pointer;
+}
+
+.doc-save-btn {
+  margin-left: auto;
+}
+
+.doc-save-btn:hover,
+.doc-copy-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+/* 复制图标：后面那张纸不描边，被前面这张（填成条底色）盖住左上角。 */
+.doc-copy-front {
+  fill: var(--bg-color);
+}
+
+.doc-copy-check {
+  display: none;
+  color: var(--link-color);
+}
+
+.doc-copy-btn.copied .doc-copy-icon {
+  display: none;
+}
+
+.doc-copy-btn.copied .doc-copy-check {
+  display: block;
+}
+
+/* 保存成功：软盘换成勾，颜色同复制成功的反馈。 */
+.doc-save-check {
+  display: none;
+  color: var(--link-color);
+}
+
+.doc-save-btn.saved .doc-save-icon {
+  display: none;
+}
+
+.doc-save-btn.saved .doc-save-check {
+  display: block;
+}
+
+body.pdf-view #editor,
+body.pdf-view #source-editor {
+  margin-left: var(--pdf-panel-width, 50%);
+  /* 顶部条在流里占掉一行，编辑器高度要减掉，否则底部会被挤出窗口。 */
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px) - var(--toolbar-height, 0px) - var(--doc-bar-height, 40px));
+}
+
+/* 源码视图有显式宽度，和文件面板那一侧同理，要把让出的宽度减掉。 */
+body.pdf-view #source-editor {
+  width: calc(100% - var(--pdf-panel-width, 50%));
+}
+
 /* 预览态编辑器：高度随内容自适应、交出内部滚动（常规态是固定高度 +
    内部 overflow-y: auto，其滚动条在 pointer-events: none 下点不到），
    由外层 #submit-preview（固定 700px）统一滚动；不可交互（纯预览）。 */
@@ -2514,6 +2956,117 @@ body.submit-view #editor {
 
 #submit-feedback:empty {
   display: none;
+}
+
+/* ─── 打印预览 ────────────────────────────────────────────────────────────
+   Electron 的打印对话框自带预览区，但 Chromium 的预览渲染器在 Electron 里没
+   实现 —— 那块永远显示「此应用不支持打印预览」。所以预览由应用自己画：主进程
+   按打印样式 printToPDF，这里用 pdf.js 铺成页面（见 print-preview.ts）。
+   整层盖住编辑区（标题条 40px 之上留给窗口拖动），页面栏自己滚动。 */
+#print-preview {
+  position: fixed;
+  top: 40px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome-bg);
+}
+
+#print-preview[hidden] {
+  display: none;
+}
+
+.print-preview-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--shell-line);
+  color: var(--text-color);
+  font-size: 13px;
+}
+
+.print-preview-title {
+  font-weight: 600;
+}
+
+.print-preview-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-right: auto;
+}
+
+.print-preview-btn {
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 4px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-color);
+}
+
+.print-preview-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
+.print-preview-btn.is-primary {
+  border-color: transparent;
+  background: var(--link-color);
+  color: #fff;
+}
+
+.print-preview-btn.is-primary:hover {
+  opacity: 0.9;
+}
+
+.print-preview-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 页面栏：纸张底色固定白（PDF 页面本身就是白的，跟着主题反而脏），
+   外面那圈用主题背景，视觉上就是「一叠纸摊在桌面上」。 */
+.print-preview-pages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  /* 槽位常驻：宽度是在清空容器后量的，等页面填进去滚动条一出现可用宽度就窄
+     几像素，纸反而撑出一条横向滚动条（与 .pdf-pages 同一个坑）。 */
+  scrollbar-gutter: stable;
+}
+
+.print-preview-pages .print-preview-page {
+  position: relative;
+  /* 页面栏是 column flex：不加这行，纸会被 flex-shrink 压扁（aspect-ratio
+     定的高度作废、纸上的位图跟着挤成一条）。 */
+  flex: none;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+/* 位图按 dpr 画、再用 CSS 压回纸的宽度，字才不糊（同 .pdf-page canvas） */
+.print-preview-pages .print-preview-page canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.print-preview-status {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding-top: 40px;
 }
 
 /* Update banner (weak, non-blocking) */
@@ -2915,113 +3468,6 @@ body.has-custom-font #source-editor {
   border-color: var(--text-muted);
 }
 
-/* ─── 登录 tab：浮起卡片布局（仿参考图），整体置于偏左区域 ──────────────── */
-.prefs-login {
-  display: flex;
-  flex-direction: row; /* 覆盖 .prefs-panel 的 column */
-  justify-content: flex-start; /* 偏左 */
-  /* 卡片左缘贴住侧边栏分界线、上缘贴住内容区顶部 */
-  padding: 0 0 28px 0;
-}
-
-.prefs-login-box {
-  width: 320px;
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 34px 32px 26px;
-  background: color-mix(in srgb, var(--bg-color) 94%, var(--text-color));
-  border: 1px solid var(--border-color);
-  border-radius: 18px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
-}
-
-.prefs-login-title {
-  margin: 0 0 14px;
-  text-align: center;
-  font-size: 22px;
-  font-weight: 600;
-  color: var(--text-color);
-}
-
-/* 下划线式输入框（仿参考图） */
-.prefs-login-input {
-  height: 38px;
-  padding: 0 2px;
-  border: none;
-  border-bottom: 1px solid var(--border-color);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-color);
-  font-family: inherit;
-  font-size: 13.5px;
-  text-align: left;
-  outline: none;
-  transition: border-color .12s ease;
-}
-
-.prefs-login-input::placeholder {
-  color: var(--text-muted);
-}
-
-.prefs-login-input:focus {
-  border-bottom-color: #8fa4f5;
-}
-
-/* 粉→蓝渐变 pill 主按钮（仿参考图） */
-.prefs-login-btn {
-  height: 40px;
-  margin-top: 8px;
-  border: none;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #dc8ec4, #8fa4f5);
-  color: #fff;
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  cursor: pointer;
-  transition: filter .12s ease;
-}
-
-.prefs-login-btn:hover {
-  filter: brightness(1.06);
-}
-
-.prefs-login-btn:active {
-  filter: brightness(0.95);
-}
-
-.prefs-login-status {
-  min-height: 18px;
-  margin: 0;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.prefs-login-status-error {
-  color: #d64545;
-}
-
-.prefs-login-foot {
-  margin: 6px 0 0;
-  text-align: center;
-  font-size: 12.5px;
-  color: var(--text-muted);
-}
-
-.prefs-login-foot a {
-  color: #c77fb8;
-  cursor: pointer;
-  text-decoration: none;
-}
-
-.prefs-login-foot a:hover {
-  text-decoration: underline;
-}
-
 
 .prefs-row input[type="text"],
 .prefs-row input[type="number"],
@@ -3074,4 +3520,190 @@ body.has-custom-font #source-editor {
 
 .prefs-insert-path .prefs-label {
   min-width: auto;
+}
+
+/* ─── JSON 视图（右侧栏的 JSON 模式） ───────────────────────────────────────
+   只读展示解析结果（MinerU 的 layout.json 之类）：等宽字体 + 2 空格缩进
+   （缩进由 JSON.stringify 给，这里不改），只渲染可视区那几十行 —— 测试那份
+   数据美化后 11396 行，全量建 DOM 是 5 万+ 节点，首屏就卡住了。 */
+#doc-json {
+  display: none;
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px) - var(--toolbar-height, 0px) - var(--doc-bar-height, 40px));
+  background: var(--bg-color);
+}
+
+body.pdf-view #doc-json {
+  margin-left: var(--pdf-panel-width, 50%);
+}
+
+.json-viewport {
+  --json-line-height: 19px;
+  height: 100%;
+  overflow: auto;
+  padding: 8px 0;
+  background: var(--bg-color);
+}
+
+.json-viewport[hidden],
+.json-empty[hidden] {
+  display: none;
+}
+
+/* 撑出滚动范围，行绝对定位在这一层里。 */
+.json-lines {
+  position: relative;
+  min-width: 100%;
+}
+
+.json-row {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--json-line-height);
+  font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: var(--json-line-height);
+  white-space: pre;
+}
+
+.json-row:hover {
+  background: color-mix(in srgb, var(--text-color) 5%, transparent);
+}
+
+/* 行号：横向滚动时用 sticky 钉在左边（不透明底，压住从下面滑过的代码）。 */
+.json-ln {
+  position: sticky;
+  left: 0;
+  flex: none;
+  width: 52px;
+  padding-right: 10px;
+  background: var(--bg-color);
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.json-fold {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-right: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.json-fold:hover {
+  background: color-mix(in srgb, var(--text-color) 10%, transparent);
+  color: var(--text-color);
+}
+
+/* 没有三角的行留同样宽度，代码才对齐。 */
+.json-fold-space {
+  flex: none;
+  width: 16px;
+  margin-right: 2px;
+}
+
+.json-code {
+  flex: none;
+  color: var(--text-color);
+}
+
+.json-collapsed-hint {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* 量字符宽度用的探针：画一次就删，不能留在版面里。 */
+.json-probe {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.json-key {
+  color: var(--json-key);
+}
+
+.json-string {
+  color: var(--json-string);
+}
+
+.json-number {
+  color: var(--json-number);
+}
+
+.json-bool {
+  color: var(--json-bool);
+}
+
+.json-punct {
+  color: var(--json-punct);
+}
+
+/* 空态 / 解析失败：居中一句话 + 「打开 JSON…」。 */
+.json-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 40px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.json-empty-text {
+  margin: 0;
+  text-align: center;
+  white-space: pre-line;
+}
+
+.json-open-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.json-open-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+/* 深色系主题换一组对比度够的 JSON 配色（与上面 body 上那组浅色对应）。 */
+body.theme-dark,
+body.theme-solarized-dark,
+body.theme-nord,
+body.theme-gruvbox,
+body.theme-dracula,
+body.theme-midnight {
+  --json-key: #9cdcfe;
+  --json-string: #ce9178;
+  --json-number: #b5cea8;
+  --json-bool: #569cd6;
+  --json-punct: var(--text-muted);
 }

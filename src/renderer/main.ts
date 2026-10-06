@@ -1,13 +1,22 @@
-import { createEditor, flashHeadingOnArrival, focusEditor, getMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, applyFont } from './editor/editor'
+import { createEditor, flashHeadingOnArrival, focusEditor, getEditorView, getMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, applyFont } from './editor/editor'
 import { setupToolbar, toggleToolbarVisible, runToolbarCommand } from './toolbar'
 import { setCurrentImageFilePath } from '../extensions/image-style'
 import { detectMarkdownStyle } from './editor/markdown-style'
 import { SearchPanel } from './editor/search-panel'
-import { preferencesModal, getExportFormulaEnginePreference } from './preferences-modal'
+import { DEFAULT_WORK_DIR, showPreferencesModal, getExportFormulaEnginePreference } from './preferences-modal'
 import { initPrefsStore, getPrefs, onPrefsChanged } from './preferences-store'
 import { applyTheme, loadSavedTheme } from './themes/theme-manager'
 import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
+import { enterPdfTabChrome, getOpenedPdfPath, initPdfView, leavePdfTab, loadPdfTab } from './pdf-view'
+import { initDocBar, type DocFormat } from './doc-bar'
+import { getJsonOrigin, getJsonPath, getJsonText, initJsonView, refreshJsonLayout } from './json-view'
+import { initPrintPreview, showPrintPreview } from './print-preview'
+import { clearPdfBlockAnchors, scheduleBlockLinkRebuild, setBlockLinkView } from './block-link'
+import { canvasDocTabLabel, canvasDocWindowTitle, hideCanvasDocView, releaseCanvasDocTab, showCanvasDocView } from './canvas-editor'
+// 工具栏里那几个「新建标签页 / 打开文件」的动作用钩子注册进来（避免
+// toolbar → main.ts 的循环依赖），见 canvas-editor/host.ts。
+import { setCanvasDocHooks, type CanvasDocInit } from './canvas-editor/host'
 import './themes/base.css'
 import './themes/premium.css'
 
@@ -92,6 +101,8 @@ function applyFilePanelWidth(width: number): void {
 }
 
 applyFilePanelWidth(clampFilePanelWidth(Number.parseInt(localStorage.getItem('file-panel-width') ?? '', 10) || FILE_PANEL_DEFAULT_WIDTH))
+// PDF 对照的外壳（body.pdf-view）不再首帧就加：它是标签页级别的状态，由
+// activateTab 在切进/切出 PDF 标签页时开关（见 enterPdfTabChrome / leavePdfTab）。
 
 function setMarkdownProgrammatically(content: string, flushHistory = false): void {
   applyingProgrammaticChange = true
@@ -178,9 +189,17 @@ function raiseExternalConflict(): void {
 // makes switching a capture/restore pair instead of a second document machine.
 interface DocumentTab {
   id: string
-  /** document: 编辑器标签页；submit: 提交表单标签页（非编辑器视图） */
-  kind: 'document' | 'submit'
+  /** document: 编辑器标签页；submit: 提交表单标签页；canvas: 类docx文档标签页（canvas-editor，非 Markdown 编辑器视图） */
+  kind: 'document' | 'submit' | 'canvas'
   filePath: string | null
+  /**
+   * 这个标签页是不是 PDF 对照标签页（左 PDF / 右文档）。它仍是一个普通文档
+   * 标签页 —— full.md 填进来后照样能改、能保存、能标脏 —— 只是额外挂着一份
+   * 源文件，窗口里最多一个（再点「PDF转md」就聚焦已有的那个）。
+   */
+  pdfTab: boolean
+  /** 对照的源文件路径；还没选（用户没点「打开 PDF…」）就是 null，面板显示空态。 */
+  pdfPath: string | null
   dirty: boolean
   revision: number
   sourceMode: boolean
@@ -214,11 +233,21 @@ function untitledLabel(): string {
 // cuts — `解读.…` reads as four dots. Mirrors the panel's markdown filter.
 const DOCUMENT_SUFFIX = /\.(md|markdown|mdown|mkd)$/i
 
+const PDF_SUFFIX = /\.pdf$/i
+
 function tabLabel(tab: DocumentTab): string {
   if (tab.kind === 'submit') return isChinese() ? '提交' : 'Submit'
-  if (!tab.filePath) return untitledLabel()
-  const name = tab.filePath.split(/[\\/]/).pop() || tab.filePath
-  return name.replace(DOCUMENT_SUFFIX, '')
+  if (tab.kind === 'canvas') return canvasDocTabLabel()
+  if (tab.filePath) {
+    const name = tab.filePath.split(/[\\/]/).pop() || tab.filePath
+    return name.replace(DOCUMENT_SUFFIX, '')
+  }
+  // PDF 对照标签页还没另存过：挂了源文件就写它的名字，一个都没选时写「PDF」。
+  if (tab.pdfTab) {
+    if (!tab.pdfPath) return 'PDF'
+    return (tab.pdfPath.split(/[\\/]/).pop() || tab.pdfPath).replace(PDF_SUFFIX, '')
+  }
+  return untitledLabel()
 }
 
 // Read the live state back into the active tab's record. Called before every
@@ -226,9 +255,9 @@ function tabLabel(tab: DocumentTab): string {
 function captureActiveTab(): void {
   const tab = activeTab()
   if (!tab) return
-  // 提交页不是编辑器：模块级编辑器状态仍描述上一个文档标签页，不能写进
-  // 提交页的记录（否则它会被误判为可保存的文档）。
-  if (tab.kind === 'submit') return
+  // 提交页 / 类docx文档页不是 Markdown 编辑器：模块级编辑器状态仍描述上一个
+  // 文档标签页，不能写进它们的记录（否则会被误判为可保存的文档）。
+  if (tab.kind === 'submit' || tab.kind === 'canvas') return
   // The path is the tab's identity and only changes where a document is really
   // opened or saved; deriving it here would let a stray render rename a tab.
   tab.dirty = dirty
@@ -248,7 +277,7 @@ function captureActiveTab(): void {
 // keeps the primary save hint.
 function markActiveTabDirty(): void {
   const tab = activeTab()
-  if (!tab || tab.kind === 'submit') return
+  if (!tab || tab.kind === 'submit' || tab.kind === 'canvas') return
   tab.dirty = dirty
   const entry = tabBarEl().querySelector(`.tab-entry[data-tab-id="${tab.id}"]`)
   entry?.classList.toggle('dirty', dirty)
@@ -366,6 +395,23 @@ function uploadGlyph(): SVGSVGElement {
   return svg
 }
 
+// 「已提交」按钮的对勾图标，跟随按钮文字色（currentColor）。
+function checkGlyph(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('width', '13')
+  svg.setAttribute('height', '13')
+  svg.setAttribute('viewBox', '0 0 16 16')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke', 'currentColor')
+  svg.setAttribute('stroke-width', '1.5')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+  path.setAttribute('d', 'M3.8 8.4l2.8 2.8 5.6-5.6')
+  svg.append(path)
+  return svg
+}
+
 function renderTabBar(): void {
   captureActiveTab()
   const bar = tabBarEl()
@@ -434,11 +480,36 @@ function renderTabBar(): void {
   submit.addEventListener('mouseenter', () => scheduleTip(submit, isChinese() ? '提交' : 'Submit', 'below', TAB_TIP_DELAY))
   submit.addEventListener('mouseleave', hideTip)
   fileToggleBtnEl().before(submit)
+  // 「已提交」紧挨「提交」右侧：同款文字按钮，点击后打开一个空白标签页。
+  titlebar?.querySelector('.tab-submitted-btn')?.remove()
+  const submitted = document.createElement('button')
+  submitted.type = 'button'
+  submitted.className = 'tab-submitted-btn'
+  submitted.textContent = isChinese() ? '已提交' : 'Submitted'
+  submitted.append(checkGlyph())
+  submitted.setAttribute('aria-label', isChinese() ? '打开已提交的空白标签页' : 'Open submitted blank tab')
+  submitted.addEventListener('click', () => void openNewTab())
+  submitted.addEventListener('mouseenter', () => scheduleTip(submitted, isChinese() ? '已提交' : 'Submitted', 'below', TAB_TIP_DELAY))
+  submitted.addEventListener('mouseleave', hideTip)
+  submit.after(submitted)
   const active = bar.querySelector('.tab-entry.active')
   active?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   // Let the main process know which files this window holds in tabs, so opening
   // an already open document can focus that tab instead of duplicating it.
   window.electronAPI.setTabFiles(tabs.map((tab) => tab.filePath).filter((path): path is string => !!path))
+  reportActiveTabKind()
+}
+
+// 主进程要知道前台是哪种标签页：类 docx 文档（canvas-editor）标签页自成一体的
+// 那套，菜单栏的打印/打印预览对它不生效（见 main 的 isCanvasTabActive）。切标签
+// 页/换视图都会走到 renderTabBar，借它上报；同值不重复发。
+let reportedTabKind: DocumentTab['kind'] | null = null
+
+function reportActiveTabKind(): void {
+  const kind = activeTab()?.kind ?? 'document'
+  if (kind === reportedTabKind) return
+  reportedTabKind = kind
+  window.electronAPI.setActiveTabKind(kind)
 }
 
 function showBlankDocument(): void {
@@ -477,14 +548,16 @@ async function saveTabForLeaving(tab: DocumentTab | null): Promise<boolean> {
 // file seeds the first tab here, and a file that arrives later adopts it.
 function ensureTab(): DocumentTab {
   const existing = activeTab()
-  if (existing && existing.kind !== 'submit') return existing
-  // 提交页是活动标签页时，到来的文档不能落在它身上：种一个新的文档
-  // 标签页接管活动位（提交页退回后台，供切回）。
+  if (existing && existing.kind === 'document' && !existing.pdfTab) return existing
+  // 提交页 / 类docx文档页 / PDF 对照页是活动标签页时，到来的文档不能落在它
+  // 身上：种一个新的文档标签页接管活动位（它们退回后台，供切回）。
   if (existing) {
     const tab: DocumentTab = {
       id: `tab-${nextTabId++}`,
       kind: 'document',
       filePath: null,
+      pdfTab: false,
+      pdfPath: null,
       dirty: false,
       revision: documentRevision,
       sourceMode: false,
@@ -497,12 +570,18 @@ function ensureTab(): DocumentTab {
     tabs.push(tab)
     activeTabId = tab.id
     hideSubmitView()
+    hideCanvasDocView()
+    // 对照面板跟着标签页走：新文档标签页没有它。
+    leavePdfTabChrome()
+    updatePanelVisibility()
     return tab
   }
   const tab: DocumentTab = {
     id: `tab-${nextTabId++}`,
     kind: 'document',
     filePath: null,
+    pdfTab: false,
+    pdfPath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -517,16 +596,30 @@ function ensureTab(): DocumentTab {
   return tab
 }
 
+/**
+ * 离开 PDF 对照标签页：面板收起、文档与 worker 放掉。格式一并回到 Markdown ——
+ * JSON 是 PDF 对照下那份中间结果的只读视图，留在普通标签页上没有意义。
+ */
+function leavePdfTabChrome(): void {
+  leavePdfTab()
+  setDocFormat('markdown')
+}
+
 async function openNewTab(): Promise<void> {
   const previous = activeTab()
   captureActiveTab()
   if (!await saveTabForLeaving(previous)) return
-  // 从提交页新建文档标签页时，先恢复编辑面（提交页退回后台）
+  // 从提交页 / 类docx文档页 / PDF 对照页新建文档标签页时，先把这些视图收
+  // 起来（编辑面归位）
   hideSubmitView()
+  hideCanvasDocView()
+  leavePdfTabChrome()
   const tab: DocumentTab = {
     id: `tab-${nextTabId++}`,
     kind: 'document',
     filePath: null,
+    pdfTab: false,
+    pdfPath: null,
     dirty: false,
     revision: ++documentRevision,
     sourceMode: false,
@@ -542,7 +635,9 @@ async function openNewTab(): Promise<void> {
   // Tell the main process the window is now on an untitled document, otherwise
   // its notion of the active file still points at the previous tab's file.
   await window.electronAPI.activateFile(null)
+  window.electronAPI.setActivePdfPath(null)
   showBlankDocument()
+  updatePanelVisibility()
   renderTabBar()
   // The new tab exists to be typed in, so the caret goes there without a click.
   focusEditor()
@@ -609,6 +704,8 @@ async function openSubmitTab(): Promise<void> {
     id: `tab-${nextTabId++}`,
     kind: 'submit',
     filePath: null,
+    pdfTab: false,
+    pdfPath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -623,11 +720,100 @@ async function openSubmitTab(): Promise<void> {
   currentFilePath = null
   // 与未命名文档标签页同一规则：窗口停止指向上一个文档（watcher、标题、最近列表）
   await window.electronAPI.activateFile(null)
+  window.electronAPI.setActivePdfPath(null)
+  // PDF 对照面板不属于提交页：连同格式一起收回普通编辑面。
+  leavePdfTabChrome()
   showSubmitView()
   document.title = isChinese() ? '提交' : 'Submit'
   renderTabBar()
   // 表单页存在的意义就是输入，焦点直接落到输入框
   submitInputEl().focus()
+}
+
+// ─── PDF 对照标签页 ────────────────────────────────────────────────────
+// 菜单「文件 → PDF转md」：在窗口里开一个挂着对照面板的文档标签页（左 PDF /
+// 右编辑器）。它就是一个普通文档标签 —— 解析结果 full.md 填进来后照样能改、能
+// 保存、能标脏 —— 只是额外记住一份源文件路径。窗口里最多一个（已存在就聚焦）。
+async function openPdfTab(): Promise<void> {
+  const existing = tabs.find((tab) => tab.pdfTab)
+  if (existing) {
+    await activateTab(existing.id)
+    return
+  }
+  const previous = activeTab()
+  captureActiveTab()
+  if (!await saveTabForLeaving(previous)) return
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'document',
+    filePath: null,
+    pdfTab: true,
+    pdfPath: null,
+    dirty: false,
+    revision: ++documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  tabs.push(tab)
+  activeTabId = tab.id
+  currentFilePath = null
+  hideSubmitView()
+  hideCanvasDocView()
+  await window.electronAPI.activateFile(null)
+  window.electronAPI.setActivePdfPath(null)
+  showBlankDocument()
+  enterPdfTabChrome()
+  updatePanelVisibility()
+  renderTabBar()
+  // 还没选源文件：面板摆出空态，由里面的「打开 PDF…」把人送去选文件。
+  void loadPdfTab(null)
+  focusEditor()
+}
+
+// ─── 类 docx 文档标签页 ────────────────────────────────────────────────
+// 菜单「文件 → 新建类docx文档」：开一个 canvas-editor 标签页（画布排版、
+// 分页的类 Word 文档）。它与提交页同一层级 —— 不是 Markdown 编辑器视图，
+// 不接管 #editor，也不进保存/脏标记体系；每次点击都新建一份（菜单说的
+// 就是「新建」），实例随标签页关闭而销毁（见 closeTab）。
+/**
+ * 开一个类 docx 文档标签页。init 可选：给工具栏的导入用 —— 建好画布实例后
+ * 立刻执行（把 docx / markdown 的内容塞进这个新标签页），不动当前文档。
+ */
+async function openCanvasDocTab(init?: CanvasDocInit): Promise<void> {
+  const previous = activeTab()
+  captureActiveTab()
+  if (!await saveTabForLeaving(previous)) return
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'canvas',
+    filePath: null,
+    pdfTab: false,
+    pdfPath: null,
+    dirty: false,
+    revision: documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  tabs.push(tab)
+  activeTabId = tab.id
+  currentFilePath = null
+  // 编辑面归位：提交表单与 PDF 对照面板都不属于这个标签页。
+  hideSubmitView()
+  leavePdfTabChrome()
+  // 与未命名文档标签页同一规则：窗口停止指向上一个文档（watcher、标题、最近列表）
+  await window.electronAPI.activateFile(null)
+  window.electronAPI.setActivePdfPath(null)
+  showCanvasDocView(tab.id, init)
+  document.title = canvasDocWindowTitle()
+  renderTabBar()
 }
 
 // 提交动作：当前没有远端提交目标，先做本地反馈（记录 + 界面提示），
@@ -677,21 +863,42 @@ async function activateTab(id: string): Promise<void> {
   if (!await saveTabForLeaving(previous)) return
   switchingTab = true
   try {
+    // 对照面板跟着标签页走：只有那个标签页才展开左 PDF / 右文档，切到别的
+    // 标签页（含提交页）一律收起。切进来时只先换外壳 —— 渲染要等本分支末尾
+    // 内容恢复完再做（填内容会清掉块锚点，先渲染就白装一遍）。
+    if (target.pdfTab) enterPdfTabChrome()
+    else leavePdfTabChrome()
+    // 主进程要知道前台这份标签页挂着哪个源文件：「另存为」的默认名按它取。
+    window.electronAPI.setActivePdfPath(target.pdfTab ? target.pdfPath : null)
     // 提交表单标签页：不接管编辑器，只切换视图（编辑面由 CSS +
     // showSubmitView 整体隐藏），也无 dirty/大纲/字数可谈。
     if (target.kind === 'submit') {
       await window.electronAPI.activateFile(null)
       activeTabId = target.id
       currentFilePath = null
+      hideCanvasDocView()
       showSubmitView()
       document.title = isChinese() ? '提交' : 'Submit'
       renderTabBar()
       submitInputEl().focus()
       return
     }
-    // 回到文档标签页：先收回提交页并恢复编辑面默认（wysiwyg）可见性。
-    // 目标若是源码模式，下方分支会重新 enterSourceMode。
+    // 类 docx 文档标签页（canvas-editor）：与提交页同层级 —— 不接管编辑器，
+    // 只切换视图，也无 dirty/大纲/字数可谈。
+    if (target.kind === 'canvas') {
+      await window.electronAPI.activateFile(null)
+      activeTabId = target.id
+      currentFilePath = null
+      hideSubmitView()
+      showCanvasDocView(target.id)
+      document.title = canvasDocWindowTitle()
+      renderTabBar()
+      return
+    }
+    // 回到文档标签页：先收回提交页 / 类docx文档页，并恢复编辑面默认
+    //（wysiwyg）可见性。目标若是源码模式，下方分支会重新 enterSourceMode。
     hideSubmitView()
+    hideCanvasDocView()
     // Point the window at the incoming document first: this re-points the file
     // watcher, the title and the recent list, and reports whether the file
     // changed while this tab sat in the background. An untitled tab passes null
@@ -745,6 +952,8 @@ async function activateTab(id: string): Promise<void> {
     }
     restoreScroll()
     requestAnimationFrame(restoreScroll)
+    // 内容到位之后才渲染 PDF：锚点要装在这份正文上（setContent 会清锚点）。
+    if (target.pdfTab) void loadPdfTab(target.pdfPath)
     renderTabBar()
     if (changedOnDisk && target.dirty) raiseExternalConflict()
   } finally {
@@ -779,6 +988,8 @@ async function closeTab(id: string): Promise<void> {
     if (choice === 'save' && !await saveCurrent()) return
   }
   tabs.splice(index, 1)
+  // 类 docx 文档标签页：画布实例跟着标签页走，关掉即销毁（画布不复用）。
+  releaseCanvasDocTab(tab.id)
   if (tabs.length === 0) {
     // The last tab closed: the window falls back to a single blank document and
     // the bar disappears with it.
@@ -790,6 +1001,8 @@ async function closeTab(id: string): Promise<void> {
     activeTabId = null
     await activateTab(tabs[Math.min(index, tabs.length - 1)].id)
   }
+  // 关掉的正是挂着源文件的那个标签页时，主进程记的那份「当前 PDF」要跟着走。
+  window.electronAPI.setActivePdfPath(activeTab()?.pdfPath ?? null)
   renderTabBar()
 }
 
@@ -895,6 +1108,17 @@ async function openFileInNewTab(path: string): Promise<void> {
   await window.electronAPI.openSibling(path)
 }
 
+/**
+ * 从类 docx 标签页打开一个 Markdown 文件（导出 md 之后用）。
+ * 不能直接交给 openFileInNewTab：它会复用「干净且未命名」的当前标签页，而
+ * canvas 标签页正好符合这个条件 —— 结果文件内容被塞进隐藏的 #editor，界面上
+ * 还停在画布，看起来像没反应。先开一个空白文档标签页再打开就对了。
+ */
+async function openMarkdownPathFromCanvas(path: string): Promise<void> {
+  if (activeTab()?.kind === 'canvas') await openNewTab()
+  await openFileInNewTab(path)
+}
+
 // Closing several tabs runs one at a time: each close may need its own unsaved
 // confirmation, and a cancelled one stops the rest.
 async function closeTabsMatching(keep: (index: number) => boolean): Promise<void> {
@@ -920,6 +1144,8 @@ function bindTabBar(api: import('../preload/index').ElectronAPI): void {
   // strip's own plus is bound above, in renderTabBar.
   api.onMenuNewTab(() => { void openNewTab() })
   api.onMenuCloseTab(() => { if (activeTabId) void closeTab(activeTabId) })
+  // 菜单「文件 → PDF转md」：在当前窗口开对照标签页（已存在就聚焦它）。
+  api.onMenuPdfTab(() => { void openPdfTab() })
   api.onOpenInNewTab(enqueueTabOpen)
   const handleTabMenuAction = ({ action, tabId }: { action: string; tabId: string }) => {
     if (action === 'close') { void closeTab(tabId); return }
@@ -1090,15 +1316,24 @@ async function runAutosave(): Promise<void> {
   }
 }
 
+// 保存 / ⌘S / 顶部条「保存」：文档已经有落点就直接覆盖，中途任何改动都静默
+// 落盘，不弹框也不问。只有未命名的文档才弹另存为；对话框停在哪儿由主进程统一
+// 决定（工作目录 → D:\TeyooData → AppData），这里不掺和。
 async function saveCurrent(saveAs = false): Promise<boolean> {
+  // 提交页 / 类docx文档页没有 Markdown 文档可存：⌘S 在这里不该打开另存为
+  // 去存上一个文档标签页的内容。
+  const current = activeTab()
+  if (current && current.kind !== 'document') return false
   const revision = documentRevision
   const content = getContent()
   const expectedPath = currentFilePath
   // '' states plainly that the active document is untitled, so a save can never
   // be written into a file the window happens to have open in another tab.
-  const path = await enqueueSave(() => saveAs
-    ? window.electronAPI.saveFileAs(content, expectedPath ?? '')
-    : window.electronAPI.saveFile(content, expectedPath ?? '', true))
+  const path = await enqueueSave(() => {
+    if (saveAs) return window.electronAPI.saveFileAs(content, expectedPath ?? '')
+    if (!expectedPath) return window.electronAPI.saveFileAs(content, '')
+    return window.electronAPI.saveFile(content, expectedPath ?? '', true)
+  })
   if (!path || currentFilePath !== expectedPath) return false
 
   currentFilePath = path
@@ -1213,9 +1448,9 @@ function restoreScrollRatio(el: HTMLElement, ratio: number): void {
 }
 
 function toggleSourceMode(): void {
-  // 提交页没有文档可切换（编辑器已整体隐藏），按钮与快捷键都不响应
+  // 提交页 / 类docx文档页没有 Markdown 可切换（编辑器已整体隐藏），按钮与快捷键都不响应
   const tab = activeTab()
-  if (tab && tab.kind === 'submit') return
+  if (tab && tab.kind !== 'document') return
   if (sourceModeActive) {
     // Source → WYSIWYG: 如果 textarea 内容自进入 Source 模式后未修改，跳过解析
     const currentText = sourceEl().value
@@ -1250,7 +1485,8 @@ function toggleSourceMode(): void {
 }
 
 function updatePanelVisibility(): void {
-  const show = !manualHidden
+  // PDF 对照标签页没有文件面板：左边已经是源文件，右边就是要编辑的那一个文档。
+  const show = !manualHidden && !activeTab()?.pdfTab
   filePanelEl().hidden = !show
   document.body.classList.toggle('show-file-panel', show)
   fileToggleBtnEl().classList.toggle('active', show)
@@ -1834,11 +2070,203 @@ function exitSourceMode(): void {
   updateSourceToggle()
 }
 
+// 右侧栏顶部条的 Markdown / JSON 切换：编辑面的显示交给 CSS 的 body.doc-json，
+// 工具栏留在原位但整条置灰并禁用 —— 格式按钮对 JSON 没有意义，收起来反倒像是
+// 换了个界面；禁用控件既不派发点击，也不再弹悬停提示。
+function setDocFormat(format: DocFormat): void {
+  const jsonMode = format === 'json'
+  document.body.classList.toggle('doc-json', jsonMode)
+  // 源码模式会把工具栏收起（--toolbar-height 归零，且那条 :has 规则优先级更高），
+  // 两者叠在一起会让工具栏按源码模式算高度却仍显示出来 —— 互斥。
+  if (jsonMode && sourceModeActive) exitSourceMode()
+  setToolbarEnabled(!jsonMode)
+  // 两侧各是各的内容：Markdown 就是编辑器里的文档（来自 full.md），JSON 就是
+  // 中间结果那份文件 —— 切换只换视图，不再做 JSON → Markdown 的转换。
+  // JSON 面板此前是 display:none，量不到可视高度：切过来才重新量并画第一屏。
+  if (jsonMode) refreshJsonLayout()
+}
+
+function isAbsoluteLike(path: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('/')
+}
+
+/** (baseKey, imagePath) → 读图任务：同一张图在同一份文档里只读一次磁盘。 */
+const layoutImageTasks = new Map<string, Promise<string | null>>()
+
+function dirOf(filePath: string): string {
+  return filePath.replace(/[\\/][^\\/]*$/, '')
+}
+
+/** 本地绝对路径 → file:// URL（Windows 盘符前要三道斜杠，否则解析成主机名为 D:）。 */
+function absoluteToFileUrl(absolutePath: string): string {
+  const flat = absolutePath.replace(/\\/g, '/')
+  return /^[a-zA-Z]:\//.test(flat) ? `file:///${flat}` : `file://${flat}`
+}
+
+/** 最近一次读进编辑器的 full.md 所在目录（见 applyMarkdownFile）。 */
+let markdownImageDir: string | null = null
+
+/**
+ * 图片的基准目录，按谁更可能是图片真正所在处排序：
+ *   1. 最近那份 Markdown 的目录 —— 结果包解压出来就是这种形状：full.md 与
+ *      images/ 同级，跟 PDF 在哪、有没有 layout.json 都无关；
+ *   2. 打开的是谁就先认谁的目录 —— 手动「打开 JSON…」认 JSON 目录，PDF 旁边
+ *      带出来的 JSON 认 PDF 目录；
+ *   3. 程序默认目录 D:\TeyooData；
+ *   4. 偏好设置 → 图片 → 工作目录 里指定的目录。
+ */
+function layoutImageBaseDirs(): string[] {
+  const jsonPath = getJsonPath()
+  const pdfPath = getOpenedPdfPath()
+  const jsonDir = jsonPath ? dirOf(jsonPath) : null
+  const pdfDir = pdfPath ? dirOf(pdfPath) : null
+  const opened = getJsonOrigin() === 'dialog' ? [jsonDir, pdfDir] : [pdfDir, jsonDir]
+  // 偏好里没设（或 store 还没就绪）就退回程序默认的工作目录。
+  const workDir = getPrefs<string>('image.workDir') || DEFAULT_WORK_DIR
+  const candidates = [markdownImageDir, ...opened, DEFAULT_WORK_DIR, workDir]
+  return [...new Set(candidates.filter((dir): dir is string => !!dir))]
+}
+
+/**
+ * MinerU 的图片路径 → 可直接写进 Markdown 的 src。
+ *
+ * 图片落在基准目录下的 images/ 里（MinerU 的输出结构），image_path 有时带
+ * images/ 前缀、有时只是文件名，两种都试。读得到就内嵌成 data URL；读不到
+ * （没有 Electron 通道 / images 目录不在这几处 / 文件缺失）就退回第一个候选
+ * 的 file:// 绝对路径 —— 裸文件名在编辑器里是必然加载不出来的。
+ */
+function resolveLayoutImage(imagePath: string): Promise<string | null> {
+  const flat = imagePath.replace(/\\/g, '/')
+  const name = flat.replace(/^.*\//, '')
+  const baseDirs = layoutImageBaseDirs()
+  const candidates = isAbsoluteLike(flat)
+    ? [flat]
+    : baseDirs.flatMap((dir) => [`${dir}/images/${name}`, `${dir}/${flat}`])
+  if (!candidates.length) return Promise.resolve(null)
+
+  const key = `${baseDirs.join('|')} ${imagePath}`
+  const cached = layoutImageTasks.get(key)
+  if (cached) return cached
+  const task = (async (): Promise<string | null> => {
+    // 偏好里关掉内嵌就只写路径：不读盘，Markdown 里留一条 file:// 绝对路径。
+    const embed = getPrefs<boolean>('image.embedImages') ?? true
+    if (!embed) return absoluteToFileUrl(candidates[0])
+    // 走可选访问：WebView2 / 纯浏览器里根本没有 Electron 通道，别抛异常
+    const api = window.electronAPI as Partial<typeof window.electronAPI> | undefined
+    const read = api?.readImageAsDataUrl
+    if (read) {
+      for (const candidate of new Set(candidates)) {
+        try {
+          const result = await read(candidate)
+          if (result?.dataUrl) return result.dataUrl
+        } catch {
+          // 单个候选读失败（权限/占用）不影响其它候选
+        }
+      }
+    }
+    // 内嵌不成也别再退回裸文件名：file:// 绝对路径至少指向了真实位置。
+    console.warn('[layout2md] 图片读不到，退回 file:// 路径：', candidates[0], '（readImageAsDataUrl 可用：', !!read, '）')
+    return absoluteToFileUrl(candidates[0])
+  })()
+  layoutImageTasks.set(key, task)
+  return task
+}
+
+/** Markdown 图片语法：![alt](src "title") */
+const MD_IMAGE_RE = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
+/**
+ * HTML 图片：<img src="..." …>。MinerU 的表格是整块 HTML，单元格里的图就用
+ * img 标签写的（不是 Markdown 语法），所以这两种都得认。
+ */
+const HTML_IMAGE_RE = /<img\b[^>]*?\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi
+
+const IMAGE_PATTERNS: Array<{ re: RegExp; pick: (match: RegExpMatchArray) => string | undefined }> = [
+  { re: MD_IMAGE_RE, pick: (match) => match[1] },
+  // 无引号写法 `<img src=a.jpg/>` 会把结尾那个 / 也吃掉，去了再找文件。
+  { re: HTML_IMAGE_RE, pick: (match) => match[1] ?? match[2] ?? match[3]?.replace(/\/$/, '') },
+]
+
+/**
+ * full.md 里的图片路径是相对结果包的（images/xxx.jpg），编辑器页面在 file:// 下
+ * 按自身 URL 解析，裸相对路径必然加载不出来 —— 换成内嵌 data URL（或至少是
+ * file:// 绝对路径），逻辑与 layout.json 那条路一样走 resolveLayoutImage。
+ */
+async function inlineMarkdownImages(markdown: string): Promise<string> {
+  // 每处 src 记成「子串范围」：替换时只动 src 那一段，alt/title 里同名的文本不动。
+  const hits = IMAGE_PATTERNS.flatMap(({ re, pick }) =>
+    [...markdown.matchAll(re)].flatMap((match) => {
+      const src = pick(match)
+      if (!src || match.index === undefined) return []
+      const offset = match[0].indexOf(src)
+      if (offset < 0) return []
+      return [{ at: match.index + offset, src }]
+    })
+  )
+  if (!hits.length) return markdown
+  hits.sort((a, b) => a.at - b.at)
+  const resolved = await Promise.all(hits.map((hit) => resolveLayoutImage(hit.src)))
+
+  let out = ''
+  let cursor = 0
+  hits.forEach((hit, index) => {
+    const src = resolved[index]
+    if (!src) return
+    out += markdown.slice(cursor, hit.at)
+    out += src
+    cursor = hit.at + hit.src.length
+  })
+  out += markdown.slice(cursor)
+  return out
+}
+
+/**
+ * 读一份 Markdown 文件（在线解析结果里的 full.md）写进编辑器。
+ * 不再经过 JSON → Markdown 转换：服务端给什么就显示什么。
+ */
+async function applyMarkdownFile(path: string, onlyWhenEmpty = false): Promise<void> {
+  // 自动带出来的那一次：编辑器里已经有内容就别覆盖（可能是用户打开的文档）。
+  if (onlyWhenEmpty && getContent().trim()) return
+  const result = await window.electronAPI.readTextFile(path)
+  if (!result) return
+  // 先记住这份 Markdown 的目录：里面图片都在它同级的 images/ 下（见 layoutImageBaseDirs）。
+  markdownImageDir = dirOf(result.path)
+  const markdown = await inlineMarkdownImages(result.content)
+  if (!markdown.trim()) return
+  // flushHistory: 这是另一份文档，不该让撤销退回到它之前的空文档。
+  setContent(markdown, true)
+  // 内容换过了：标题栏/标签页显示未保存，关闭时问一句（自动保存因为没有
+  // currentFilePath，不会去找地方写）。
+  setDirty()
+}
+
+// 工具栏控件进入 JSON 模式前的 disabled 值：切回来按原值还原（「清除样式」这类
+// 按钮本来就可能在光标不在样式里时是禁用的）。
+const toolbarWasDisabled = new WeakMap<HTMLElement, boolean>()
+
+function setToolbarEnabled(enabled: boolean): void {
+  const toolbar = document.getElementById('toolbar')
+  if (!toolbar) return
+  const controls = toolbar.querySelectorAll<
+    HTMLButtonElement | HTMLSelectElement | HTMLInputElement
+  >('button, select, input')
+  controls.forEach((control) => {
+    if (enabled) {
+      control.disabled = toolbarWasDisabled.get(control) ?? false
+      toolbarWasDisabled.delete(control)
+    } else {
+      toolbarWasDisabled.set(control, control.disabled)
+      control.disabled = true
+    }
+  })
+}
+
 const LARGE_DOCUMENT_SOURCE_THRESHOLD = 512 * 1024
 
 function setContent(content: string, flushHistory = false): void {
   // 同步当前文件路径，供图片路径转换使用
   setCurrentImageFilePath(currentFilePath)
+  // 换了文档：上一份的块锚点作废（由 PDF 解析结果重新装的会紧接着装回来）。
+  clearPdfBlockAnchors()
   // 文档切换，清空模式切换缓存
   cachedMarkdown = null
   sourceEnterText = null
@@ -1930,6 +2358,38 @@ async function exportCurrentImage(preset: 'desktop' | 'mobile'): Promise<void> {
   if (wasSourceMode) enterSourceMode(content, sourceScrollRatio)
 }
 
+// 目标是否可编辑（所见即所得区是 contenteditable，源码框是 textarea）
+function isEditableTarget(target: HTMLElement): boolean {
+  return target.isContentEditable || target.tagName === 'TEXTAREA' || target.tagName === 'INPUT'
+}
+
+// 右键处是否有选中的文本：输入框看 selectionStart/End，其余看 window 选区
+function hasTextSelectionAt(target: HTMLElement): boolean {
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+    return (target.selectionEnd ?? 0) > (target.selectionStart ?? 0)
+  }
+  return (window.getSelection()?.toString().length ?? 0) > 0
+}
+
+// 编辑区右键菜单（撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选）。
+// Electron 不自带上下文菜单，而此前只有标签栏与文件面板自己实现了右键菜单，
+// 编辑区（所见即所得 + 源码框）点了没反应。这里在文档层补一个：
+// 那两处会先 preventDefault 弹自己的菜单，靠 defaultPrevented 让路，不会重复弹。
+function bindEditorContextMenu(api: typeof window.electronAPI): void {
+  document.addEventListener('contextmenu', (e) => {
+    if (e.defaultPrevented) return
+    const target = e.target as HTMLElement | null
+    if (!target) return
+    const editable = isEditableTarget(target)
+    // 只服务于编辑区（#editor 所见即所得 / #source-editor 源码框）
+    if (!editable && !target.closest('#editor, #source-editor')) return
+    e.preventDefault()
+    // 原生 role 命令作用于聚焦元素：右键不一定已把焦点给它，先补一次
+    if (editable && document.activeElement !== target) target.focus?.()
+    void api.showEditorContextMenu?.({ editable, hasSelection: hasTextSelectionAt(target) })
+  })
+}
+
 async function init(): Promise<void> {
   const api = window.electronAPI
   // 尽早初始化偏好 store（从主进程拉 userSetting.json + 迁移旧 localStorage key）；
@@ -1981,7 +2441,11 @@ async function init(): Promise<void> {
     if (!editorReady) return
     if (!applyingProgrammaticChange) setDirty()
     scheduleOutlineUpdate()
+    // 正文动过了：块与 PDF 矩形的对应要重新对一次（模块内部防抖）。
+    scheduleBlockLinkRebuild()
   })
+  // 编辑器就绪：把 view 交给联动层，它要靠 Decoration 给正文块打标记。
+  setBlockLinkView(getEditorView())
   updateWordCount()
   editorReady = true
   resetDirty()
@@ -2058,8 +2522,37 @@ function applyAppearanceFontSize(): void {
     void api.showEntryContextMenu(path, kind === 'directory' ? 'directory' : 'file')
   })
   initPanelResize()
+  bindEditorContextMenu(api)
   bindTabBar(api)
   bindSubmitPanel()
+  // 类 docx 工具栏的窗口级动作（新建标签页承载导入结果、按路径打开文件）
+  setCanvasDocHooks({
+    newTab: (init?: CanvasDocInit) => openCanvasDocTab(init),
+    openPath: (path: string) => openMarkdownPathFromCanvas(path)
+  })
+  // 解析结果里的 full.md 到位 → 填进编辑器。窗口默认停在 Markdown 模式，
+  // 不用用户再去点一下 Markdown 按钮。
+  // 打印预览层：按钮与 Esc 的绑定（预览内容由菜单触发，见 onMenuPrintPreview）
+  initPrintPreview(api)
+  initPdfView(api, {
+    onMarkdownFile: (path, options) => applyMarkdownFile(path, options?.onlyWhenEmpty ?? false),
+    // 用户在对照面板里选了源文件：记回标签页，标签条上的名字跟着变。
+    onPdfSourceChange: (path) => {
+      const tab = activeTab()
+      if (!tab || !tab.pdfTab) return
+      tab.pdfPath = path
+      window.electronAPI.setActivePdfPath(path)
+      renderTabBar()
+    }
+  })
+  initJsonView()
+  // 右侧栏顶部条（Markdown/JSON + 复制）：目前只在 PDF 对照窗口可见，
+  // 但绑定不分窗口 —— 可见性由 CSS 的 body.pdf-view 决定。
+  initDocBar({
+    getText: (format) => (format === 'json' ? getJsonText() : getContent()),
+    onFormatChange: setDocFormat,
+    onSave: () => saveCurrent()
+  })
   // The launch document (the welcome screen or a restored file) is a tab from
   // the first frame, so the strip never renders without one.
   ensureTab()
@@ -2105,6 +2598,8 @@ function applyAppearanceFontSize(): void {
   api.onMenuSave(() => { void saveCurrent() })
   api.onMenuSaveAs(() => { void saveCurrent(true) })
   api.onMenuExportPDF(() => api.exportPDF())
+  // 菜单「打印 → 打印预览」：预览层在渲染端（主进程先把 PDF 生成好）
+  api.onMenuPrintPreview(() => { void showPrintPreview() })
   api.onMenuExportHTML(() => { void exportCurrentHTML() })
   api.onMenuExportDOCX(() => { void api.exportDOCX(getContent(), getExportFormulaEnginePreference()) })
   api.onMenuExportImage((preset) => { void exportCurrentImage(preset) })
@@ -2113,9 +2608,9 @@ function applyAppearanceFontSize(): void {
     const result = await api.importDocx()
     if (!result) return // 用户取消或转换失败
     // 当前 tab 为空/未保存 → 复用它；否则新建 tab 避免覆盖未保存内容
-    //（提交页是表单视图，不能承载文档内容，一律走新建）
+    //（提交页 / 类docx文档页都是表单/画布视图，不能承载文档内容，一律走新建）
     const current = activeTab()
-    if (current && current.kind !== 'submit' && !current.filePath && !current.dirty) {
+    if (current && current.kind === 'document' && !current.filePath && !current.dirty) {
       currentFilePath = null
       applyContent(result.content)
       current.filePath = null
@@ -2245,7 +2740,10 @@ function applyAppearanceFontSize(): void {
     if (result) applyTheme(`custom:${result.name}`, result.css)
   })
 
-  api.onMenuPreferences(() => preferencesModal.show())
+  api.onMenuPreferences(() => showPreferencesModal())
+
+  // 菜单「文件 → 新建类docx文档」：canvas-editor 标签页
+  api.onMenuNewCanvasDoc(() => { void openCanvasDocTab() })
 
   // --- Auto update banner (weak, non-blocking) ---
   let updateDownloaded = false

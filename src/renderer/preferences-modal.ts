@@ -11,14 +11,17 @@
 import { getPrefs, setPrefsPath } from './preferences-store'
 import { getActiveMathEngineId, listMathEngines, setMathEngine } from './math-engine'
 
-type TabKey = 'general' | 'appearance' | 'image' | 'markdown' | 'export' | 'account'
+type TabKey = 'general' | 'appearance' | 'image' | 'markdown' | 'export'
 
 /**
  * 读取导出公式引擎偏好（'Temml' / 'MathJax'），供渲染端发起导出时
  * 经 IPC 传给主进程，主进程映射成注册表 id 选取转换器。
+ *
+ * 偏好缺失时的兜底与 userSetting 默认值（src/main/user-setting.ts 的
+ * export.formulaEngine）保持一致：MathJax（宏包最全）。
  */
 export function getExportFormulaEnginePreference(): string {
-  return getPrefs<string>('export.formulaEngine') ?? 'Temml'
+  return getPrefs<string>('export.formulaEngine') ?? 'MathJax'
 }
 
 const TABS: { key: TabKey; label: string }[] = [
@@ -27,13 +30,15 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'image', label: '图像' },
   { key: 'markdown', label: 'Markdown' },
   { key: 'export', label: '导出' },
-  { key: 'account', label: '登录' },
 ]
 
 // 从 store 读取偏好值；store 未就绪时返回 undefined（控件工厂做默认处理）
 function readPref<T>(path: string): T | undefined {
   return getPrefs<T>(path)
 }
+
+/** 工作目录（原「备份图片」）的默认路径；与 main 进程 user-setting 的默认值同一份。 */
+export const DEFAULT_WORK_DIR = 'D:/TeyooData'
 
 // 写偏好到 store（自动异步持久化 + 多窗口广播）
 async function writePref(path: string, value: unknown): Promise<void> {
@@ -49,7 +54,7 @@ class PreferencesModal {
   private closeBtn: HTMLButtonElement
   private activeTab: TabKey = 'general'
   private tabNodes: Record<TabKey, HTMLElement | null> = {
-    general: null, appearance: null, image: null, markdown: null, export: null, account: null,
+    general: null, appearance: null, image: null, markdown: null, export: null,
   }
 
   constructor() {
@@ -151,7 +156,6 @@ class PreferencesModal {
     this.tabNodes.image = this.buildImagePanel()
     this.tabNodes.markdown = this.buildMarkdownPanel()
     this.tabNodes.export = this.buildExportPanel()
-    this.tabNodes.account = this.buildAccountPanel()
 
     for (const node of Object.values(this.tabNodes)) {
       if (node) {
@@ -163,53 +167,14 @@ class PreferencesModal {
 
   // 通用 ────────────────────────────────────────────────────────────────────
 
-  /**
-   * 「启动 → 打开指定文件夹」的目标文件夹：只读路径框 + 「浏览…」。
-   * 选中该启动项后，菜单「文件 → 打开」的对话框默认定位到此目录。
-   */
-  private buildLaunchFolderRow(): HTMLElement {
-    const wrap = document.createElement('div')
-    wrap.className = 'prefs-subrow'
-
-    const line = this.inline(this.label('指定文件夹：'))
-    const pathInput = this.input('text', {
-      placeholder: '未指定',
-      readonly: 'readonly',
-      // 占整行的 40%（原来是可伸缩的剩余宽度），输入框只作展示用
-      style: 'flex:0 1 auto; width:40%; min-width:0; cursor:default',
-      value: readPref<string>('general.launchFolder') ?? '',
-    })
-    const browseBtn = this.btn('浏览…', () => {
-      void (async () => {
-        const picked = await window.electronAPI?.pickDirectory?.(pathInput.value || undefined)
-        if (!picked) return
-        pathInput.value = picked
-        await writePref('general.launchFolder', picked)
-      })()
-    })
-    line.append(pathInput, browseBtn)
-    wrap.append(line, this.hint('菜单「文件 → 打开」默认定位到该文件夹'))
-    return wrap
-  }
-
   private buildGeneralPanel(): HTMLElement {
     const root = document.createElement('section')
     root.className = 'prefs-panel'
 
-    // 「打开指定文件夹」选中后，菜单「文件 → 打开」的对话框默认定位到这里。
-    // 该行只在选中该启动项时出现（radioRow 的 change 事件驱动显隐）。
-    const folderRow = this.buildLaunchFolderRow()
     root.append(this.group('启动', [
-      this.radioRow('打开上次的文件', 'general.launchOnOpen', 'last', () => syncFolderRow()),
-      this.radioRow('打开新建文件', 'general.launchOnOpen', 'new', () => syncFolderRow()),
-      this.radioRow('打开指定文件夹', 'general.launchOnOpen', 'folder', () => syncFolderRow()),
-      folderRow,
+      this.radioRow('打开上次的文件', 'general.launchOnOpen', 'last'),
+      this.radioRow('打开新建文件', 'general.launchOnOpen', 'new'),
     ]))
-    const syncFolderRow = (): void => {
-      const useFolder = readPref<string>('general.launchOnOpen') === 'folder'
-      folderRow.style.display = useFolder ? '' : 'none'
-    }
-    syncFolderRow()
 
     // 自动保存间隔：0 = 不自动保存，1–5 分钟、每次步进 1 分钟（越界值夹取后回写）
     const intervalInput = this.input('number', {
@@ -252,6 +217,42 @@ class PreferencesModal {
     root.append(this.group('高级设置', [
       this.btnRow('打开高级设置（conf.user.json）', () => {}),
       this.checkRow('开启调试模式', { key: 'general.debugMode' }),
+    ]))
+
+    // MinerU 在线解析的 Token：「PDF转md」窗口里的「在线解析」按钮要用它。
+    // 明文存在主进程的 userSetting.json（桌面端没有更安全的凭据仓），环境变量
+    // MINERU_TOKEN 优先于这里填的值。
+    const tokenRow = document.createElement('div')
+    tokenRow.className = 'prefs-subrow'
+    const tokenLine = this.inline(this.label('MinerU Token：'))
+    const tokenInput = this.input('password', {
+      placeholder: 'sk-…',
+      style: 'flex:0 1 auto; width:60%; min-width:0',
+      value: readPref<string>('mineru.token') ?? '',
+    })
+    const commitToken = (): void => {
+      void writePref('mineru.token', tokenInput.value.trim())
+    }
+    tokenInput.addEventListener('change', commitToken)
+    tokenInput.addEventListener('blur', commitToken)
+    // 光标离开就写回（input 事件只在输入时触发，change 在失焦/回车才触发，
+    // 两个都挂上，避免"改完直接关面板"丢值）。
+    const toggleBtn = this.btn('显示', () => {
+      tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password'
+      toggleBtn.textContent = tokenInput.type === 'password' ? '显示' : '隐藏'
+    })
+    tokenLine.append(tokenInput, toggleBtn)
+    tokenRow.append(tokenLine, this.hint('用于 PDF 转 Markdown 的在线解析（MinerU）。留空则在线解析不可用；设置环境变量 MINERU_TOKEN 时以它为准。'))
+
+    // 逃生开关：默认关。MinerU 的结果 CDN（cdn-mineru.openxlab.org.cn）证书一过期，
+    // 不勾这一项就一定 ERR_CERT_DATE_INVALID 下载不下来。勾选的范围很窄 —— 只有
+    // 结果包下载那一次请求、只有 MinerU 的结果域名（见 http/mineru.ts）。
+    const insecureRow = this.checkRow('忽略结果 CDN 的证书错误', { key: 'mineru.insecureDownload' })
+
+    root.append(this.group('在线解析（MinerU）', [
+      tokenRow,
+      insecureRow,
+      this.hint('MinerU 的结果 CDN 证书过期时（表现为「结果下载失败 … CERT_…」）才需要勾：它会跳过那一次下载的证书校验，网络请求仅限 MinerU 结果域名，不影响其它任何连接。对方证书续期后建议再关掉。'),
     ]))
 
     return root
@@ -319,31 +320,39 @@ class PreferencesModal {
     const root = document.createElement('section')
     root.className = 'prefs-panel'
 
-    // 备份图片：与「启动 → 打开指定文件夹」同一手法——只读路径框 + 浏览…
-    const backupRow = document.createElement('div')
-    backupRow.className = 'prefs-subrow'
-    const backupLine = this.inline(this.label('备份文件夹：'))
-    const backupInput = this.input('text', {
-      placeholder: '未指定',
+    // 工作目录（原「备份图片」）：与「启动 → 打开指定文件夹」同一手法——只读
+    // 路径框 + 浏览…。这里指定的目录同时也是解析 PDF 时找图片的基准目录之一。
+    const workDirRow = document.createElement('div')
+    workDirRow.className = 'prefs-subrow'
+    const workDirLine = this.inline(this.label('工作目录：'))
+    const workDirInput = this.input('text', {
+      placeholder: DEFAULT_WORK_DIR,
       readonly: 'readonly',
       style: 'flex:0 1 auto; width:40%; min-width:0; cursor:default',
-      value: readPref<string>('image.backupFolder') ?? '',
+      value: readPref<string>('image.workDir') ?? DEFAULT_WORK_DIR,
     })
-    const backupBtn = this.btn('浏览…', () => {
+    const workDirBtn = this.btn('浏览…', () => {
       void (async () => {
-        const picked = await window.electronAPI?.pickDirectory?.(backupInput.value || undefined)
+        const picked = await window.electronAPI?.pickDirectory?.(workDirInput.value || undefined)
         if (!picked) return
-        backupInput.value = picked
-        await writePref('image.backupFolder', picked)
+        workDirInput.value = picked
+        await writePref('image.workDir', picked)
       })()
     })
-    const backupClear = this.btn('清除', () => {
-      backupInput.value = ''
-      void writePref('image.backupFolder', '')
+    const workDirClear = this.btn('清除', () => {
+      workDirInput.value = ''
+      void writePref('image.workDir', '')
     })
-    backupLine.append(backupInput, backupBtn, backupClear)
-    backupRow.append(backupLine, this.hint('插入或导入的图片会同时复制一份到该文件夹'))
-    root.append(this.group('备份图片', [backupRow]))
+    workDirLine.append(workDirInput, workDirBtn, workDirClear)
+    workDirRow.append(workDirLine, this.hint('插入或导入的图片会备份到这里；解析 PDF 时也从这里找图片'))
+    root.append(this.group('工作目录', [workDirRow]))
+
+    // 解析 PDF 时的图片落地方式：内嵌 base64 还是只记路径。默认内嵌 —— Markdown
+    // 自包含，拷到哪儿都能显示；代价是文件随图片体积涨。
+    root.append(this.group('解析 PDF 时的图片', [
+      this.checkRow('图片内嵌为 base64', { key: 'image.embedImages' }),
+      this.hint('不勾选则 Markdown 里只写图片的绝对路径：文件小得多，但离开本机就显示不出来'),
+    ]))
 
     // 「插入图片时…」「上传服务设定」分组与「优先使用相对路径」勾选项已移除。
 
@@ -423,80 +432,17 @@ class PreferencesModal {
     root.className = 'prefs-panel'
 
     root.append(this.group('LaTeX 引擎', [
-      this.selectRow('公式渲染引擎', ['Temml', 'MathJax'], { key: 'export.formulaEngine' }),
+      // 下拉显示 KaTeX / MathJax；存储值仍是 'Temml' / 'MathJax'（Temml 是
+      // KaTeX 的 MathML 输出分支，只是显示名换成用户更熟的 KaTeX）。
+      this.selectRow('公式渲染引擎', ['KaTeX', 'MathJax'], {
+        key: 'export.formulaEngine',
+        // 存储值 → 显示名（缺省即默认的 MathJax）
+        value: readPref<string>('export.formulaEngine') === 'Temml' ? 'KaTeX' : 'MathJax',
+        // 显示名 → 存储值
+        map: (v) => (v === 'KaTeX' ? 'Temml' : v),
+      }),
     ]))
 
-    return root
-  }
-
-  // 登录 ────────────────────────────────────────────────────────────────────
-  // 邮箱 + 密码，仿参考图卡片式布局（居中 / 圆角输入框 / 蓝色主按钮 / 注册链接）。
-  // 后端账户服务尚未接入：登录按钮仅做前端校验并提示，
-  // 凭据不持久化（不写 userSetting.json），接入真实服务时替换 onLogin。
-
-  private buildAccountPanel(): HTMLElement {
-    const root = document.createElement('section')
-    root.className = 'prefs-panel prefs-login'
-
-    const title = document.createElement('h3')
-    title.className = 'prefs-login-title'
-    title.textContent = '登录'
-
-    const emailInput = this.input('email', { placeholder: '邮箱' })
-    emailInput.className = 'prefs-login-input'
-    emailInput.autocomplete = 'email'
-
-    const pwdInput = this.input('password', { placeholder: '密码' })
-    pwdInput.className = 'prefs-login-input'
-    pwdInput.autocomplete = 'current-password'
-
-    // 状态提示行：校验错误（红）/ 中性提示（灰）
-    const status = document.createElement('p')
-    status.className = 'prefs-login-status'
-    status.textContent = ''
-
-    const onLogin = () => {
-      const email = emailInput.value.trim()
-      const pwd = pwdInput.value
-      const error = (msg: string, focus?: HTMLInputElement) => {
-        status.className = 'prefs-login-status prefs-login-status-error'
-        status.textContent = msg
-        focus?.focus()
-      }
-      if (!email) return error('请输入邮箱', emailInput)
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return error('邮箱格式不正确', emailInput)
-      if (!pwd) return error('请输入密码', pwdInput)
-      // TODO: 账户服务接入后改为真实登录请求
-      status.className = 'prefs-login-status'
-      status.textContent = '登录服务暂未接入，敬请期待'
-    }
-
-    const loginBtn = document.createElement('button')
-    loginBtn.className = 'prefs-login-btn'
-    loginBtn.textContent = '登录'
-    loginBtn.addEventListener('click', onLogin)
-
-    // 面板内任意输入框 Enter 即提交
-    root.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') onLogin()
-    })
-
-    // 底部「没有账号？去注册」——注册暂为占位
-    const foot = document.createElement('p')
-    foot.className = 'prefs-login-foot'
-    foot.append('没有账号？')
-    const regLink = document.createElement('a')
-    regLink.textContent = '去注册'
-    regLink.addEventListener('click', () => {
-      status.className = 'prefs-login-status'
-      status.textContent = '注册服务暂未接入，敬请期待'
-    })
-    foot.appendChild(regLink)
-
-    const box = document.createElement('div')
-    box.className = 'prefs-login-box'
-    box.append(title, emailInput, pwdInput, status, loginBtn, foot)
-    root.appendChild(box)
     return root
   }
 
@@ -670,4 +616,15 @@ class PreferencesModal {
   }
 }
 
-export const preferencesModal = new PreferencesModal()
+// 惰性创建，别在模块加载时 new：面板控件是"构建时读一次 store 快照"的，而
+// import 求值一定早于 main.ts 里的 initPrefsStore()（它在 init() 里被 await）。
+// 构造即读只会拿到 undefined，于是每个控件都停在兜底默认值上 —— 表现就是
+// 工作目录显示 D:/TeyooData 而实际存储是别的目录，看起来"设置没生效"。
+// 改成首次打开面板时才构造，那时快照必然已就绪。
+let instance: PreferencesModal | null = null
+
+/** 打开偏好设置面板（第一次调用时才构建 DOM 并读取偏好值） */
+export function showPreferencesModal(): void {
+  if (!instance) instance = new PreferencesModal()
+  instance.show()
+}

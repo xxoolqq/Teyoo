@@ -4,8 +4,11 @@ import { autoUpdater } from 'electron-updater'
 import { join, basename, dirname, extname, isAbsolute, resolve, relative } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { appendFile, readFile, writeFile, readdir, copyFile, mkdir, stat } from 'fs/promises'
-import { watch, FSWatcher, existsSync, readdirSync, readFileSync, writeFileSync, statSync } from 'fs'
-import { getUserSetting, getUserSettingByPath, setUserSetting, setUserSettingBatch } from './user-setting'
+import { watch, FSWatcher, existsSync, readdirSync, readFileSync, writeFileSync, statSync, accessSync, constants } from 'fs'
+import { mkdirSync } from 'fs'
+import { getUserSetting, getUserSettingByPath, setUserSetting, setUserSettingBatch, DEFAULT_WORK_DIR } from './user-setting'
+import { parsePdfOnline, findExtractedResult } from './http/mineru'
+import { setAsDefaultApp } from './default-app'
 
 const startupStartedAt = performance.now()
 const startupTraceEnabled = process.env.COLAMD_STARTUP_TRACE === '1'
@@ -272,7 +275,25 @@ interface WindowState {
   // True once the window's opening document (if any) has been handed to the
   // renderer, i.e. tab-open requests can be processed safely.
   initialDocDelivered: boolean
+  // Shows a window that was created hidden (see createWindow): the renderer's
+  // own signal, or the first paint, whichever lands first. Null once shown.
+  reveal: (() => void) | null
+  // 当前活动标签页挂着的那份 PDF 源文件（没有就是 null）：由渲染端在切标签页、
+  // 选中源文件时上报。PDF 对照是窗口里的一个标签页，所以它是「活动标签页的」，
+  // 不再属于窗口。「另存为」的默认文件名按它取（见 suggestFileName）。
+  pdfPath: string | null
+  // 菜单「PDF转md」在无窗口可发时先建窗，请求暂存在这里，等渲染端就绪再补发
+  //（与 pendingTabFiles 同一套时机，见 flushPendingTabFiles）。
+  pendingPdfTab: boolean
+  // 前台标签页的类型（渲染端在切标签页时上报，见 set-active-tab-kind）。目前只
+  // 服务于一件事：类 docx 文档（canvas-editor）标签页自成一套，菜单栏的
+  // 打印/打印预览不该对它生效 —— 打印只走它自己工具栏里那一个（canvas 把内容
+  // 渲成图再印，窗口级的 printToPDF 对它没有意义）。null = 还没上报，按文档算。
+  activeTabKind: ActiveTabKind | null
 }
+
+/** 渲染端上报的活动标签页类型；'canvas' 就是类 docx 文档（canvas-editor）标签页 */
+type ActiveTabKind = 'document' | 'submit' | 'canvas'
 
 interface DocumentSnapshot {
   dirty: boolean
@@ -297,7 +318,7 @@ const pendingDocumentStateRequests = new Map<string, PendingDocumentStateRequest
 function getState(win: BrowserWindow): WindowState {
   let state = windowStates.get(win.id)
   if (!state) {
-    state = { filePath: null, browsePath: null, watcher: null, isInternalSave: false, internalSaveCount: 0, lastKnownMtime: 0, lastInternalSaveContent: null, debounceTimer: null, siblingsTimer: null, dirty: false, closePromise: null, rendererReady: false, writeQueue: Promise.resolve(), closeAuthorized: false, tabFiles: [], pendingTabFiles: [], initialDocDelivered: false }
+    state = { filePath: null, browsePath: null, watcher: null, isInternalSave: false, internalSaveCount: 0, lastKnownMtime: 0, lastInternalSaveContent: null, debounceTimer: null, siblingsTimer: null, dirty: false, closePromise: null, rendererReady: false, writeQueue: Promise.resolve(), closeAuthorized: false, tabFiles: [], pendingTabFiles: [], initialDocDelivered: false, reveal: null, pdfPath: null, pendingPdfTab: false, activeTabKind: null }
     windowStates.set(win.id, state)
   }
   return state
@@ -348,6 +369,12 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
     ...(usableBounds() ?? { width: 960, height: 720 }),
     minWidth: 600,
     minHeight: 400,
+    // 先藏起来：样式全靠渲染端 JS 注入（main.ts 的 import './themes/base.css'），
+    // 窗口一开始就可见的话，用户看到的是没穿衣服的 DOM（doc-bar、JSON 空态、
+    // 复制/保存的「勾」全都裸着）。显示时机见下面的 revealWindow。
+    show: false,
+    // 藏起来的这段时间不能是白板：底色跟着系统明暗走，和 titleBarOverlay 同一套。
+    backgroundColor: nativeTheme.shouldUseDarkColors ? darkOverlay.bg : lightOverlay.bg,
     titleBarStyle: isWindows ? 'hidden' : 'hiddenInset',
     ...(isWindows
       ? { titleBarOverlay: { ...(nativeTheme.shouldUseDarkColors ? { color: darkOverlay.bg, symbolColor: darkOverlay.symbol } : { color: lightOverlay.bg, symbolColor: lightOverlay.symbol }), height: TITLEBAR_HEIGHT } }
@@ -372,6 +399,20 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
   })
   markStartup('window-created')
 
+  // 露脸的时机：渲染端自己报就绪（renderer-ready，样式至此一定已注入）与浏览器
+  // 首次绘制（ready-to-show）谁先到算谁；两条路都断了（页面加载失败 / 脚本崩）
+  // 就靠超时兜底，否则用户会以为程序没启动。
+  let revealed = false
+  const revealTimer = setTimeout(revealWindow, 5000)
+  function revealWindow(): void {
+    if (revealed || win.isDestroyed()) return
+    revealed = true
+    clearTimeout(revealTimer)
+    win.show()
+  }
+  getState(win).reveal = revealWindow
+  win.once('ready-to-show', revealWindow)
+
   // The renderer owns the shell's layout, so it needs to know when the window
   // enters or leaves macOS full screen: full screen takes the traffic lights
   // away, and the 96px they occupy has to go with them.
@@ -380,10 +421,14 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
   }
   win.on('enter-full-screen', () => sendFullscreen(true))
   win.on('leave-full-screen', () => sendFullscreen(false))
+  // 换窗口聚焦时打印项的可用状态可能不同（一个窗口在 canvas 标签页、另一个在
+  // 文档上）：同步一次，状态没变不会重建菜单。
+  win.on('focus', () => syncPrintMenuState())
 
   const state = getState(win)
   if (initialBrowsePath) state.browsePath = initialBrowsePath
-
+  // 所有窗口加载同一份 index.html、同一个入口：PDF 对照不再是「另一种窗口」，
+  // 而是窗口里的一个标签页，由渲染端的标签页逻辑把外壳换成左右分栏。
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
@@ -463,6 +508,25 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
   return win
 }
 
+// 「文件 → PDF转md」：在当前窗口开一个空的对照标签页（左 PDF / 右编辑器），PDF
+// 由用户在标签页里点「打开 PDF…」选。以前是为此单开一个窗口，现在窗口里多一个
+// 标签页就够（选文件那一步仍在主进程的 pick-pdf-file 里）。
+// 没有窗口可发时（macOS 关完窗口菜单还在）先建一个，请求存进窗口状态，等渲染端
+// 就绪补发 —— 直接 send 会打在还没监听的渲染端上。
+function importPdfDocument(): void {
+  const win = getFocusedWindow() ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+  if (!win) {
+    getState(createWindow()).pendingPdfTab = true
+    return
+  }
+  const state = getState(win)
+  if (!state.rendererReady || !state.initialDocDelivered) {
+    state.pendingPdfTab = true
+    return
+  }
+  win.webContents.send('menu-pdf-tab')
+}
+
 function updateTitle(win: BrowserWindow): void {
   const state = getState(win)
   const fileName = state.filePath ? basename(state.filePath) : 'Untitled'
@@ -472,6 +536,8 @@ function updateTitle(win: BrowserWindow): void {
 function suggestFileName(win: BrowserWindow, content?: string): string | undefined {
   const state = getState(win)
   if (state.filePath) return basename(state.filePath, '.md')
+  // PDF 对照标签页：默认就用源文件的同名 md，这样下次开该 PDF 能直接带出来。
+  if (state.pdfPath) return basename(state.pdfPath, extname(state.pdfPath))
   if (!content) return undefined
   // Extract first heading or first non-empty line
   const match = content.match(/^#\s+(.+)/m) || content.match(/^(.+)/m)
@@ -482,11 +548,48 @@ function suggestFileName(win: BrowserWindow, content?: string): string | undefin
 // Save dialogs should open beside the currently edited Markdown file. When
 // the document is still untitled there is no meaningful sibling directory, so
 // Electron keeps its normal platform-specific default (typically Documents).
-function suggestSavePath(win: BrowserWindow, fileName?: string): string | undefined {
-  const state = getState(win)
-  const name = fileName ?? suggestFileName(win)
-  if (!name) return undefined
-  return state.filePath ? join(dirname(state.filePath), name) : name
+// ── 文件对话框的默认目录 ────────────────────────────────────────────────────
+// 打开 / 导入 / 保存 / 导出一律从同一个地方起步：偏好里的「工作目录」→ 没设就
+// 用程序默认目录 D:\TeyooData → 两者都不可用时退回 %APPDATA%\<AppName>（app 的
+// userData，一定存在）。目录不存在（没插盘 / 被删）先补建一次，建不出来（无
+// 权限）才回退；回退是静默的，只在控制台留一行。
+// 结果按「偏好里配置的那个值」缓存：偏好没改就不重复试探磁盘。
+let cachedDirKey = ''
+let cachedDirValue = ''
+
+// mode 区分两类对话框：保存 / 导出要能写（目录不在就补建）；打开 / 导入只要能读
+// （不给用户凭空造目录，读不到就回退）。
+function usableDir(dir: string, mode: 'read' | 'write'): boolean {
+  try {
+    // 目录已存在时 recursive mkdir 是空操作；不存在才真正建。
+    if (mode === 'write') mkdirSync(dir, { recursive: true })
+    accessSync(dir, mode === 'write' ? constants.W_OK : constants.R_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function defaultDialogDir(mode: 'read' | 'write' = 'write'): string {
+  const configured = getUserSettingByPath<string>('image.workDir') || DEFAULT_WORK_DIR
+  const key = `${mode}:${configured}`
+  if (key === cachedDirKey && cachedDirValue) return cachedDirValue
+  const resolved = usableDir(configured, mode) ? configured : app.getPath('userData')
+  if (resolved !== configured) {
+    console.info(`[dialog] 工作目录不可用（${configured}），改用 ${resolved}`)
+  } else if (startupTraceEnabled) {
+    // 排查用：COLAMD_STARTUP_TRACE=1 时能看到每个对话框实际落在哪儿。
+    console.info(`[dialog] 默认目录（${mode}）：${resolved}`)
+  }
+  cachedDirKey = key
+  cachedDirValue = resolved
+  return resolved
+}
+
+/** 保存/导出对话框的默认路径：默认目录 + 文档名（扩展名交给对话框过滤器补）。 */
+function defaultSavePath(win: BrowserWindow, fileName?: string, ext?: string): string {
+  const name = fileName ?? suggestFileName(win) ?? 'untitled'
+  return join(defaultDialogDir(), ext ? `${name}.${ext}` : name)
 }
 
 function stopWatching(state: WindowState): void {
@@ -730,6 +833,18 @@ function findWindowForFile(filePath: string): BrowserWindow | null {
   return null
 }
 
+// A document that is already open — in another window, or in a background tab of
+// this one — is focused rather than opened a second time: a second copy gets its
+// own watcher and its own write queue, so the later save silently wins over the
+// earlier one. Returns true when some window already holds the file (it has been
+// focused, and told to raise the tab that holds it).
+function focusWindowHoldingFile(filePath: string): boolean {
+  const holder = findWindowForFile(filePath)
+  if (!holder) return false
+  holder.focus()
+  return true
+}
+
 // The focused window, or the most recently created one when nothing is
 // focused (e.g. the user clicked a dock icon). Used to decide where documents
 // arriving from outside the window land.
@@ -760,17 +875,18 @@ function flushPendingTabFiles(win: BrowserWindow): void {
   if (!state.rendererReady || !state.initialDocDelivered) return
   const queued = state.pendingTabFiles.splice(0)
   for (const fp of queued) win.webContents.send('open-in-new-tab', fp)
+  // 建窗期间点过「PDF转md」的（无窗口可发那条路）在这里补发。
+  if (state.pendingPdfTab) {
+    state.pendingPdfTab = false
+    win.webContents.send('menu-pdf-tab')
+  }
 }
 
 // Open file: reuse existing window, else land as a tab in the current window
 // (design.md: files open into the current window, not a new one each time).
 function openFile(filePath: string): void {
   // If already open, focus that window
-  const existing = findWindowForFile(filePath)
-  if (existing) {
-    existing.focus()
-    return
-  }
+  if (focusWindowHoldingFile(filePath)) return
 
   // Find an untitled empty window to reuse
   const emptyWin = findEmptyWindow()
@@ -941,6 +1057,31 @@ ipcMain.handle('entry-context-menu', (event, targetPath: unknown, kind: unknown)
   Menu.buildFromTemplate(items).popup({ window: win })
 })
 
+// 编辑区右键菜单（#editor 的所见即所得区与 #source-editor 源码框）。
+// Electron 不提供默认上下文菜单，编辑区此前完全没有复制/粘贴入口；这里用
+// 原生菜单补齐，编辑类命令一律走 role（作用于当前聚焦窗口的 webContents），
+// 与标签栏/文件面板的右键菜单同一套原生外观。
+ipcMain.handle('editor-context-menu', (event, payload: unknown) => {
+  const win = getWinFromEvent(event)
+  if (!win || typeof payload !== 'object' || payload === null) return
+  const { editable, hasSelection } = payload as Record<string, unknown>
+  const zh = getPreferredLanguage() === 'zh'
+  const canEdit = editable === true
+  const canCopy = hasSelection === true
+  const items: Electron.MenuItemConstructorOptions[] = [
+    { label: zh ? '撤销' : 'Undo', role: 'undo', enabled: canEdit },
+    { label: zh ? '重做' : 'Redo', role: 'redo', enabled: canEdit },
+    { type: 'separator' },
+    { label: zh ? '剪切' : 'Cut', role: 'cut', enabled: canEdit && canCopy },
+    { label: zh ? '复制' : 'Copy', role: 'copy', enabled: canCopy },
+    { label: zh ? '粘贴' : 'Paste', role: 'paste', enabled: canEdit },
+    { label: zh ? '删除' : 'Delete', role: 'delete', enabled: canEdit && canCopy },
+    { type: 'separator' },
+    { label: zh ? '全选' : 'Select All', role: 'selectAll', enabled: canEdit }
+  ]
+  Menu.buildFromTemplate(items).popup({ window: win })
+})
+
 ipcMain.handle('reveal-file', (event) => {
   const win = getWinFromEvent(event)
   if (!win) return false
@@ -954,23 +1095,9 @@ ipcMain.handle('reveal-file', (event) => {
   }
 })
 
-// 偏好设置「启动 → 打开指定文件夹」的目标：只有选中该启动项、路径非空且
-// 目录仍然存在时才作为「文件 → 打开」对话框的默认位置（否则沿用系统记忆）。
-function preferredOpenFolder(): string | null {
-  if (getUserSettingByPath<string>('general.launchOnOpen') !== 'folder') return null
-  const folder = getUserSettingByPath<string>('general.launchFolder')
-  if (!folder) return null
-  try {
-    return statSync(folder).isDirectory() ? folder : null
-  } catch {
-    return null
-  }
-}
-
 ipcMain.handle('open-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
-  const startFolder = preferredOpenFolder()
   const result = await dialog.showOpenDialog(win, {
     filters: [
       { name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mkd'] },
@@ -978,12 +1105,19 @@ ipcMain.handle('open-file', async (event) => {
       { name: 'All Files', extensions: ['*'] }
     ],
     properties: ['openFile'],
-    // 指定了文件夹：对话框（含其文件列表）直接落在该文件夹里
-    ...(startFolder ? { defaultPath: startFolder } : {})
+    // 和导入 / 保存 / 导出同一条规则：一律从工作目录起步。偏好里的
+    // 「启动 → 打开指定文件夹」只决定启动时开什么，不插队到打开对话框。
+    defaultPath: defaultDialogDir('read')
   })
   if (result.canceled || result.filePaths.length === 0) return null
 
   const filePath = result.filePaths[0]
+
+  // A window with no file used to load in place unconditionally, which skipped
+  // the dedupe above: a document already open in another window (or in a
+  // background tab of this one) was opened a second time, with its own watcher
+  // and write queue. Hand it to whoever already holds it first.
+  if (focusWindowHoldingFile(filePath)) return null
 
   // If this window has no file, load here; otherwise open in new window
   const state = getState(win)
@@ -1011,6 +1145,10 @@ ipcMain.handle('open-file-path', async (event, filePath: string) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const state = getState(win)
+
+  // Same rule as the dialog above: never open a second copy of a document some
+  // window already holds.
+  if (focusWindowHoldingFile(filePath)) return null
 
   // If this window has no file, load here
   if (!state.filePath) {
@@ -1137,7 +1275,7 @@ ipcMain.handle('save-file', async (event, content: string, expectedPath?: string
       title: uiText('保存 Markdown 文档', 'Save Markdown document'),
       buttonLabel: uiText('保存', 'Save'),
       nameFieldLabel: uiText('文件名：', 'File name:'),
-      defaultPath: suggestSavePath(win, suggestFileName(win, content)),
+      defaultPath: defaultSavePath(win, suggestFileName(win, content)),
       filters: [
         { name: 'Markdown', extensions: ['md'] },
         { name: 'All Files', extensions: ['*'] }
@@ -1167,7 +1305,7 @@ ipcMain.handle('save-file-as', async (event, content: string, expectedPath?: str
     title: uiText('另存为', 'Save As'),
     buttonLabel: uiText('保存', 'Save'),
     nameFieldLabel: uiText('文件名：', 'File name:'),
-    defaultPath: suggestSavePath(win, suggestFileName(win, content)),
+    defaultPath: defaultSavePath(win, suggestFileName(win, content)),
     filters: [
       { name: 'Markdown', extensions: ['md'] },
       { name: 'All Files', extensions: ['*'] }
@@ -1188,18 +1326,19 @@ ipcMain.handle('export-docx', async (event, content: unknown, formulaEngine?: un
     title: uiText('导出 Word 文档', 'Export Word document'),
     buttonLabel: uiText('导出', 'Export'),
     nameFieldLabel: uiText('文件名：', 'File name:'),
-    defaultPath: suggestSavePath(win, `${baseName}.docx`),
+    defaultPath: defaultSavePath(win, baseName, 'docx'),
     filters: [{ name: 'Word Document', extensions: ['docx'] }]
   })
   if (result.canceled || !result.filePath) return false
   try {
     const { markdownToDocx } = await import('./docx-export')
-    // 渲染端传来的偏好是显示名 'Temml' / 'MathJax'，映射成注册表 id
-    // （'temml' / 'mathjax'）；渲染端没传时 fallback 读主进程 userSetting，
-    // 这样即使渲染端没参与偏好管理（如旧版本）也能正常按偏好导出。
+    // 渲染端传来的偏好是 'Temml' / 'MathJax'（设置面板下拉里 Temml 显示为
+    // KaTeX），映射成注册表 id（'temml' / 'mathjax'）；渲染端没传时
+    // fallback 读主进程 userSetting，这样即使渲染端没参与偏好管理（如旧版本）
+    // 也能正常按偏好导出。
     const displayName = typeof formulaEngine === 'string'
       ? formulaEngine
-      : getUserSettingByPath<string>('export.formulaEngine') ?? 'Temml'
+      : getUserSettingByPath<string>('export.formulaEngine') ?? 'MathJax'
     const formulaConverter = displayName === 'MathJax' ? 'mathjax' : 'temml'
     await writeFile(result.filePath, await markdownToDocx({ content, sourcePath: getState(win).filePath, formulaConverter }))
     shell.showItemInFolder(result.filePath)
@@ -1230,13 +1369,16 @@ ipcMain.handle('import-docx', async (event) => {
       { name: 'Word Document', extensions: ['docx'] },
     ],
     properties: ['openFile'],
+    defaultPath: defaultDialogDir('read')
   })
   if (result.canceled || result.filePaths.length === 0) return null
   const filePath = result.filePaths[0]
   try {
     const { docxToMarkdown } = await import('./docx-import')
     const imageFormulaMode = getUserSettingByPath<string>('markdown.imageFormula')
-    const { markdown, warnings } = await docxToMarkdown(filePath, {
+    // docx-import 只吃字节（它同时要在 WebView2 页面里跑，那里没有 fs）
+    const fileBytes = await readFile(filePath)
+    const { markdown, warnings } = await docxToMarkdown(fileBytes, {
       imageFormulaOcr: imageFormulaMode === 'ocr',
     })
     if (warnings.length > 0) {
@@ -1255,6 +1397,130 @@ ipcMain.handle('import-docx', async (event) => {
   }
 })
 
+// ─── 类 docx 文档标签页（canvas-editor）的读写通道 ─────────────────────────
+// 画布 ↔ Markdown 的转换在渲染端做（见 renderer/canvas-editor/markdown/，原先
+// 用官方插件，它两头都不认 $ 定界符，所以换成自己那份）；主进程这边只管弹系
+// 统对话框 + 读写文本。
+
+// 选一个 .md，把文本交给渲染端（渲染端解析成画布元素）
+ipcMain.handle('canvas-pick-md', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  win.show()
+  win.focus()
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('打开 Markdown 文档', 'Open Markdown document'),
+    buttonLabel: uiText('打开', 'Open'),
+    filters: [
+      { name: 'Markdown', extensions: ['md', 'markdown'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+    defaultPath: defaultDialogDir('read')
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  const filePath = result.filePaths[0]
+  try {
+    return { path: filePath, content: await readFile(filePath, 'utf-8') }
+  } catch (error) {
+    console.error('canvas markdown read failed', error)
+    await dialog.showMessageBox(win, {
+      type: 'error',
+      buttons: [uiText('好', 'OK')],
+      message: uiText('无法读取 Markdown 文档', 'Could not read the Markdown document'),
+      detail: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+})
+
+// 选一个画布导出的 .json（「导出 JSON」= getValue() 的 IEditorResult），校验出
+// IEditorData 后交给渲染端（渲染端 setValue 整体替换）。JSON.parse / 形状校验
+// 放在这一层：出错能弹系统对话框，渲染端拿到的必然可用。
+ipcMain.handle('canvas-pick-json', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  win.show()
+  win.focus()
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('打开 JSON 文档', 'Open JSON document'),
+    buttonLabel: uiText('打开', 'Open'),
+    filters: [
+      { name: 'JSON', extensions: ['json'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+    defaultPath: defaultDialogDir('read')
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  const filePath = result.filePaths[0]
+  const showError = async (detail: string): Promise<void> => {
+    await dialog.showMessageBox(win, {
+      type: 'error',
+      buttons: [uiText('好', 'OK')],
+      message: uiText('无法读取 JSON 文档', 'Could not read the JSON document'),
+      detail,
+    })
+  }
+  try {
+    const parsed: unknown = JSON.parse(await readFile(filePath, 'utf-8'))
+    // getValue() 导出的顶层是 IEditorResult（带 version/options 包一层 data），
+    // 直接认 IEditorData 也可以 —— 手写的极简 JSON 不必凑齐包装。
+    const asRecord = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
+    const inner = asRecord && typeof asRecord.data === 'object' && asRecord.data !== null
+      ? asRecord.data as Record<string, unknown>
+      : null
+    const data =
+      Array.isArray(asRecord?.main) ? asRecord
+      : Array.isArray(inner?.main) ? inner
+      : null
+    if (!data) {
+      await showError(uiText(
+        '不是 canvas-editor 导出的 JSON（缺少 main 元素列表）',
+        'Not a canvas-editor JSON (missing the main element list)'
+      ))
+      return null
+    }
+    return { path: filePath, data }
+  } catch (error) {
+    console.error('canvas json read failed', error)
+    await showError(error instanceof Error ? error.message : String(error))
+    return null
+  }
+})
+
+// 画布导出的 Markdown 文本落地；返回落盘路径（渲染端拿它开新标签页对照）
+ipcMain.handle('canvas-save-md', async (event, content: unknown, fileName?: unknown) => {
+  const win = getWinFromEvent(event)
+  if (!win || typeof content !== 'string') return null
+  const baseName = typeof fileName === 'string' && fileName ? fileName : undefined
+  const result = await dialog.showSaveDialog(win, {
+    title: uiText('导出 Markdown', 'Export Markdown'),
+    buttonLabel: uiText('保存', 'Save'),
+    nameFieldLabel: uiText('文件名：', 'File name:'),
+    defaultPath: defaultSavePath(win, baseName, 'md'),
+    filters: [
+      { name: 'Markdown', extensions: ['md'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePath) return null
+  try {
+    await writeFile(result.filePath, content, 'utf-8')
+    shell.showItemInFolder(result.filePath)
+    return result.filePath
+  } catch (error) {
+    console.error('canvas markdown save failed', error)
+    await dialog.showMessageBox(win, {
+      type: 'error',
+      buttons: [uiText('好', 'OK')],
+      message: uiText('无法导出 Markdown', 'Could not export the Markdown'),
+      detail: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+})
+
 // 偏好设置「打开指定文件夹」的「浏览」：选一个目录，返回绝对路径。
 ipcMain.handle('pick-directory', async (event, current?: unknown) => {
   const win = getWinFromEvent(event)
@@ -1264,10 +1530,205 @@ ipcMain.handle('pick-directory', async (event, current?: unknown) => {
     title: uiText('选择文件夹', 'Choose Folder'),
     buttonLabel: uiText('选择文件夹', 'Choose Folder'),
     properties: ['openDirectory', 'createDirectory'],
-    ...(start ? { defaultPath: start } : {})
+    // 浏览工作目录时从工作目录起步（没传起点时）。
+    defaultPath: start ?? defaultDialogDir('read')
   })
   if (result.canceled || result.filePaths.length === 0) return null
   return result.filePaths[0]
+})
+
+// JSON 视图：只读一个文本文件，不碰窗口的文档绑定（既不动标题/最近列表，
+// 也不注册监听）。渲染端拿它读 PDF 旁边的同名 .json（sidecar）。
+ipcMain.handle('read-text-file', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || !filePath) return null
+  try {
+    const content = await readFile(filePath, 'utf-8')
+    return { path: filePath, content }
+  } catch {
+    // 没有同名 .json 是常态，不是错误：交给调用方判断。
+    return null
+  }
+})
+
+// MinerU 抽出来的图片 → data URL。渲染端要把它内嵌进 Markdown（转换不是在本
+// 地网页里跑，没有同源/协议限制的前提就不能直接 src=file://），render 侧没有
+// 读磁盘的权限，只能借主进程读一次。读不到返回 null，由调用方决定退路。
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+}
+
+/**
+ * 按文件头判断真实 MIME。不能只信扩展名：MinerU 抽出来的图经常是 .jpg 的名字
+ * 装着 PNG 数据，按扩展名写出去的 data URL 就成了"image/jpeg + PNG 字节"，
+ * 编辑器能嗅探显示，导出 Word 时却对不上（见 docx-export 的 sniffImageType）。
+ */
+function sniffImageMime(buffer: Buffer): string | null {
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer.toString('latin1', 1, 4) === 'PNG') return 'image/png'
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg'
+  if (buffer.length >= 6 && buffer.toString('latin1', 0, 3) === 'GIF') return 'image/gif'
+  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) return 'image/bmp'
+  return null
+}
+
+ipcMain.handle('read-image-as-data-url', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || !filePath) return null
+  try {
+    const buffer = await readFile(filePath)
+    // 文件头优先，扩展名兜底（webp/svg 之类嗅探不到的格式仍按扩展名走）。
+    const mime = sniffImageMime(buffer) ?? IMAGE_MIME[extname(filePath).toLowerCase()] ?? 'image/png'
+    return { path: filePath, dataUrl: `data:${mime};base64,${buffer.toString('base64')}` }
+  } catch {
+    // 图片缺失是常态（老解析结果只有 json 没有 images/）：不是错误。
+    return null
+  }
+})
+
+// JSON 视图的「打开 JSON…」：选一个 .json，连内容一起带回来。
+ipcMain.handle('pick-json-file', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('选择 JSON 文件', 'Choose JSON File'),
+    buttonLabel: uiText('打开', 'Open'),
+    properties: ['openFile'],
+    defaultPath: defaultDialogDir('read'),
+    filters: [
+      { name: 'JSON', extensions: ['json'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  const filePath = result.filePaths[0]
+  try {
+    return { path: filePath, content: await readFile(filePath, 'utf-8') }
+  } catch {
+    return null
+  }
+})
+
+// PDF 对照标签页里的「打开 PDF…」：选一份 PDF，读成字节一起带回去（渲染端
+// fetch 不了 file://）。顺带把上一次解析留下的那两份文件路径一起给出。
+ipcMain.handle('pick-pdf-file', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('打开 PDF 文件', 'Open PDF File'),
+    buttonLabel: uiText('打开', 'Open'),
+    properties: ['openFile'],
+    defaultPath: defaultDialogDir('read'),
+    filters: [
+      { name: 'PDF', extensions: ['pdf'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  const filePath = result.filePaths[0]
+  try {
+    const bytes = await readFile(filePath)
+    // 旁边（或包里）已经解析过就把那两份文件一起带出去，右侧的 Markdown /
+    // JSON 才有东西显示。
+    return { path: filePath, data: new Uint8Array(bytes), ...findExtractedResult(filePath) }
+  } catch {
+    return null
+  }
+})
+
+// 切回一个已经挂着源文件的 PDF 标签页：按路径再读一次字节。切走时渲染端把文档
+// 与 worker 都放了，不留常驻内存，所以回来要重新读（文件被挪走/删掉就是 null）。
+ipcMain.handle('read-pdf-file', async (_event, pdfPath: unknown): Promise<{ path: string; data: Uint8Array; markdownPath?: string; jsonPath?: string } | null> => {
+  if (typeof pdfPath !== 'string' || !pdfPath) return null
+  try {
+    return { path: pdfPath, data: new Uint8Array(await readFile(pdfPath)), ...findExtractedResult(pdfPath) }
+  } catch {
+    return null
+  }
+})
+
+// 渲染端上报当前活动标签页挂着的那份 PDF（切到别的标签页就是 null）：只有它
+// 知道哪个标签页在前台。「另存为」的默认文件名按它取（见 suggestFileName）。
+ipcMain.on('set-active-pdf-path', (event, pdfPath: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  getState(win).pdfPath = typeof pdfPath === 'string' && pdfPath ? pdfPath : null
+})
+
+// 渲染端上报前台标签页的类型（切标签页时发）。类 docx 文档标签页（canvas-editor）
+// 自成一体的那套：打印只走它自己工具栏里那一个（executePrint 把页面渲成图再
+// 交给打印），窗口级的 print/printToPDF 对它没有意义 —— 所以菜单栏的打印相关
+// 项在这个标签页上前台时一律不生效，并且显示成不可用（见 syncPrintMenuState）。
+ipcMain.on('set-active-tab-kind', (event, kind: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  const next: ActiveTabKind =
+    kind === 'canvas' || kind === 'submit' || kind === 'document' ? kind : 'document'
+  const state = getState(win)
+  if (state.activeTabKind === next) return
+  state.activeTabKind = next
+  syncPrintMenuState()
+})
+
+// ── 在线解析（MinerU 精准解析 API）───────────────────────────────────────
+// 网络与落盘的实现都在 src/main/http/mineru.ts；这里只做窗口侧的编排：取 token、
+// 把进度推回发起请求的那个窗口、把解压目录里两份文件的路径交回渲染端。
+//
+// 结果包原样解压到 PDF 同目录的 <pdf 名>.mineru/，渲染端按路径直接读：
+// Markdown 读 full.md、JSON 读 layout.json（不再做 json → md 的转换）。
+interface MineruParseResponse {
+  ok: boolean
+  /** 失败原因；'NO_TOKEN' 是给渲染端识别的约定值 */
+  error?: string
+  /** 结果包解压出来的目录（<pdf 目录>/<pdf 名>.mineru） */
+  extractDir?: string
+  /** 目录里的 full.md —— 右侧 Markdown 面板读它 */
+  markdownPath?: string
+  /** 目录里的中间结果 json —— 右侧 JSON 面板读它 */
+  jsonPath?: string
+  imageCount?: number
+  batchId?: string
+}
+
+ipcMain.handle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruParseResponse> => {
+  const win = getWinFromEvent(event)
+  if (!win) return { ok: false, error: uiText('窗口已关闭', 'Window is closed') }
+  if (typeof pdfPath !== 'string' || !pdfPath) {
+    return { ok: false, error: uiText('还没有选中 PDF', 'No PDF selected yet') }
+  }
+  // token：环境变量优先（调试/CI 不用改 userSetting.json），其次偏好设置。
+  const token =
+    (typeof process.env.MINERU_TOKEN === 'string' ? process.env.MINERU_TOKEN.trim() : '') ||
+    (getUserSettingByPath<string>('mineru.token') ?? '').trim()
+  if (!token) return { ok: false, error: 'NO_TOKEN' }
+
+  const result = await parsePdfOnline({
+    filePath: pdfPath,
+    token,
+    // 结果 CDN 证书过期时的逃生开关（偏好设置里的勾选），详见 http/mineru.ts。
+    // 每次调用都现读：勾上后不用重启软件，下一次解析就生效。
+    insecureDownload: getUserSettingByPath<boolean>('mineru.insecureDownload') === true,
+    onProgress: (progress) => {
+      // 窗口可能中途关掉 —— 那时不再推进度，但任务继续跑（已花掉的额度不浪费）。
+      if (win.isDestroyed()) return
+      win.webContents.send('mineru-progress', progress)
+    }
+  })
+  if (!result.ok) {
+    // 超时不是"失败"：任务还在服务端跑，batch_id 交给渲染端提示可以稍后重开窗口再取。
+    return { ok: false, error: result.error ?? uiText('解析失败', 'Parsing failed'), batchId: result.batchId }
+  }
+  return {
+    ok: true,
+    extractDir: result.extractDir,
+    markdownPath: result.markdownPath,
+    jsonPath: result.jsonPath,
+    imageCount: result.imageCount,
+    batchId: result.batchId
+  }
 })
 
 // 图片模态框的「浏览」按钮：打开系统文件对话框选一张本地图片，
@@ -1279,6 +1740,7 @@ ipcMain.handle('pick-image-file', async (event) => {
     title: uiText('选择图片', 'Choose Image'),
     buttonLabel: uiText('选择', 'Choose'),
     properties: ['openFile'],
+    defaultPath: defaultDialogDir('read'),
     filters: [
       { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg'] },
       { name: 'All Files', extensions: ['*'] }
@@ -1301,7 +1763,7 @@ ipcMain.handle('export-image', async (event, snapshot: unknown, preset: unknown)
     title: uiText('导出 PNG 图片', 'Export PNG images'),
     buttonLabel: uiText('导出', 'Export'),
     nameFieldLabel: uiText('文件名：', 'File name:'),
-    defaultPath: suggestSavePath(win, `${baseName}-${suffix}.png`),
+    defaultPath: defaultSavePath(win, `${baseName}-${suffix}`, 'png'),
     filters: [{ name: 'PNG Image', extensions: ['png'] }]
   })
   if (result.canceled || !result.filePath) return false
@@ -1370,7 +1832,7 @@ ipcMain.handle('export-pdf', async (event) => {
     title: uiText('导出 PDF', 'Export PDF'),
     buttonLabel: uiText('导出', 'Export'),
     nameFieldLabel: uiText('文件名：', 'File name:'),
-    defaultPath: suggestSavePath(win, suggestFileName(win)),
+    defaultPath: defaultSavePath(win, suggestFileName(win), 'pdf'),
     filters: [{ name: 'PDF', extensions: ['pdf'] }]
   })
   if (result.canceled || !result.filePath) return false
@@ -1401,28 +1863,22 @@ function printWindow(win: BrowserWindow): boolean {
   }
 }
 
-// 打印预览：Electron 没有内建预览窗口，先按打印样式生成 PDF 到临时目录，
-// 再交给系统 PDF 阅读器打开（阅读器自带打印预览）。
-async function printPreviewWindow(win: BrowserWindow): Promise<boolean> {
+// 打印预览：Electron 的打印对话框自带预览区，但 Chromium 的预览渲染器在
+// Electron 里没实现 —— 那块永远是「此应用不支持打印预览」。所以预览自己做：
+// 先按打印样式生成 PDF（printToPDF），再交回渲染端用 pdf.js 画出来（见
+// renderer/print-preview.ts）。返回字节而不是临时文件：渲染端开着 webSecurity
+// fetch 不了 file://，而 pdf.js 本来就吃字节（PDF 对照标签页同一条路）。
+async function printPreviewBytes(win: BrowserWindow): Promise<Uint8Array | null> {
   try {
     const cssKey = await insertPrintCss(win)
-    let filePath = ''
     try {
-      const pdfData = await win.webContents.printToPDF(PRINT_PDF_OPTIONS)
-      const dir = join(app.getPath('temp'), 'teyoo')
-      await mkdir(dir, { recursive: true })
-      // 名字带时间戳：系统阅读器可能仍占用上次预览的 PDF，覆盖会失败
-      filePath = join(dir, `${suggestFileName(win) ?? 'preview'}-${Date.now()}.pdf`)
-      await writeFile(filePath, pdfData)
+      return new Uint8Array(await win.webContents.printToPDF(PRINT_PDF_OPTIONS))
     } finally {
       await win.webContents.removeInsertedCSS(cssKey)
     }
-    if (!filePath) return false
-    await shell.openPath(filePath)
-    return true
   } catch (error) {
     console.error('Print preview failed', error)
-    return false
+    return null
   }
 }
 
@@ -1432,14 +1888,38 @@ function focusedWindow(): BrowserWindow | null {
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null
 }
 
+// canvas-editor 标签页是自成一体的画布文档：它的打印走自己工具栏里那一个，
+// 菜单栏的打印/打印预览在前台是它时一律不生效（点击被挡住、菜单项也置灰）。
+function isCanvasTabActive(win: BrowserWindow | null): boolean {
+  return !!win && getState(win).activeTabKind === 'canvas'
+}
+
+/** 打印相关菜单项此刻是否可用（按聚焦窗口的前台标签页算） */
+function printMenuEnabled(): boolean {
+  return !isCanvasTabActive(focusedWindow())
+}
+
+// 菜单是全局的、构建时 enabled 就定死了，所以状态翻转时要重建一次；用缓存挡掉
+// 重复重建（只在「能印 ↔ 不能印」真的变了那次动手，切标签页不会次次重建）。
+let printMenuEnabledCache = true
+
+function syncPrintMenuState(): void {
+  const next = printMenuEnabled()
+  if (next === printMenuEnabledCache) return
+  printMenuEnabledCache = next
+  buildMenu()
+}
+
 ipcMain.handle('print', (event) => {
   const win = getWinFromEvent(event)
-  return win ? printWindow(win) : false
+  if (!win || isCanvasTabActive(win)) return false
+  return printWindow(win)
 })
 
 ipcMain.handle('print-preview', async (event) => {
   const win = getWinFromEvent(event)
-  return win ? await printPreviewWindow(win) : false
+  if (!win || isCanvasTabActive(win)) return null
+  return await printPreviewBytes(win)
 })
 
 function escapeHTML(value: string): string {
@@ -1465,7 +1945,7 @@ ipcMain.handle('export-html', async (event, snapshot: {
     title: uiText('导出 HTML', 'Export HTML'),
     buttonLabel: uiText('导出', 'Export'),
     nameFieldLabel: uiText('文件名：', 'File name:'),
-    defaultPath: suggestSavePath(win, `${baseName}.html`),
+    defaultPath: defaultSavePath(win, baseName, 'html'),
     filters: [{ name: 'HTML', extensions: ['html'] }]
   })
   if (result.canceled || !result.filePath) return false
@@ -1772,66 +2252,6 @@ ipcMain.handle('set-preferences-batch', (_event, changes: unknown) => {
 
 // Menu — targets the focused window
 
-function setAsDefaultApp(): void {
-  if (process.platform !== 'darwin') {
-    dialog.showMessageBox({
-      type: 'info',
-      message: 'This feature is available on macOS only.'
-    })
-    return
-  }
-
-  const script = `
-    ObjC.import('CoreServices');
-    var bundleID = 'ai.marswave.colamd';
-    var exts = ['md', 'markdown', 'mdown', 'mkd', 'txt'];
-    var results = [];
-    for (var i = 0; i < exts.length; i++) {
-      var ext = exts[i];
-      try {
-        var uti = $.UTTypeCreatePreferredIdentifierForTag(
-          $.kUTTagClassFilenameExtension,
-          $(ext),
-          null
-        );
-        if (!uti) throw new Error('Could not resolve file type');
-        var status = String($.LSSetDefaultRoleHandlerForContentType(uti, $.kLSRolesAll, $(bundleID)));
-        results.push(ext + ': ' + (status === '0' ? 'OK' : 'error ' + status));
-      } catch (e) {
-        results.push(ext + ': ' + e.message);
-      }
-    }
-    JSON.stringify(results);
-  `
-
-  execFile('osascript', ['-l', 'JavaScript', '-e', script], (error, stdout, stderr) => {
-    if (error) {
-      dialog.showMessageBox({
-        type: 'error',
-        message: 'Failed to set Teyoo as the default app.',
-        detail: stderr || error.message
-      })
-      return
-    }
-    try {
-      const results: string[] = JSON.parse(stdout.trim())
-      const allOk = results.every((r) => r.endsWith(': OK'))
-      dialog.showMessageBox({
-        type: 'info',
-        message: allOk
-          ? 'Teyoo is now the default app for Markdown and text files.'
-          : 'Some file types could not be associated. System Settings may need manual adjustment.',
-        detail: results.join('\n')
-      })
-    } catch {
-      dialog.showMessageBox({
-        type: 'info',
-        message: 'Default app request sent. You may need to confirm in the system dialog.'
-      })
-    }
-  })
-}
-
 function getFocusedWindow(): BrowserWindow | null {
   return BrowserWindow.getFocusedWindow()
 }
@@ -1876,12 +2296,12 @@ function buildMenu(): void {
     ? {
         file: '文件', edit: '编辑', format: '格式', insert: '插入', view: '视图', theme: '主题', window: '窗口', help: '帮助',
         print: '打印', printPage: '打印', printPreview: '打印预览',
-        newFile: '新建', open: '打开...', save: '保存', saveAs: '另存为...',
+        newFile: '新建markdown', open: '打开', save: '保存', saveAs: '另存为',
         newTab: '新建标签页', closeTab: '关闭标签页',
         recentOpen: '最近打开', restoreOnLaunch: '启动时打开上次文档', clearRecent: '清除最近记录', noRecent: '没有最近打开的文件',
-        exportPDF: '导出 PDF...', exportHTML: '导出 HTML...', exportWord: '导出 Word...', exportImageDesktop: '导出图片（电脑阅读）...', exportImageMobile: '导出图片（手机阅读）...', find: '查找',
-        importDocx: '导入 Word 文档...',
-        setDefault: '设置为默认应用...',
+        exportWord: '导出md为docx', exportHTML: '导出md为HTML', exportPDF: '导出md为PDF', exportImageDesktop: '导出图片（电脑阅读）', exportImageMobile: '导出图片（手机阅读）', find: '查找',
+        importDocx: 'docx转md', importPdf: 'PDF转md',
+        setDefault: '设置为默认应用',
         insertFormula: '插入公式', filePanel: '显示 / 隐藏文件列表', sourceMode: '切换 Markdown 源码',
         // 菜单栏「格式」/「插入」里与工具栏一一对应的功能项
         emphDot: '字下着重号', subscript: '下标', superscript: '上标', highlight: '高亮', taskList: '任务列表',
@@ -1892,10 +2312,11 @@ function buildMenu(): void {
         light: '浅色', dark: '深色', elegant: '雅致',
         sepia: '羊皮纸', notion: '简白', bear: '熊红', writer: '作家',
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
-        importTheme: '导入主题...', whatsNew: '新功能演示',
-        cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新...', updateAvailable: '发现新版本', close: '关闭窗口',
+        importTheme: '导入主题', whatsNew: '新功能演示',
+        cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
         preferences: '偏好设置…',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
+        newCanvasDoc: '新建类docx文档',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
         actualSize: '实际大小', zoomIn: '放大', zoomOut: '缩小', fullscreen: '切换全屏',
         devTools: '开发者工具',
@@ -1908,12 +2329,12 @@ function buildMenu(): void {
     : {
         file: 'File', edit: 'Edit', format: 'Format', insert: 'Insert', view: 'View', theme: 'Theme', window: 'Window', help: 'Help',
         print: 'Print', printPage: 'Print', printPreview: 'Print Preview',
-        newFile: 'New', open: 'Open...', save: 'Save', saveAs: 'Save As...',
+        newFile: 'New Markdown', open: 'Open', save: 'Save', saveAs: 'Save As',
         newTab: 'New Tab', closeTab: 'Close Tab',
         recentOpen: 'Open Recent', restoreOnLaunch: 'Reopen last document at launch', clearRecent: 'Clear Recent', noRecent: 'No recent files',
-        exportPDF: 'Export PDF...', exportHTML: 'Export HTML...', exportWord: 'Export Word...', exportImageDesktop: 'Export Image (Desktop)...', exportImageMobile: 'Export Image (Mobile)...', find: 'Find',
-        importDocx: 'Import Word Document...',
-        setDefault: 'Set as Default...',
+        exportWord: 'Export MD to DOCX', exportHTML: 'Export MD to HTML', exportPDF: 'Export MD to PDF', exportImageDesktop: 'Export Image (Desktop)', exportImageMobile: 'Export Image (Mobile)', find: 'Find',
+        importDocx: 'DOCX to MD', importPdf: 'PDF to MD',
+        setDefault: 'Set as Default',
         insertFormula: 'Insert Formula', filePanel: 'Show / Hide File List', sourceMode: 'Toggle Markdown Source',
         // Format / Insert menu counterparts of the toolbar buttons
         emphDot: 'Emphasis Dot', subscript: 'Subscript', superscript: 'Superscript', highlight: 'Highlight', taskList: 'Task List',
@@ -1924,10 +2345,11 @@ function buildMenu(): void {
         light: 'Light', dark: 'Dark', elegant: 'Elegant',
         sepia: 'Sepia', notion: 'Notion', bear: 'Bear', writer: 'Writer',
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
-        importTheme: 'Import Theme...', whatsNew: "What's New",
-        cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates...', updateAvailable: 'Update Available', close: 'Close Window',
+        importTheme: 'Import Theme', whatsNew: "What's New",
+        cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
         preferences: 'Preferences…',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
+        newCanvasDoc: 'New DOCX-like Document',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
         actualSize: 'Actual Size', zoomIn: 'Zoom In', zoomOut: 'Zoom Out', fullscreen: 'Toggle Full Screen',
         devTools: 'Toggle Developer Tools',
@@ -2006,6 +2428,11 @@ function buildMenu(): void {
           click: () => sendToFocused('menu-import-docx')
         },
         {
+          // 在当前窗口开一个标签页；窗口都没有时才建一个（见 importPdfDocument）。
+          label: labels.importPdf,
+          click: () => importPdfDocument()
+        },
+        {
           label: labels.recentOpen,
           // Our own label and submenu on every platform: the recentDocuments role
           // draws a clock icon and an English label, which no other menu item has.
@@ -2016,28 +2443,32 @@ function buildMenu(): void {
               }))
             : [{ label: labels.noRecent, enabled: false }]
         },
-        {
-          label: labels.restoreOnLaunch,
-          type: 'checkbox' as const,
-          checked: recentStore.restoreOnLaunch,
-          click: () => setRestoreOnLaunch(!recentStore.restoreOnLaunch)
-        },
+        // 已停用：启动时打开上次文档（restoreOnLaunch）。底层 setRestoreOnLaunch /
+        // recentStore.restoreOnLaunch 保留未删，取消注释即可恢复。
+        // {
+        //   label: labels.restoreOnLaunch,
+        //   type: 'checkbox' as const,
+        //   checked: recentStore.restoreOnLaunch,
+        //   click: () => setRestoreOnLaunch(!recentStore.restoreOnLaunch)
+        // },
         {
           label: labels.clearRecent,
           click: () => clearRecentFiles()
         },
         { type: 'separator' },
-        {
-          label: labels.newTab,
-          accelerator: 'CmdOrCtrl+T',
-          click: () => sendToFocused('menu-new-tab')
-        },
-        {
-          label: labels.closeTab,
-          accelerator: 'CmdOrCtrl+W',
-          click: () => sendToFocused('menu-close-tab')
-        },
-        { type: 'separator' },
+        // 已停用：新建标签页 / 关闭标签页（连带 CmdOrCtrl+T、CmdOrCtrl+W 快捷键）。
+        // 相应的 menu-new-tab / menu-close-tab IPC 与渲染端监听保留未删。
+        // {
+        //   label: labels.newTab,
+        //   accelerator: 'CmdOrCtrl+T',
+        //   click: () => sendToFocused('menu-new-tab')
+        // },
+        // {
+        //   label: labels.closeTab,
+        //   accelerator: 'CmdOrCtrl+W',
+        //   click: () => sendToFocused('menu-close-tab')
+        // },
+        // { type: 'separator' },
         {
           label: labels.save,
           accelerator: 'CmdOrCtrl+S',
@@ -2050,29 +2481,32 @@ function buildMenu(): void {
         },
         { type: 'separator' },
         {
-          label: labels.exportPDF,
-          click: () => sendToFocused('menu-export-pdf')
+          label: labels.exportWord,
+          click: () => sendToFocused('menu-export-docx')
         },
         {
           label: labels.exportHTML,
           click: () => sendToFocused('menu-export-html')
         },
         {
-          label: labels.exportWord,
-          click: () => sendToFocused('menu-export-docx')
+          label: labels.exportPDF,
+          click: () => sendToFocused('menu-export-pdf')
         },
-        {
-          label: labels.exportImageDesktop,
-          click: () => sendToFocused('menu-export-image', 'desktop')
-        },
-        {
-          label: labels.exportImageMobile,
-          click: () => sendToFocused('menu-export-image', 'mobile')
-        },
+        // 「导出图片（电脑阅读）/（手机阅读）」已从菜单移除（labels.exportImage*
+        // 与 export-image IPC、src/main/image-export.ts 都保留着 —— 加回下面
+        // 这两项即可恢复，无需重新实现）：
+        //   { label: labels.exportImageDesktop, click: () => sendToFocused('menu-export-image', 'desktop') },
+        //   { label: labels.exportImageMobile,  click: () => sendToFocused('menu-export-image', 'mobile')  },
         { type: 'separator' },
         {
           label: labels.setDefault,
-          click: () => setAsDefaultApp()
+          click: () => setAsDefaultApp(uiText, getFocusedWindow())
+        },
+        { type: 'separator' },
+        // 画布版类 docx 文档（canvas-editor）的入口，见 renderer/canvas-editor。
+        {
+          label: labels.newCanvasDoc,
+          click: () => sendToFocused('menu-new-canvas-doc')
         },
         { type: 'separator' },
         isMac ? { label: labels.close, accelerator: 'CmdOrCtrl+Shift+W', role: 'close' } : { label: labels.quit, role: 'quit' }
@@ -2232,14 +2666,28 @@ function buildMenu(): void {
     {
       label: labels.print,
       submenu: [
-        // 「打印预览」已移除：Electron 没有内建预览窗口，原来的实现只是生成
-        // PDF 再交给系统阅读器，用处不大。printPreviewWindow 保留以备后用。
         {
           label: labels.printPage,
           accelerator: 'CmdOrCtrl+P',
+          // 类 docx 文档（canvas-editor）标签页上前台时置灰：打印只走它自己工具栏
+          enabled: printMenuEnabled(),
           click: () => {
             const win = focusedWindow()
-            if (win) printWindow(win)
+            if (!win || isCanvasTabActive(win)) return
+            printWindow(win)
+          }
+        },
+        // 「打印预览」：预览由应用自己画（main 生成 PDF、渲染端 pdf.js 显示），
+        // 系统打印对话框里那块「此应用不支持打印预览」是 Electron 的固有缺口，
+        // 不是这里能补的 —— 详见 main 的 printPreviewBytes 与
+        // renderer/print-preview.ts。
+        {
+          label: labels.printPreview,
+          enabled: printMenuEnabled(),
+          click: () => {
+            const win = focusedWindow()
+            if (!win || isCanvasTabActive(win)) return
+            sendToFocused('menu-print-preview')
           }
         }
       ]
@@ -2304,6 +2752,8 @@ function buildMenu(): void {
       if (!win.isDestroyed()) win.webContents.send('menubar-closed')
     }
   })
+  // 这次构建用的就是当前的打印可用状态，记下来给 syncPrintMenuState 比对
+  printMenuEnabledCache = printMenuEnabled()
   // 菜单可能因语言切换/主题变更/更新状态而重建，通知 renderer 刷新标签文本
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('menubar-labels-changed')
@@ -2547,7 +2997,11 @@ ipcMain.on('document-state-response', (event, requestId: unknown, snapshot: unkn
 ipcMain.on('renderer-ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win) {
-    getState(win).rendererReady = true
+    const state = getState(win)
+    state.rendererReady = true
+    // 渲染端报就绪说明样式已注入、监听已注册，可以让窗口露脸了（幂等）。
+    state.reveal?.()
+    state.reveal = null
     // The renderer is listening now, so it can be told the state it cannot read
     // for itself: a window restored into full screen must not keep the traffic
     // light clearance.
@@ -2626,7 +3080,7 @@ async function handleWindowClose(win: BrowserWindow, state: WindowState): Promis
       title: uiText('保存 Markdown 文档', 'Save Markdown document'),
       buttonLabel: uiText('保存', 'Save'),
       nameFieldLabel: uiText('文件名：', 'File name:'),
-      defaultPath: suggestSavePath(win, suggestFileName(win, snapshot.content)),
+      defaultPath: defaultSavePath(win, suggestFileName(win, snapshot.content)),
       filters: [
         { name: 'Markdown', extensions: ['md'] },
         { name: 'All Files', extensions: ['*'] }

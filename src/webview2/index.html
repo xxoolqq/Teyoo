@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ColaMD 编辑器</title>
+  <!--COLA_STYLE-->
+</head>
+<body>
+  <!-- 精简版格式工具栏：只留自定义扩展语法的入口 —— 字体/字号、加粗、着重号、
+       上下标、拼音、带圈序号、田字格、子块、分栏，加上公式与表格。
+
+       DOM 结构、类名、data-tb-cmd 全部与桌面版 src/renderer/index.html 一致，
+       所以事件接线直接用 renderer/toolbar.ts 的 setupToolbar()，不复制逻辑。
+
+       刻意没放：通用 Markdown（标题下拉/列表/引用/分割线/斜体/链接）、
+       撤销重做、插入符号面板。
+
+       图片按钮是后来补的：桌面版它靠 Electron 的 pickImageFile 读本地文件，
+       WebView2 里没有这条通道，所以 image-modal 加了兜底 —— 用原生
+       <input type="file"> 选图后读成 base64 data URL 内嵌（本地路径
+       进了 Word 文档也活不下来，必须内嵌）。因此这里放它不需要宿主配合。 -->
+  <div id="toolbar" role="toolbar" aria-label="格式工具栏">
+    <div class="toolbar-group">
+      <div class="heading-dropdown" id="font-dropdown">
+        <!-- 字体 / 字号下拉换成图标（图标由用户提供），fill 改 currentColor 跟随主题。
+             原来的 <span id="font-select-label"> 一并去掉：toolbar.ts 对这两个
+             label 元素有 null 判断，取不到就跳过，不会报错；代价是按钮上不再
+             显示当前字体/字号。想恢复就把 span 加回来，JS 会继续更新它。 -->
+        <button type="button" id="font-select-btn" class="toolbar-btn heading-select-btn font-select-btn" aria-haspopup="true" aria-expanded="false" title="字体">
+          <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
+            <path d="M653.568 724.352l-366.72 0.32L216.32 893.888l158.656 0 0 57.088L64 950.976l0-57.088 55.424 0L495.232 73.088 528 73.088l386.304 820.8L960 893.888l0 57.088-280.96 0 0-57.088 60.544 0L653.568 724.352zM339.264 614.656l256.64-0.768L480 376.768 456.96 376.768 339.264 614.656z"></path>
+          </svg>
+        </button>
+        <!-- 与桌面版同一份清单，去掉需要另行安装的 Noto/霞鹜文楷/STIX：
+             Windows + Word 场景默认没有，选了也渲染不出来。 -->
+        <div id="font-menu" class="heading-menu" role="menu" hidden>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="SimSun" style="font-family: 'SimSun', '宋体', serif">宋体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="SimHei" style="font-family: 'SimHei', '黑体', sans-serif">黑体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="KaiTi" style="font-family: 'KaiTi', '楷体', serif">楷体</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="FangSong" style="font-family: 'FangSong', '仿宋', serif">仿宋</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Microsoft YaHei" style="font-family: 'Microsoft YaHei', sans-serif">微软雅黑</button>
+          <div class="dropdown-sep" role="separator"></div>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Times New Roman" style="font-family: 'Times New Roman', serif">Times New Roman</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Arial" style="font-family: Arial, sans-serif">Arial</button>
+          <button type="button" role="menuitem" class="font-menu-item" data-family="Courier New" style="font-family: 'Courier New', monospace">Courier New</button>
+        </div>
+      </div>
+      <div class="heading-dropdown" id="fontsize-dropdown">
+        <button type="button" id="fontsize-select-btn" class="toolbar-btn heading-select-btn fontsize-select-btn" aria-haspopup="true" aria-expanded="false" title="字号">
+          <svg width="16" height="16" viewBox="0 0 1144 1024" fill="currentColor" aria-hidden="true">
+            <path d="M978.823529 722.823529h-120.470588v-165.647058h-150.588235v-120.470589h150.588235V271.058824h120.470588v165.647058h150.588236v120.470589h-150.588236V722.823529z m135.529412 165.647059V1024H722.823529v-135.529412h391.529412zM527.058824 150.588235v873.411765h-150.588236V150.588235H0V0h903.529412v150.588235H527.058824z"></path>
+          </svg>
+        </button>
+        <div id="fontsize-menu" class="heading-menu" role="menu" hidden>
+          <!-- 小初 36pt / 一号 26pt / 小一 24pt / 二号 22pt 已按需移除。
+               注意：toolbar.ts 的 FONT_SIZE_LABELS 仍保留这四档的中文名，
+               这样存量文档里已有的 {= size=36pt : …} 在下拉上还能显示「小初」。 -->
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="18pt">小二 18pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="16pt">三号 16pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="15pt">小三 15pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="14pt">四号 14pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="12pt">小四 12pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="10.5pt">五号 10.5pt</button>
+          <button type="button" role="menuitem" class="fontsize-menu-item" data-size="9pt">小五 9pt</button>
+        </div>
+      </div>
+      <!-- 清除样式 / 修改样式：图标由用户提供。原图是 1024 视口的 iconfont 图标，
+           自带 fill（#EA4942 / #1890FF），这里改成 currentColor，跟工具栏其他
+           图标一致、并随主题变色（深色主题下原色会发灰看不清）。 -->
+      <button type="button" class="toolbar-btn font-style-btn" data-tb-cmd="clearFontStyle" title="清除样式：移除当前文本的字体/字号样式">
+        <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
+          <path d="M615.90666666 893.92c-6.2 0-13.64-1.24-19.84-4.96-3.72-1.24-8.68-2.48-12.4-4.96L164.54666666 627.32c-13.64-8.68-19.84-23.56-18.6-38.44 1.24-14.88 11.16-28.52 23.56-34.72 66.96-24.8 128.96-60.76 182.28-105.4 18.6-16.12 37.2-33.48 54.56-52.08l2.48-2.48c24.8-28.52 47.12-59.52 64.48-94.24 0-1.24 1.24-1.24 1.24-2.48 0 0 1.24-1.24 1.24-2.48s1.24-2.48 2.48-2.48c0 0 2.48-2.48 2.48-3.72 0 0 2.48-1.24 2.48-2.48 0 0 2.48-2.48 3.72-2.48l1.24-1.24s1.24-1.24 2.48-1.24c0 0 1.24-1.24 2.48-1.24 0 0 1.24 0 1.24-1.24 0 0 1.24 0 1.24-1.24 1.24 0 2.48-1.24 2.48-1.24h21.08c1.24 0 2.48 0 3.72 1.24h2.48s1.24 1.24 2.48 1.24l109.12 54.56 104.16-189.72c8.68-17.36 32.24-21.08 54.56-9.92 22.32 11.16 33.48 33.48 24.8 50.84l-104.16 189.72 96.72 48.36c6.2 3.72 11.16 7.44 14.88 13.64 4.96 6.2 7.44 14.88 7.44 23.56-1.24 76.88-18.6 151.28-50.84 221.96-34.72 74.4-81.84 140.12-141.36 197.16-7.44 11.16-17.36 14.88-27.28 14.88zM452.22666666 767.44l147.56 90.52c1.24 1.24 2.48 1.24 3.72 1.24 2.48 0 4.96 1.24 6.2 2.48 3.72 2.48 8.68 2.48 12.4-1.24 55.8-54.56 101.68-117.8 135.16-188.48 31-65.72 47.12-136.4 48.36-209.56 0-2.48 0-3.72-1.24-4.96l-1.24-1.24-3.72-3.72-110.36-55.8c-3.72-1.24-6.2-4.96-7.44-8.68-1.24-3.72-1.24-7.44 1.24-11.16l111.6-203.36c0-1.24-3.72-6.2-11.16-11.16-7.44-3.72-14.88-2.48-16.12-2.48l-111.6 203.36c-3.72 7.44-12.4 9.92-19.84 6.2l-121.52-60.76h-1.24H509.26666666s-1.24 0-1.24 1.24h-1.24c-1.24 0-1.24 1.24-2.48 1.24H503.06666666s0 1.24-1.24 1.24c0 0 0 1.24-1.24 1.24v1.24c-18.6 35.96-42.16 69.44-69.44 100.44l-1.24 1.24c-17.36 19.84-37.2 38.44-58.28 55.8-57.04 47.12-121.52 84.32-189.72 110.36-2.48 1.24-6.2 4.96-6.2 9.92s1.24 8.68 4.96 11.16l97.96 59.52 116.56-84.32 17.36 23.56-106.64 78.12 119.04 73.16 107.88-86.8 18.6 23.56-99.2 76.88z m-22.32-353.4z m70.68-100.44c0 1.24-1.24 1.24-1.24 1.24 0-1.24 0-1.24 1.24-1.24z m-1.24-7.44l3.72 2.48h1.24l-9.92-9.92 4.96 7.44z m9.92 1.24z m-4.96-7.44l1.24 3.72-2.48-9.92 1.24 6.2z m214.52 312.48l-260.4-148.8 14.88-26.04 260.4 148.8-14.88 26.04z"></path>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn font-style-btn" data-tb-cmd="editFontStyle" title="修改样式：修改当前文本的字体/字号">
+        <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
+          <path d="M580.608 776.192c-14.336 10.24-18.432 30.208-8.192 44.544 6.144 9.216 16.384 13.824 26.112 13.824 6.144 0 12.8-2.048 18.432-5.632 20.48-14.336 32.256-38.4 30.208-62.976-1.536-18.944-9.728-35.84-24.064-48.64-14.336-12.288-32.256-18.432-51.2-16.896-18.944 1.536-35.84 9.728-48.64 24.064-12.288 14.336-18.432 32.256-16.896 51.2 1.024 16.896 15.36 29.696 31.744 29.696h2.048c17.408-1.024 30.72-16.384 29.696-34.304 0-2.048 1.024-4.096 1.536-5.12s2.048-2.048 4.608-2.048c2.048 0 4.096 1.024 5.12 1.536 1.024 1.024 2.048 2.048 2.048 4.608 0.512 4.096-1.536 5.632-2.56 6.144z"></path>
+          <path d="M861.696 230.4l62.464-108.032c8.704-15.36 3.584-34.816-11.776-43.52s-34.816-3.584-43.52 11.776l-52.736 91.136-32.768 56.832L600.576 555.52c-8.704 15.36-3.584 34.816 11.776 43.52s34.816 3.584 43.52-11.776l171.52-296.96c49.152 69.12 73.216 152.576 69.632 238.592-2.048 46.592-13.312 92.16-33.792 136.192-19.968 43.008-47.104 81.92-81.408 116.224s-73.216 61.44-115.712 81.408c-44.032 20.48-89.6 31.744-136.192 33.792-6.144 0.512-11.776 0.512-17.92 0.512-44.544 0-88.064-7.68-130.048-22.528-10.24-3.584-14.336-11.776-16.384-15.872-1.536-4.608-3.584-13.312 2.048-23.04l56.32-97.792c32.768-56.832 13.312-129.536-43.52-161.792-17.92-10.24-38.4-15.872-59.392-15.872-41.984 0-81.408 22.528-102.912 59.392l-31.744 55.296c-2.56 4.608-6.656 7.168-12.288 7.168-4.096 0-9.728-1.536-12.288-7.68-20.48-44.544-32.256-92.16-34.816-141.824-2.56-53.76 5.632-105.984 24.576-155.648 18.432-47.616 45.568-91.136 81.408-128.512 35.84-37.376 77.824-67.072 124.928-88.064C406.528 138.752 458.24 128 511.488 128c7.68 0 15.872 0 23.552 0.512 50.688 3.072 99.84 15.872 144.896 37.888l9.216 4.608c15.36 8.192 33.792 2.56 42.496-12.288 9.216-15.872 3.072-35.84-12.8-44.544-54.272-28.16-115.2-46.08-180.224-49.664-9.216-0.512-18.432-1.024-27.136-1.024-253.952 0-461.312 214.016-448.512 471.552 3.072 58.88 17.408 114.688 40.448 165.376 13.824 29.696 41.984 45.056 70.656 45.056 26.112 0 52.736-12.8 67.584-38.912l31.744-55.296c10.24-17.408 28.16-27.136 47.104-27.136 9.216 0 17.92 2.048 26.624 6.656 26.624 14.848 35.328 49.152 19.968 75.776l-56.32 97.28c-28.16 49.152-5.632 112.128 48.128 131.584 47.104 16.896 98.304 26.112 151.552 26.112 6.656 0 13.824 0 20.48-0.512 224.256-10.24 417.792-203.776 428.032-428.032 6.656-115.2-31.232-220.672-97.28-302.592z"></path>
+        </svg>
+      </button>
+    </div>
+
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="bold" title="加粗（**文字**）"><b>B</b></button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="emphDot" title="字下着重号（@.文字.@）">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <line x1="3" y1="5" x2="8" y2="5"/>
+          <line x1="3" y1="8.5" x2="10.5" y2="8.5"/>
+          <circle cx="3.6" cy="12.3" r="1.05" fill="currentColor" stroke="none"/>
+          <circle cx="6.9" cy="12.3" r="1.05" fill="currentColor" stroke="none"/>
+          <circle cx="10.2" cy="12.3" r="1.05" fill="currentColor" stroke="none"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="underline" title="下划线（&lt;u&gt;文字&lt;/u&gt;）"><u>U</u></button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="subscript" title="下标（_{x}）">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <text x="1.5" y="13" font-size="11" font-weight="600" fill="currentColor" font-style="italic">x</text>
+          <text x="9.5" y="15" font-size="7.5" font-weight="600" fill="currentColor">2</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="superscript" title="上标（^{x}）">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <text x="1.5" y="13" font-size="11" font-weight="600" fill="currentColor" font-style="italic">x</text>
+          <text x="9.5" y="8.5" font-size="7.5" font-weight="600" fill="currentColor">2</text>
+        </svg>
+      </button>
+    </div>
+
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn tb-text" data-tb-cmd="pinyin" title="汉字拼音（上方 / 同行）"><b>P</b></button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="circledSup" title="汉字右上角带圈序号（光标置于汉字后）">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <text x="5" y="18" font-size="15" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">字</text>
+          <circle cx="18" cy="5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <text x="18" y="6.8" text-anchor="middle" font-size="5" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">1</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="tianzi" title="汉字田字格（纯汉字 / 空白格 / 带拼音）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="1" />
+          <line x1="3" y1="12" x2="21" y2="12" stroke-dasharray="2 2"/>
+          <line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/>
+        </svg>
+      </button>
+    </div>
+
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <div class="toolbar-group">
+      <button type="button" class="toolbar-btn" data-tb-cmd="math" title="公式">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <text x="8" y="15" text-anchor="middle" font-size="16" fill="currentColor" font-family="Georgia,'Times New Roman',serif" font-style="italic">∑</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="image" title="插入图片（本地文件，自动内嵌为 base64）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <circle cx="9" cy="10" r="2"/>
+          <path d="M3 17l5-5 4 4 3-3 6 6"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="table" title="插入表格">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="16" height="14" rx="1"/>
+          <line x1="2" y1="8" x2="18" y2="8"/>
+          <line x1="2" y1="13" x2="18" y2="13"/>
+          <line x1="8" y1="3" x2="8" y2="17"/>
+          <line x1="13" y1="3" x2="13" y2="17"/>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="subblock" title="子块（带边框/对齐）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="18" height="14" rx="1" />
+          <line x1="3" y1="10" x2="21" y2="10" />
+          <text x="12" y="8" text-anchor="middle" font-size="3.5" fill="currentColor" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">text</text>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn" data-tb-cmd="cols" title="分栏（N 列等宽或 A:B 比例）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="1" />
+          <line x1="12" y1="4" x2="12" y2="20" />
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- 编辑器容器。外层 id 固定为 editor：编辑器内核与主题 CSS 都按它写规则
+       （base.css / premium.css 里 100 多处 #editor .ProseMirror … 全是后代选择
+       器）。所以「习题 / 答案」两个编辑器是 #editor 内部的两个 root ——
+       结构变了选择器照样命中，不必复制任何一条主题规则。
+
+       真正作为编辑器 root 传给 createEditor 的是下面两个 .editor-root，各自
+       持有自己的 ProseMirror、撤销栈与滚动区（习题在上 500px、答案在下 400px，
+       尺寸见 webview2.css）；共用上方那一条工具栏，哪一个有焦点就操作哪一个
+       （见 editor.ts 的 setActiveEditor）。
+
+       每栏下面一个「传输选区」按钮：点是发给 VSTO 宿主一条 requestSelection
+       消息，宿主把 Word 里当前选中的那段另存成 .docx（落在 D:\TeyooDocx），
+       再回一条 importDocx 带着文件字节；页面解析成 Markdown 后追加到本栏末尾。
+       data-transfer-to 就是目标栏。宿主不在（浏览器直开）时退化成「把另一栏的
+       选区搬过来」，按钮不会点不动。 -->
+  <div id="editor">
+    <div class="editor-pane" data-pane="exercise">
+      <div id="exercise-root" class="editor-root"></div>
+      <div class="pane-actions">
+        <button type="button" class="transfer-btn" data-transfer-to="exercise"
+                title="把 Word 里当前选中的内容传到习题栏（追加到末尾）">传输选区到习题</button>
+      </div>
+    </div>
+    <div class="editor-pane" data-pane="answer">
+      <div id="answer-root" class="editor-root"></div>
+      <div class="pane-actions">
+        <button type="button" class="transfer-btn" data-transfer-to="answer"
+                title="把 Word 里当前选中的内容传到答案栏（追加到末尾）">传输选区到答案</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底部状态条：Word 插件里没有 F12，解析进度与失败原因要能被看见。
+       正常为空（hidden），只有导入时和出错时才出现。 -->
+  <div id="status-bar" hidden></div>
+
+  <!-- ?debug=1 才显形的自测区：直接选 D:\TeyooDocx 里的样例 docx 导入。
+       正式放在任务窗格里没人看得见（hidden 由 main.ts 解除）。 -->
+  <div id="debug-panel" hidden>
+    <span class="debug-label">自测导入</span>
+    <select id="debug-target">
+      <option value="auto">当前焦点栏</option>
+      <option value="exercise">习题栏</option>
+      <option value="answer">答案栏</option>
+    </select>
+    <input type="file" id="debug-file" accept=".docx" multiple>
+  </div>
+
+  <!-- 启动失败时把错误摆出来：WebView2 里没有 F12，截图就能看见原因。 -->
+  <pre id="boot-error" hidden></pre>
+
+  <!--COLA_SCRIPT-->
+</body>
+</html>

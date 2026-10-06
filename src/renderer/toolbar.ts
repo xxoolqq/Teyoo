@@ -31,9 +31,11 @@ import {
   applyFont,
   getToolbarState,
   onToolbarStateChange,
+  DEFAULT_FONT_SIZE,
   type FormatCommandId,
   type ToolbarBlockKind,
 } from './editor/editor'
+import { showFontStyleModal } from './editor/font-style-modal'
 
 const STORAGE_KEY = 'colamd-toolbar-visible'
 
@@ -130,9 +132,9 @@ const FONT_SIZE_LABELS: Record<string, string> = {
   '9pt': '小五',
 }
 
-// 编辑器正文默认字号（16px = 12pt）：无字体标记的普通文本即此字号，
-// 工具栏字号下拉默认显示/高亮它。
-const DEFAULT_FONT_SIZE = '12pt'
+// 「清除样式 / 修改样式」：只在光标/选区命中字体样式（行内 font_span 或
+// :::font 块容器）时才关联——可用且高亮，否则禁用。
+const FONT_STYLE_CMDS = ['clearFontStyle', 'editFontStyle']
 
 export function isToolbarVisible(): boolean {
   return localStorage.getItem(STORAGE_KEY) !== '0'
@@ -378,9 +380,19 @@ export function setupToolbar(): void {
   const fontLabelEl = document.getElementById('font-select-label')
   const fontSizeLabelEl = document.getElementById('fontsize-select-label')
 
+  const setFontStyleEnabled = (on: boolean): void => {
+    for (const cmd of FONT_STYLE_CMDS) {
+      const btn = cmdButtons.get(cmd)
+      if (btn instanceof HTMLButtonElement) btn.disabled = !on
+    }
+  }
+
   const syncState = (): void => {
     // 源码模式下编辑器无焦点，getToolbarState 会返回全 false；无需同步
-    if (document.getElementById('source-editor')?.classList.contains('visible')) return
+    if (document.getElementById('source-editor')?.classList.contains('visible')) {
+      setFontStyleEnabled(false)
+      return
+    }
     const state = getToolbarState()
     const setActive = (cmd: string, on: boolean): void => {
       cmdButtons.get(cmd)?.classList.toggle('is-active', on)
@@ -398,7 +410,10 @@ export function setupToolbar(): void {
     setActive('orderedList', state.orderedList)
     setActive('taskList', state.taskList)
     setActive('quote', state.quote)
-    setActive('clearFont', state.font)
+    // 命中字体样式 → 「清除样式」「修改样式」可用并高亮；未命中 → 禁用
+    setActive('clearFontStyle', state.font)
+    setActive('editFontStyle', state.font)
+    setFontStyleEnabled(state.font)
     if (labelEl) labelEl.textContent = BLOCK_LABELS[state.block]
     // 字体/字号下拉同步光标处的值；无字体信息时回落到占位文字
     if (fontLabelEl) {
@@ -454,8 +469,12 @@ export function runToolbarCommand(cmd: string): void {
     showTianziModal()
   } else if (cmd === 'table') {
     showTableModal()
-  } else if (cmd === 'clearFont') {
-    // 行内选区清除 {=:} mark，跨段选区提升删除 :::font 容器（逻辑在 applyFont 内自适应）
+  } else if (cmd === 'clearFont' || cmd === 'clearFontStyle') {
+    // 行内选区清除 {=:} mark，跨段选区提升删除 :::font 容器（逻辑在 applyFont 内自适应）。
+    // clearFont 是原图标按钮的命令名，工具栏现在只留「清除样式」文字按钮
+    // （仅在检测到字体样式时可点），两者同一实现。
     applyFont({ clear: true })
+  } else if (cmd === 'editFontStyle') {
+    showFontStyleModal()
   }
 }

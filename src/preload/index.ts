@@ -7,6 +7,45 @@ export interface SiblingFile {
 }
 
 type FileOpenedData = { path: string | null; content: string }
+// canvas-editor 的 IEditorData 形状（header/main/footer 元素列表）。preload 工程只
+// 收 src/preload，用不了 renderer 侧的模块垫片，这里就地表结构声明；渲染端拿到后
+// 自行按 IEditorData 消费（主进程已保证 main 是数组）。
+type CanvasEditorData = { header?: unknown[]; main: unknown[]; footer?: unknown[]; graffiti?: unknown[] }
+// 一份 PDF 的字节 +（可能有的）已解析结果那两份文件 —— full.md → 右侧 Markdown，
+// layout.json → 右侧 JSON，没解析过就没有。渲染端无法自己 fetch file://，只能
+// 由主进程读盘送过来，所以「打开 PDF…」和「切回 PDF 标签页」都是这个形状。
+type PickPdfResult = { path: string; data: Uint8Array; markdownPath?: string; jsonPath?: string }
+// 在线解析（MinerU）的两份载荷在这里重新声明，而不是 import 主进程那份：
+// preload 是独立 bundle（tsconfig.preload.json 只收 src/preload），跨工程 import
+// 会让 tsc 报 TS6307（文件不在工程列表里）。
+export type MineruProgressStage =
+  | 'applying'
+  | 'uploading'
+  | 'waiting'
+  | 'running'
+  | 'converting'
+  | 'downloading'
+  | 'done'
+  | 'failed'
+export interface MineruProgressPayload {
+  stage: MineruProgressStage
+  extracted?: number
+  total?: number
+  detail?: string
+  batchId?: string
+}
+export interface MineruParseResponse {
+  ok: boolean
+  error?: string
+  /** 结果包解压出来的目录（<pdf 目录>/<pdf 名>.mineru） */
+  extractDir?: string
+  /** 目录里的 full.md —— 右侧 Markdown 面板读它 */
+  markdownPath?: string
+  /** 目录里的中间结果 json —— 右侧 JSON 面板读它 */
+  jsonPath?: string
+  imageCount?: number
+  batchId?: string
+}
 type ImageExportPreset = 'desktop' | 'mobile'
 type ImageExportSnapshot = { html: string; styles: string; bodyClass: string; background: string }
 export type FileManagerName = 'finder' | 'explorer' | 'file-manager'
@@ -31,6 +70,8 @@ export interface ElectronAPI {
   revealFile: () => Promise<boolean>
   showEntryContextMenu: (path: string, kind: 'file' | 'directory') => Promise<void>
   showTabContextMenu: (payload: { tabId: string; filePath: string | null; canCloseOthers: boolean; canCloseRight: boolean }) => Promise<void>
+  // 编辑区右键菜单（撤销/重做/剪切/复制/粘贴/全选）
+  showEditorContextMenu: (payload: { editable: boolean; hasSelection: boolean }) => Promise<void>
   onTabMenuAction: (callback: (payload: { action: string; tabId: string }) => void) => void
   listSiblings: () => Promise<SiblingFile[] | null>
   listDirectory: (path: string) => Promise<SiblingFile[] | null>
@@ -42,14 +83,47 @@ export interface ElectronAPI {
   saveFile: (content: string, expectedPath?: string, rebuildMenu?: boolean, autosave?: boolean) => Promise<string | null>
   saveFileAs: (content: string, expectedPath?: string) => Promise<string | null>
   exportPDF: () => Promise<boolean>
+  /** 打印预览：主进程按打印样式生成 PDF，返回字节（渲染端用 pdf.js 画出来） */
+  printPreview: () => Promise<Uint8Array | null>
+  /** 开系统打印对话框（@media print 已把界面元素收干净） */
+  print: () => Promise<boolean>
   exportHTML: (snapshot: { content: string; html: string; styles: string; bodyClass: string }) => Promise<boolean>
   exportDOCX: (content: string, formulaEngine?: string) => Promise<boolean>
   // 导入 .docx → Markdown（主进程弹对话框 + mammoth/dwml-ts 转换）
   importDocx: () => Promise<{ path: string; content: string } | null>
+  // 类 docx 文档标签页（canvas-editor）的读写通道：文本 ↔ 元素树的转换在做
+  // 渲染端，主进程只管弹系统对话框与读写文件。与上面那条（Markdown ↔ docx）
+  // 是两套互不相关的东西。
+  pickCanvasMarkdown: () => Promise<{ path: string; content: string } | null>
+  /** 类 docx 文档「导入 JSON」：选一个 canvas-editor 导出的 .json，主进程已校验出元素树 */
+  pickCanvasJson: () => Promise<{ path: string; data: CanvasEditorData } | null>
+  saveCanvasMarkdown: (content: string, fileName?: string) => Promise<string | null>
   // 图片模态框「浏览」：主进程弹系统文件对话框，返回图片绝对路径
   pickImageFile: () => Promise<string | null>
-  // 偏好设置「打开指定文件夹」：选目录，返回绝对路径
+  // 偏好设置里选目录（工作目录「浏览…」）：返回绝对路径
   pickDirectory: (current?: string) => Promise<string | null>
+  // JSON 视图：只读一个文本文件（PDF 旁边的同名 .json），读不到返回 null
+  readTextFile: (path: string) => Promise<{ path: string; content: string } | null>
+  // Markdown 还原：把 MinerU 抽出来的图片读成 data URL（要在正文里内嵌显示）
+  readImageAsDataUrl: (path: string) => Promise<{ path: string; dataUrl: string } | null>
+  // JSON 视图的「打开 JSON…」：弹系统对话框选 .json，连内容一起返回
+  pickJsonFile: () => Promise<{ path: string; content: string } | null>
+  // PDF 对照标签页的「打开 PDF…」：弹系统对话框选 .pdf，内容以字节返回
+  //（生产环境是 file:// 页面 + webSecurity，渲染端自己取不到那份文件）
+  pickPdfFile: () => Promise<PickPdfResult | null>
+  // 切回一个已经挂着源文件的 PDF 标签页：按路径再读一次字节（切走时文档与
+  // worker 都放了，不留常驻内存）。读不到（文件被挪走/删掉）就是 null。
+  readPdfFile: (path: string) => Promise<PickPdfResult | null>
+  // 上报当前活动标签页挂着的那份 PDF（切到别的标签页就传 null）：主进程用它给
+  // 「另存为」起默认文件名。
+  setActivePdfPath: (path: string | null) => void
+  // 上报前台标签页类型。类 docx 文档（canvas-editor）标签页有自己的打印通道，
+  // 菜单栏的打印/打印预览对它不生效（见 main 的 isCanvasTabActive）。
+  setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => void
+  // 在线解析（MinerU）：请求全在主进程发起（渲染端 CSP 拦外部请求、上传链接是
+  // 签名 URL 不能外泄）。progress 由主进程逐条推回来。
+  parsePdfOnline: (pdfPath: string) => Promise<MineruParseResponse>
+  onMineruProgress: (callback: (payload: MineruProgressPayload) => void) => void
   // 用户偏好设置（主进程 userSetting.json，经 IPC 访问）
   getPreferences: () => Promise<Record<string, unknown>>
   setPreference: (key: string, value: unknown) => Promise<boolean>
@@ -79,7 +153,13 @@ export interface ElectronAPI {
   onMenuSaveAs: (callback: () => void) => void
   onMenuNewTab: (callback: () => void) => void
   onMenuCloseTab: (callback: () => void) => void
+  // 菜单「文件 → PDF转md」：在当前窗口开一个 PDF 对照标签页。
+  onMenuPdfTab: (callback: () => void) => void
+  // 菜单「文件 → 新建类docx文档」：开一个 canvas-editor 标签页。
+  onMenuNewCanvasDoc: (callback: () => void) => void
   onMenuExportPDF: (callback: () => void) => void
+  /** 菜单「打印 → 打印预览」：预览层在渲染端（main 先把 PDF 生成好） */
+  onMenuPrintPreview: (callback: () => void) => void
   onMenuExportHTML: (callback: () => void) => void
   onMenuExportDOCX: (callback: () => void) => void
   onMenuImportDocx: (callback: () => void) => void
@@ -122,6 +202,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   revealFile: () => ipcRenderer.invoke('reveal-file') as Promise<boolean>,
   showEntryContextMenu: (path: string, kind: 'file' | 'directory') => ipcRenderer.invoke('entry-context-menu', path, kind) as Promise<void>,
   showTabContextMenu: (payload: { tabId: string; filePath: string | null; canCloseOthers: boolean; canCloseRight: boolean }) => ipcRenderer.invoke('tab-context-menu', payload) as Promise<void>,
+  showEditorContextMenu: (payload: { editable: boolean; hasSelection: boolean }) => ipcRenderer.invoke('editor-context-menu', payload) as Promise<void>,
   onTabMenuAction: (callback: (payload: { action: string; tabId: string }) => void) => {
     ipcRenderer.on('tab-menu-action', (_event, payload: { action: string; tabId: string }) => callback(payload))
   },
@@ -139,11 +220,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFile: (content: string, expectedPath?: string, rebuildMenu?: boolean, autosave?: boolean) => ipcRenderer.invoke('save-file', content, expectedPath, rebuildMenu, autosave),
   saveFileAs: (content: string, expectedPath?: string) => ipcRenderer.invoke('save-file-as', content, expectedPath),
   exportPDF: () => ipcRenderer.invoke('export-pdf'),
+  printPreview: () => ipcRenderer.invoke('print-preview') as Promise<Uint8Array | null>,
+  print: () => ipcRenderer.invoke('print') as Promise<boolean>,
   exportHTML: (snapshot: { content: string; html: string; styles: string; bodyClass: string }) => ipcRenderer.invoke('export-html', snapshot),
   exportDOCX: (content: string, formulaEngine?: string) => ipcRenderer.invoke('export-docx', content, formulaEngine),
   importDocx: () => ipcRenderer.invoke('import-docx') as Promise<{ path: string; content: string } | null>,
+  pickCanvasMarkdown: () => ipcRenderer.invoke('canvas-pick-md') as Promise<{ path: string; content: string } | null>,
+  pickCanvasJson: () => ipcRenderer.invoke('canvas-pick-json') as Promise<{ path: string; data: CanvasEditorData } | null>,
+  saveCanvasMarkdown: (content: string, fileName?: string) => ipcRenderer.invoke('canvas-save-md', content, fileName) as Promise<string | null>,
   pickImageFile: () => ipcRenderer.invoke('pick-image-file') as Promise<string | null>,
   pickDirectory: (current?: string) => ipcRenderer.invoke('pick-directory', current) as Promise<string | null>,
+  // JSON 视图：只读文本 + 选一个 .json，都不动窗口的文档绑定。
+  readTextFile: (path: string) => ipcRenderer.invoke('read-text-file', path) as Promise<{ path: string; content: string } | null>,
+  readImageAsDataUrl: (path: string) => ipcRenderer.invoke('read-image-as-data-url', path) as Promise<{ path: string; dataUrl: string } | null>,
+  pickJsonFile: () => ipcRenderer.invoke('pick-json-file') as Promise<{ path: string; content: string } | null>,
+  pickPdfFile: () => ipcRenderer.invoke('pick-pdf-file') as Promise<PickPdfResult | null>,
+  readPdfFile: (path: string) => ipcRenderer.invoke('read-pdf-file', path) as Promise<PickPdfResult | null>,
+  setActivePdfPath: (path: string | null) => ipcRenderer.send('set-active-pdf-path', path),
+  setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => ipcRenderer.send('set-active-tab-kind', kind),
+  parsePdfOnline: (pdfPath: string) => ipcRenderer.invoke('mineru-parse', pdfPath) as Promise<MineruParseResponse>,
+  onMineruProgress: (callback: (payload: MineruProgressPayload) => void) => {
+    ipcRenderer.on('mineru-progress', (_event, payload: MineruProgressPayload) => callback(payload))
+  },
   getPreferences: () => ipcRenderer.invoke('get-preferences'),
   setPreference: (key: string, value: unknown) => ipcRenderer.invoke('set-preference', key, value),
   setPreferencesBatch: (changes: Record<string, unknown>) => ipcRenderer.invoke('set-preferences-batch', changes),
@@ -188,6 +286,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     fileOpenedHandler = callback
     for (const data of pendingFileOpened.splice(0)) callback(data)
   },
+
   onMenuOpen: (callback: () => void) => {
     ipcRenderer.on('menu-open', () => callback())
   },
@@ -200,11 +299,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuCloseTab: (callback: () => void) => {
     ipcRenderer.on('menu-close-tab', () => callback())
   },
+  onMenuPdfTab: (callback: () => void) => {
+    ipcRenderer.on('menu-pdf-tab', () => callback())
+  },
+  onMenuNewCanvasDoc: (callback: () => void) => {
+    ipcRenderer.on('menu-new-canvas-doc', () => callback())
+  },
   onMenuSaveAs: (callback: () => void) => {
     ipcRenderer.on('menu-save-as', () => callback())
   },
   onMenuExportPDF: (callback: () => void) => {
     ipcRenderer.on('menu-export-pdf', () => callback())
+  },
+  onMenuPrintPreview: (callback: () => void) => {
+    ipcRenderer.on('menu-print-preview', () => callback())
   },
   onMenuExportHTML: (callback: () => void) => {
     ipcRenderer.on('menu-export-html', () => callback())

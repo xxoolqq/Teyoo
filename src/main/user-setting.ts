@@ -19,9 +19,7 @@ import { dirname, join } from 'node:path'
 
 export interface UserSetting {
   general: {
-    launchOnOpen: 'last' | 'new' | 'folder'
-    /** 「打开指定文件夹」选中的目标文件夹绝对路径；'' 表示未指定 */
-    launchFolder: string
+    launchOnOpen: 'last' | 'new'
     autoSaveOnBlur: boolean
     autoSaveIntervalMinutes: number
     defaultEncoding: 'UTF-8' | 'GBK'
@@ -43,8 +41,14 @@ export interface UserSetting {
     tabBehavior: 'indent' | 'toggle'
   }
   image: {
-    /** 备份图片的目标文件夹绝对路径；'' 表示未指定 */
-    backupFolder: string
+    /** 工作目录（原「备份图片」）的绝对路径；同时也是解析 PDF 时找图片的基准目录 */
+    workDir: string
+    /**
+     * 解析 PDF（JSON → Markdown）时图片是否内嵌成 base64：
+     * true = 写 data:image/...;base64,...（Markdown 自包含，体积随图片涨）；
+     * false = 只写图片的 file:// 绝对路径（Markdown 小，但离开本机就显示不出来）。
+     */
+    embedImages: boolean
     applyLocal: boolean
     applyRemote: boolean
     escapeUrl: boolean
@@ -77,14 +81,32 @@ export interface UserSetting {
     imageFormula: 'ocr' | 'keep'
   }
   export: {
+    // 'Temml' = KaTeX 生态（Temml 是 KaTeX 的 MathML 输出分支；设置面板下拉里
+    //           这一项显示为 KaTeX，存储值仍是 'Temml'）；'MathJax' = mathjax-full。
+    // 默认 MathJax：官方宏包最全（physics 等），化学式 \ce 两边都能渲染。
     formulaEngine: 'Temml' | 'MathJax'
   }
+  // 在线 PDF 解析（MinerU）。token 明文存在 userSetting.json 里 —— 桌面端没有
+  // 更安全的凭据仓（系统钥匙串要原生模块），所以配套的约定是：不进日志、不进
+  // IPC 回显以外的任何地方，环境变量 MINERU_TOKEN 的优先级高于这里。
+  mineru: {
+    /** MinerU 的 API Token（Bearer）；空串 = 未配置，在线解析不可用。 */
+    token: string
+    /**
+     * 逃生开关：结果 CDN 的 TLS 证书过期时，仍然把结果包下载回来。
+     * 见 http/mineru.ts 的 downloadResult —— 只作用于下载这一步、只放行
+     * openxlab.org.cn。默认 false（严格校验）。
+     */
+    insecureDownload: boolean
+  }
 }
+
+/** 工作目录的默认值（渲染端 preferences-modal.ts 里的 DEFAULT_WORK_DIR 与此同一份）。 */
+export const DEFAULT_WORK_DIR = 'D:/TeyooData'
 
 const DEFAULT_SETTING: UserSetting = {
   general: {
     launchOnOpen: 'last',
-    launchFolder: '',
     autoSaveOnBlur: true,
     // 0 = 不自动保存；1–5 为分钟数
     autoSaveIntervalMinutes: 0,
@@ -107,7 +129,8 @@ const DEFAULT_SETTING: UserSetting = {
     tabBehavior: 'indent',
   },
   image: {
-    backupFolder: '',
+    workDir: DEFAULT_WORK_DIR,
+    embedImages: true,
     applyLocal: true,
     applyRemote: true,
     escapeUrl: true,
@@ -132,6 +155,14 @@ const DEFAULT_SETTING: UserSetting = {
   },
   export: {
     formulaEngine: 'MathJax'
+  },
+  mineru: {
+    // 空串 = 未配置。环境变量 MINERU_TOKEN 优先级更高（见 index.ts），方便
+    // CI / 调试时不用改 userSetting.json。
+    token: '',
+    // 默认严格校验证书：只有对方 CDN 证书过期、又急着要结果时才手动打开。
+    // 旧版 userSetting.json 缺这个字段会被 pruneToDefaults 补成 false。
+    insecureDownload: false,
   },
 }
 
@@ -163,6 +194,18 @@ function loadUserSetting(): UserSetting {
     const raw = readFileSync(userSettingPath, 'utf-8')
     const parsed = JSON.parse(raw)
     const merged = pruneToDefaults(DEFAULT_SETTING, parsed)
+    // 旧版「备份图片」改名为「工作目录」：pruneToDefaults 会丢掉未声明字段，
+    // 所以趁旧值还在原始对象里搬一次，免得用户设过的目录凭空消失。
+    const legacyImage = (parsed as Record<string, unknown> | null)?.image
+    const legacyDir = legacyImage && typeof legacyImage === 'object'
+      ? (legacyImage as Record<string, unknown>).backupFolder
+      : undefined
+    if (typeof legacyDir === 'string' && legacyDir && merged.image.workDir === DEFAULT_SETTING.image.workDir) {
+      merged.image.workDir = legacyDir
+    }
+    // 「启动 → 打开指定文件夹」已移除（launchFolder 字段由 pruneToDefaults 丢弃）。
+    // 旧配置里选过它的人回落到「打开上次的文件」，否则两个 radio 会都不选中。
+    if ((merged.general.launchOnOpen as string) === 'folder') merged.general.launchOnOpen = 'last'
     // 旧文件含已废弃字段 → 排一次写盘把清理结果落定
     if (JSON.stringify(merged) !== JSON.stringify(parsed)) scheduleSave()
     return merged

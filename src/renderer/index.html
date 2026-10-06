@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https: http: file:;">
+  <!-- worker-src：pdf.js 的 worker 走 ?url 资产（同源）；blob: 留给兼容性回退路径。
+       font-src 加 blob:：pdf.js 用 FontFace 注入 PDF 内嵌字体时可能是 blob URL。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data: blob:; img-src 'self' data: blob: https: http: file:;">
   <title>Teyoo</title>
   <!-- Keep the titlebar stable before the renderer CSS bundle loads. -->
   <style>
@@ -23,6 +25,13 @@
     #file-panel { width: var(--file-panel-width, 220px); }
     #panel-resizer { position: fixed; top: calc(40px + var(--tab-bar-height, 0px)); bottom: 0; right: calc(var(--file-panel-width, 220px) - 4px); width: 7px; cursor: col-resize; z-index: 6; background: transparent; }
     #source-editor { display: none; }
+    /* 样式 bundle 加载前的首帧兜底：下面几块全靠 CSS 隐藏，不兜底就会裸着
+       露出来（doc-bar 只在 PDF 对照窗口出现，两个「勾」只在操作成功时出现）。
+       这些规则写在 bundle 之前，bundle 里同名的会覆盖它们。 */
+    #doc-bar { display: none; }
+    #doc-json { display: none; }
+    .doc-save-check { display: none; }
+    .doc-copy-check { display: none; }
   </style>
 </head>
 <body>
@@ -100,8 +109,14 @@
         </div>
       </div>
       <div class="heading-dropdown" id="font-dropdown">
+        <!-- 字体 / 字号下拉用图标（与 WebView2 宿主页同一份图标），fill 走
+             currentColor 跟随主题。原来的 <span id="…-label"> 去掉：toolbar.ts
+             对这两个 label 有 null 判断，取不到就跳过；代价是按钮上不再显示
+             当前字体/字号，想恢复把 span 加回来即可，JS 仍会往里写当前值。 -->
         <button type="button" id="font-select-btn" class="toolbar-btn heading-select-btn font-select-btn" aria-haspopup="true" aria-expanded="false" title="字体">
-          <span id="font-select-label">字体</span>
+          <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
+            <path d="M653.568 724.352l-366.72 0.32L216.32 893.888l158.656 0 0 57.088L64 950.976l0-57.088 55.424 0L495.232 73.088 528 73.088l386.304 820.8L960 893.888l0 57.088-280.96 0 0-57.088 60.544 0L653.568 724.352zM339.264 614.656l256.64-0.768L480 376.768 456.96 376.768 339.264 614.656z"></path>
+          </svg>
         </button>
         <div id="font-menu" class="heading-menu" role="menu" hidden>
           <button type="button" role="menuitem" class="font-menu-item" data-family="SimSun" style="font-family: 'SimSun', '宋体', serif">宋体</button>
@@ -121,7 +136,9 @@
       </div>
       <div class="heading-dropdown" id="fontsize-dropdown">
         <button type="button" id="fontsize-select-btn" class="toolbar-btn heading-select-btn fontsize-select-btn" aria-haspopup="true" aria-expanded="false" title="字号">
-          <span id="fontsize-select-label">小四</span>
+          <svg width="16" height="16" viewBox="0 0 1144 1024" fill="currentColor" aria-hidden="true">
+            <path d="M978.823529 722.823529h-120.470588v-165.647058h-150.588235v-120.470589h150.588235V271.058824h120.470588v165.647058h150.588236v120.470589h-150.588236V722.823529z m135.529412 165.647059V1024H722.823529v-135.529412h391.529412zM527.058824 150.588235v873.411765h-150.588236V150.588235H0V0h903.529412v150.588235H527.058824z"></path>
+          </svg>
         </button>
         <div id="fontsize-menu" class="heading-menu" role="menu" hidden>
           <button type="button" role="menuitem" class="fontsize-menu-item" data-size="36pt">小初 36pt</button>
@@ -137,12 +154,18 @@
           <button type="button" role="menuitem" class="fontsize-menu-item" data-size="9pt">小五 9pt</button>
         </div>
       </div>
-      <button type="button" class="toolbar-btn" data-tb-cmd="clearFont" title="清除字体样式 (Ctrl+空格)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3.6 11.5 6.6 4l3 7.5"/>
-          <path d="M4.7 9.1h3.8"/>
-          <line x1="11.6" y1="4.6" x2="14.4" y2="7.4"/>
-          <line x1="14.4" y1="4.6" x2="11.6" y2="7.4"/>
+      <!-- 清除样式 / 修改样式：与 WebView2 宿主页同一份图标（1024 视口 iconfont，
+           原 fill #EA4942 / #1890FF 改成 currentColor，跟工具栏其他图标一致、
+           随主题变色） -->
+      <button type="button" class="toolbar-btn font-style-btn" data-tb-cmd="clearFontStyle" title="清除样式：移除当前文本的字体/字号样式 (Ctrl+空格)">
+        <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
+          <path d="M615.90666666 893.92c-6.2 0-13.64-1.24-19.84-4.96-3.72-1.24-8.68-2.48-12.4-4.96L164.54666666 627.32c-13.64-8.68-19.84-23.56-18.6-38.44 1.24-14.88 11.16-28.52 23.56-34.72 66.96-24.8 128.96-60.76 182.28-105.4 18.6-16.12 37.2-33.48 54.56-52.08l2.48-2.48c24.8-28.52 47.12-59.52 64.48-94.24 0-1.24 1.24-1.24 1.24-2.48 0 0 1.24-1.24 1.24-2.48s1.24-2.48 2.48-2.48c0 0 2.48-2.48 2.48-3.72 0 0 2.48-1.24 2.48-2.48 0 0 2.48-2.48 3.72-2.48l1.24-1.24s1.24-1.24 2.48-1.24c0 0 1.24-1.24 2.48-1.24 0 0 1.24 0 1.24-1.24 0 0 1.24 0 1.24-1.24 1.24 0 2.48-1.24 2.48-1.24h21.08c1.24 0 2.48 0 3.72 1.24h2.48s1.24 1.24 2.48 1.24l109.12 54.56 104.16-189.72c8.68-17.36 32.24-21.08 54.56-9.92 22.32 11.16 33.48 33.48 24.8 50.84l-104.16 189.72 96.72 48.36c6.2 3.72 11.16 7.44 14.88 13.64 4.96 6.2 7.44 14.88 7.44 23.56-1.24 76.88-18.6 151.28-50.84 221.96-34.72 74.4-81.84 140.12-141.36 197.16-7.44 11.16-17.36 14.88-27.28 14.88zM452.22666666 767.44l147.56 90.52c1.24 1.24 2.48 1.24 3.72 1.24 2.48 0 4.96 1.24 6.2 2.48 3.72 2.48 8.68 2.48 12.4-1.24 55.8-54.56 101.68-117.8 135.16-188.48 31-65.72 47.12-136.4 48.36-209.56 0-2.48 0-3.72-1.24-4.96l-1.24-1.24-3.72-3.72-110.36-55.8c-3.72-1.24-6.2-4.96-7.44-8.68-1.24-3.72-1.24-7.44 1.24-11.16l111.6-203.36c0-1.24-3.72-6.2-11.16-11.16-7.44-3.72-14.88-2.48-16.12-2.48l-111.6 203.36c-3.72 7.44-12.4 9.92-19.84 6.2l-121.52-60.76h-1.24H509.26666666s-1.24 0-1.24 1.24h-1.24c-1.24 0-1.24 1.24-2.48 1.24H503.06666666s0 1.24-1.24 1.24c0 0 0 1.24-1.24 1.24v1.24c-18.6 35.96-42.16 69.44-69.44 100.44l-1.24 1.24c-17.36 19.84-37.2 38.44-58.28 55.8-57.04 47.12-121.52 84.32-189.72 110.36-2.48 1.24-6.2 4.96-6.2 9.92s1.24 8.68 4.96 11.16l97.96 59.52 116.56-84.32 17.36 23.56-106.64 78.12 119.04 73.16 107.88-86.8 18.6 23.56-99.2 76.88z m-22.32-353.4z m70.68-100.44c0 1.24-1.24 1.24-1.24 1.24 0-1.24 0-1.24 1.24-1.24z m-1.24-7.44l3.72 2.48h1.24l-9.92-9.92 4.96 7.44z m9.92 1.24z m-4.96-7.44l1.24 3.72-2.48-9.92 1.24 6.2z m214.52 312.48l-260.4-148.8 14.88-26.04 260.4 148.8-14.88 26.04z"></path>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-btn font-style-btn" data-tb-cmd="editFontStyle" title="修改样式：修改当前文本的字体/字号">
+        <svg width="16" height="16" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true">
+          <path d="M580.608 776.192c-14.336 10.24-18.432 30.208-8.192 44.544 6.144 9.216 16.384 13.824 26.112 13.824 6.144 0 12.8-2.048 18.432-5.632 20.48-14.336 32.256-38.4 30.208-62.976-1.536-18.944-9.728-35.84-24.064-48.64-14.336-12.288-32.256-18.432-51.2-16.896-18.944 1.536-35.84 9.728-48.64 24.064-12.288 14.336-18.432 32.256-16.896 51.2 1.024 16.896 15.36 29.696 31.744 29.696h2.048c17.408-1.024 30.72-16.384 29.696-34.304 0-2.048 1.024-4.096 1.536-5.12s2.048-2.048 4.608-2.048c2.048 0 4.096 1.024 5.12 1.536 1.024 1.024 2.048 2.048 2.048 4.608 0.512 4.096-1.536 5.632-2.56 6.144z"></path>
+          <path d="M861.696 230.4l62.464-108.032c8.704-15.36 3.584-34.816-11.776-43.52s-34.816-3.584-43.52 11.776l-52.736 91.136-32.768 56.832L600.576 555.52c-8.704 15.36-3.584 34.816 11.776 43.52s34.816 3.584 43.52-11.776l171.52-296.96c49.152 69.12 73.216 152.576 69.632 238.592-2.048 46.592-13.312 92.16-33.792 136.192-19.968 43.008-47.104 81.92-81.408 116.224s-73.216 61.44-115.712 81.408c-44.032 20.48-89.6 31.744-136.192 33.792-6.144 0.512-11.776 0.512-17.92 0.512-44.544 0-88.064-7.68-130.048-22.528-10.24-3.584-14.336-11.776-16.384-15.872-1.536-4.608-3.584-13.312 2.048-23.04l56.32-97.792c32.768-56.832 13.312-129.536-43.52-161.792-17.92-10.24-38.4-15.872-59.392-15.872-41.984 0-81.408 22.528-102.912 59.392l-31.744 55.296c-2.56 4.608-6.656 7.168-12.288 7.168-4.096 0-9.728-1.536-12.288-7.68-20.48-44.544-32.256-92.16-34.816-141.824-2.56-53.76 5.632-105.984 24.576-155.648 18.432-47.616 45.568-91.136 81.408-128.512 35.84-37.376 77.824-67.072 124.928-88.064C406.528 138.752 458.24 128 511.488 128c7.68 0 15.872 0 23.552 0.512 50.688 3.072 99.84 15.872 144.896 37.888l9.216 4.608c15.36 8.192 33.792 2.56 42.496-12.288 9.216-15.872 3.072-35.84-12.8-44.544-54.272-28.16-115.2-46.08-180.224-49.664-9.216-0.512-18.432-1.024-27.136-1.024-253.952 0-461.312 214.016-448.512 471.552 3.072 58.88 17.408 114.688 40.448 165.376 13.824 29.696 41.984 45.056 70.656 45.056 26.112 0 52.736-12.8 67.584-38.912l31.744-55.296c10.24-17.408 28.16-27.136 47.104-27.136 9.216 0 17.92 2.048 26.624 6.656 26.624 14.848 35.328 49.152 19.968 75.776l-56.32 97.28c-28.16 49.152-5.632 112.128 48.128 131.584 47.104 16.896 98.304 26.112 151.552 26.112 6.656 0 13.824 0 20.48-0.512 224.256-10.24 417.792-203.776 428.032-428.032 6.656-115.2-31.232-220.672-97.28-302.592z"></path>
         </svg>
       </button>
       <button type="button" class="toolbar-btn" data-tb-cmd="quote" title="引用块">
@@ -313,8 +336,79 @@
     <ul id="outline-list" hidden></ul>
   </aside>
   <div id="panel-resizer" aria-hidden="true"></div>
+  <!-- PDF 对照视图（菜单「文件 → PDF转md」开的标签页）：左侧源文件，右侧编辑器。
+       默认隐藏，pdf-view.ts 在切进该标签页时显示它、切走时收起。 -->
+  <aside id="pdf-panel" aria-label="PDF 源文件" hidden>
+    <div class="pdf-panel-head">
+      <span class="pdf-panel-title">源文件</span>
+      <span id="pdf-source-name" class="pdf-source-name"></span>
+      <!-- 缩放：⊖ ⊕ + 当前比例，放在页码左侧 -->
+      <span class="pdf-zoom">
+        <button id="pdf-zoom-out" class="pdf-zoom-btn" type="button">⊖</button>
+        <button id="pdf-zoom-in" class="pdf-zoom-btn" type="button">⊕</button>
+        <span id="pdf-zoom-level" class="pdf-zoom-level">100%</span>
+      </span>
+      <span id="pdf-meta" class="pdf-meta"></span>
+      <!-- 在线解析：调 MinerU 精准解析 API（主进程 src/main/http/mineru.ts）。
+           选中 PDF 后才露出来（没源文件就没有可解析的东西）。 -->
+      <button id="pdf-parse-btn" class="pdf-parse-btn" type="button" hidden>在线解析</button>
+    </div>
+    <div id="pdf-pages" class="pdf-pages"></div>
+    <!-- 空态：菜单「PDF转md」开出来的标签页还没选源文件。选中后 pdf-view.ts
+         把它藏起来换成上面的页面栏（与 JSON 视图的空态同一个套路）。 -->
+    <div id="pdf-empty" class="pdf-empty" hidden>
+      <p id="pdf-empty-text" class="pdf-empty-text"></p>
+      <button id="pdf-open-btn" class="pdf-open-btn" type="button">打开 PDF…</button>
+    </div>
+  </aside>
+  <div id="pdf-resizer" aria-hidden="true" hidden></div>
+  <!-- 右侧栏顶部条：文档格式切换 + 保存 + 复制当前内容。只在 PDF 对照标签页显示
+       （base.css 的 body.pdf-view），普通标签页那一行是标签条 + 格式工具栏。 -->
+  <div id="doc-bar">
+    <div class="doc-mode-switch" role="group" aria-label="文档格式">
+      <button id="doc-mode-markdown" class="doc-mode-btn is-active" type="button" aria-pressed="true">Markdown</button>
+      <button id="doc-mode-json" class="doc-mode-btn" type="button" aria-pressed="false">JSON</button>
+    </div>
+    <!-- 保存（在复制按钮左侧）：和 Ctrl+S 同一条路径；未命名的文档才弹框，
+         默认落在偏好里的工作目录。 -->
+    <button id="doc-save-btn" class="doc-save-btn" type="button">
+      <svg class="doc-save-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M2.75 2.75h10.5v10.5H2.75z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        <path d="M5.5 2.75h5v4h-5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        <path d="M5.5 9.5h5v3.75h-5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      </svg>
+      <svg class="doc-save-check" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <polyline points="3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor"
+                  stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <button id="doc-copy-btn" class="doc-copy-btn" type="button">
+      <svg class="doc-copy-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M10.5 5.5v-1a2 2 0 0 0-2-2h-4.5a2 2 0 0 0-2 2v4.5a2 2 0 0 0 2 2h1"
+              fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+        <rect class="doc-copy-front" x="5.5" y="5.5" width="8.5" height="8.5" rx="2"
+              stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+      <svg class="doc-copy-check" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <polyline points="3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor"
+                  stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
   <div id="editor"></div>
   <textarea id="source-editor" spellcheck="false"></textarea>
+  <!-- JSON 模式：只读展示解析结果（MinerU 的 layout.json 之类）。缩进、着色、
+       折叠和「只画可视区」都在 json-view.ts 里做，这里只给两个容器：
+       树（虚拟滚动）和空态（没有 JSON 时的「打开 JSON…」）。 -->
+  <div id="doc-json">
+    <div id="json-viewport" class="json-viewport">
+      <div id="json-lines" class="json-lines"></div>
+    </div>
+    <div id="json-empty" class="json-empty">
+      <p id="json-empty-text" class="json-empty-text"></p>
+      <button id="json-open-btn" class="json-open-btn" type="button">打开 JSON…</button>
+    </div>
+  </div>
   <!-- 提交标签页：非编辑器的表单视图（输入框 + 提交按钮），由 main.ts
        在「提交」标签页激活时显示。整页铺满编辑区：左侧表单列、右侧预览区
        （主编辑器 #editor 的 DOM 被移入此处，只读渲染输入内容）。 -->
@@ -328,6 +422,19 @@
       <p id="submit-feedback" aria-live="polite"></p>
     </div>
     <div id="submit-preview"></div>
+  </div>
+  <!-- 打印预览：Electron 的打印对话框自带的预览区在 Electron 里永远是
+       「此应用不支持打印预览」（Chromium 的预览渲染器没实现），所以预览由应用
+       自己画：主进程按打印样式 printToPDF，这里用 pdf.js 铺成页面（见
+       print-preview.ts）。整层盖住编辑区，页面栏自己滚动。 -->
+  <div id="print-preview" hidden>
+    <div class="print-preview-bar">
+      <span class="print-preview-title">打印预览</span>
+      <span id="print-preview-meta" class="print-preview-meta"></span>
+      <button id="print-preview-do" class="print-preview-btn is-primary" type="button">打印</button>
+      <button id="print-preview-close" class="print-preview-btn" type="button">关闭</button>
+    </div>
+    <div id="print-preview-pages" class="print-preview-pages"></div>
   </div>
   <div id="update-banner" hidden>
     <span id="update-banner-text">发现新版本</span>

@@ -24,7 +24,7 @@ export interface FormulaToOmmlOptions {
  * LaTeX 原文文本，保证导出永不因公式失败而中断。
  */
 export interface FormulaConverter {
-  /** 唯一 id，用于设置面板持久化与导出时选取（如 'temml'） */
+  /** 唯一 id，用于设置面板持久化与导出时选取（如 'temml' / 'mathjax'） */
   readonly id: string
   /** 展示名（设置面板下拉显示用） */
   readonly label: string

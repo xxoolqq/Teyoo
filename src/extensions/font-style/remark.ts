@@ -48,15 +48,47 @@ function matchBlockEnd(text: string): { colons: number } | null {
   return { colons: m[1].length }
 }
 
-// 取段落的纯文本内容（拼接所有 text 子节点）
-function paragraphText(node: any): string {
-  if (!node || !node.children) return ''
-  return node.children.map((c: any) => (c.type === 'text' ? c.value ?? '' : '')).join('')
+// 段落按行拆分后的一行：index 为行号（用于还原行间换行），nodes 为该行的
+// 原始子节点（含 strong/emphasis/link 等行内节点，不摊平成纯文本）。
+interface ContentLine {
+  index: number
+  nodes: any[]
+}
+
+// 取一行的纯文本（只拼 text 子节点）。标记行必然是纯文本，故足以判定标记。
+function lineText(line: any[]): string {
+  return line.map((c: any) => (c?.type === 'text' ? String(c.value ?? '') : '')).join('')
+}
+
+// 把段落按 \n 拆成「每行的子节点数组」，保留行内节点。
+// CommonMark 会把 `:::font{…}` 标记行与紧随的内容行合并进同一个 paragraph
+// （标记行与内容行之间没有空行时的常规写法），所以必须按行切开。早期实现只取
+// text 子节点的纯文本重建内容行，行内节点被整体丢弃——容器里的 **加粗** 因此
+// 丢失，只剩前后两段普通文字。
+function splitParagraphLines(paragraph: any): any[][] {
+  const lines: any[][] = []
+  let current: any[] = []
+  for (const child of paragraph?.children ?? []) {
+    if (child?.type !== 'text') {
+      current.push(child)
+      continue
+    }
+    const parts = String(child.value ?? '').split('\n')
+    parts.forEach((part: string, i: number) => {
+      if (i > 0) {
+        lines.push(current)
+        current = []
+      }
+      if (part) current.push({ type: 'text', value: part })
+    })
+  }
+  lines.push(current)
+  return lines
 }
 
 // 递归处理一个节点的 children 数组：识别 ::: 标记，用栈配对。
 // CommonMark 把连续非空行合并为单个段落，所以标记行可能与内容行混在
-// 同一个 paragraph 的 text 节点里（用 \n 分隔）。这里按 \n 拆行逐行检查，
+// 同一个 paragraph 里（用 \n 分隔）。这里按 \n 拆行逐行检查，
 // 遇到标记行就拆分段落：标记前的内容 → 新段落，标记行 → 开/闭块级容器，
 // 标记后的内容 → 新段落或块级容器内部内容。
 function transformChildren(children: any[]): any[] {
@@ -72,39 +104,49 @@ function transformChildren(children: any[]): any[] {
     }
   }
 
-  // 把已累积的内容行刷出为段落
-  const flushContent = (contentLines: string[]): void => {
+  // 把已累积的内容行刷出为段落：行内节点原样保留，
+  // 行与行之间按行号差补回换行（等价于原段落文本里的 \n）
+  const flushContent = (contentLines: ContentLine[]): void => {
     if (contentLines.length > 0) {
-      const text = contentLines.join('\n')
-      if (text.trim()) {
-        pushChild({ type: 'paragraph', children: [{ type: 'text', value: text }] })
+      const kids: any[] = []
+      let lastIndex = -1
+      for (const line of contentLines) {
+        if (lastIndex >= 0) {
+          for (let k = 0; k < line.index - lastIndex; k += 1) {
+            kids.push({ type: 'text', value: '\n' })
+          }
+        }
+        kids.push(...line.nodes)
+        lastIndex = line.index
       }
+      pushChild({ type: 'paragraph', children: kids })
       contentLines.length = 0
     }
   }
 
   for (const child of children) {
     if (child.type === 'paragraph') {
-      const text = paragraphText(child)
+      const lines: ContentLine[] = splitParagraphLines(child)
+        .map((nodes, index) => ({ index, nodes }))
       // 按行拆分，检查是否包含标记行
-      const lines = text.split('\n')
       const hasMarker = lines.some(
-        (line) => matchBlockStart(line) || matchBlockEnd(line)
+        (line) => matchBlockStart(lineText(line.nodes)) || matchBlockEnd(lineText(line.nodes))
       )
       if (!hasMarker) {
         pushChild(transformNode(child))
         continue
       }
       // 逐行处理：标记行触发开/闭栈，内容行累积后刷出
-      const contentLines: string[] = []
+      const contentLines: ContentLine[] = []
       for (const line of lines) {
-        const start = matchBlockStart(line)
+        const text = lineText(line.nodes)
+        const start = matchBlockStart(text)
         if (start) {
           flushContent(contentLines)
           stack.push({ colons: start.colons, attrs: start.attrs, kids: [] })
           continue
         }
-        const end = matchBlockEnd(line)
+        const end = matchBlockEnd(text)
         if (end && stack.length > 0 && stack[stack.length - 1].colons === end.colons) {
           flushContent(contentLines)
           const open = stack.pop()!
@@ -114,7 +156,7 @@ function transformChildren(children: any[]): any[] {
           continue
         }
         // 非标记行：累积为内容（含不匹配的结束标记，当字面文本）
-        contentLines.push(line)
+        if (line.nodes.length > 0) contentLines.push(line)
       }
       flushContent(contentLines)
     } else {
@@ -370,9 +412,111 @@ function splitFontSpanWithEscape(
   return parts
 }
 
+// ─── 跨兄弟节点的 fontSpan ─────────────────────────────────────────────────
+//
+// 单 text 节点内的扫描（上面的 splitFontSpan*）覆盖不到这种写法：
+//   {= family=KaiTi : 文本**加粗**文本}
+// remark-parse 先把 **加粗** 变成 strong 节点，于是 `{= … : ` 与 `}` 落在两个
+// 不同的 text 兄弟节点里，任何单节点正则都扫不到完整标记 → 整段以字面文本残留
+//（导出 Word 就是一整段带 `{= family=KaiTi :` 前缀的普通文字）。
+//
+// 处理方式：在父节点层把子节点拼成一条字符流（非 text 子节点用占位符顶 1 个
+// 字符，保证区间能映射回子节点），定位到完整标记区间后把区间内的子节点原样
+// 包进 fontSpan，两端的 text 按偏移量切开。
+
+const SPAN_PLACEHOLDER = String.fromCharCode(0)
+
+/** 起始 {= 在原始 Markdown 中是否被反斜杠转义（转义即字面量，不解析） */
+function escapedAt(node: any, indexInValue: number, raw: string): boolean {
+  const rawStart = node?.position?.start?.offset
+  if (typeof rawStart !== 'number' || !raw) return false
+  const offsets = buildOffsets(String(node.value ?? ''), raw, rawStart)
+  return isEscaped(indexInValue, offsets, raw)
+}
+
+/**
+ * 在 children 中包出第一个「跨兄弟节点」的 fontSpan，children 就地替换。
+ * 成功返回 true；没有可包的区间返回 false。
+ */
+function wrapFirstCrossSiblingSpan(children: any[], raw: string): boolean {
+  // 每个子节点在拼接字符流中的区间
+  const segs: { node: any; start: number; end: number }[] = []
+  let pos = 0
+  for (const node of children) {
+    const len = node?.type === 'text' ? String(node.value ?? '').length : 1
+    segs.push({ node, start: pos, end: pos + len })
+    pos += len
+  }
+  const joined = segs
+    .map((s) => (s.node?.type === 'text' ? String(s.node.value ?? '') : SPAN_PLACEHOLDER))
+    .join('')
+  RE_FONT_SPAN.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = RE_FONT_SPAN.exec(joined)) !== null) {
+    const from = m.index
+    const to = from + m[0].length
+    const attrs = parseFontAttrs(m[1])
+    if (!attrs) continue
+    const startSeg = segs.find((s) => from >= s.start && from < s.end)
+    const endSeg = segs.find((s) => to - 1 >= s.start && to - 1 < s.end)
+    if (!startSeg || !endSeg) continue
+    // 同一节点内的由上面的常规扫描负责（含转义回查），这里只补跨节点的
+    if (startSeg === endSeg || startSeg.node?.type !== 'text') continue
+    if (escapedAt(startSeg.node, from - startSeg.start, raw)) continue
+    // 文本区（不含 {= 属性区 与收尾 }）在字符流中的区间
+    const contentFrom = to - 1 - m[2].length
+    const contentTo = to - 1
+    const before: any[] = []
+    const inside: any[] = []
+    const after: any[] = []
+    for (const seg of segs) {
+      if (seg.end <= from) {
+        before.push(seg.node)
+        continue
+      }
+      if (seg.start >= to) {
+        after.push(seg.node)
+        continue
+      }
+      if (seg.node?.type !== 'text') {
+        // 行内节点：落在文本区内就整体归入 fontSpan
+        if (seg.start >= contentFrom && seg.end <= contentTo) inside.push(seg.node)
+        continue
+      }
+      const value = String(seg.node.value ?? '')
+      const localTo = Math.max(0, Math.min(value.length, to - seg.start))
+      const cFrom = Math.max(0, Math.min(value.length, contentFrom - seg.start))
+      const cTo = Math.max(0, Math.min(value.length, contentTo - seg.start))
+      if (from - seg.start > 0) before.push({ type: 'text', value: value.slice(0, from - seg.start) })
+      if (cTo > cFrom) inside.push({ type: 'text', value: value.slice(cFrom, cTo) })
+      if (localTo < value.length) after.push({ type: 'text', value: value.slice(localTo) })
+    }
+    children.splice(0, children.length, ...before, {
+      type: 'fontSpan',
+      family: attrs.family,
+      size: attrs.size,
+      align: attrs.align,
+      children: inside.length > 0 ? inside : [{ type: 'text', value: '' }],
+    }, ...after)
+    return true
+  }
+  return false
+}
+
+/** 父节点层入口：反复包出跨兄弟节点的 fontSpan（内容只减不增，必然收敛） */
+function wrapCrossSiblingSpans(parent: any, raw: string): void {
+  const children = parent?.children
+  if (!Array.isArray(children) || children.length < 2) return
+  if (!children.some((c) => c?.type === 'text' && String(c.value ?? '').includes('{='))) return
+  for (let guard = 0; guard < 20; guard += 1) {
+    if (!wrapFirstCrossSiblingSpan(children, raw)) break
+  }
+}
+
 export function remarkFontSpan(): (tree: unknown, file?: unknown) => void {
   return (tree, file) => {
     const raw = String((file as any)?.value ?? '')
+    // 第一阶段：单个 text 节点内（含 \{= 转义回查）
     visit(tree as any, 'text', (node: any, index: any, parent: any) => {
       if (!parent || index === undefined || index === null) return undefined
       // 已标记的字面量节点（\{= 转义命中产物）不再二次解析
@@ -386,6 +530,11 @@ export function remarkFontSpan(): (tree: unknown, file?: unknown) => void {
       if (!parts) return undefined
       parent.children.splice(index, 1, ...parts)
       return [SKIP, index + parts.length]
+    })
+    // 第二阶段：跨兄弟节点（{= 与 } 被 strong/emphasis 等内联节点隔开）
+    visit(tree as any, (node: any) => {
+      wrapCrossSiblingSpans(node, raw)
+      return undefined
     })
   }
 }

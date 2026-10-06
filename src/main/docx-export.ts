@@ -23,11 +23,13 @@
 //   规约G tianziGrid   ++xx++     → DrawingML 行内形状格子（外框+十字虚线+内嵌文字）
 //   规约H fontBlock    ::: font{…} → 段落对齐 + 字体字号（子树继承）
 //   规约H fontSpan     {= …: …}   → Run 字体/字号覆盖
+//   规约I htmlTable    <table>…    → Word 表格（MinerU 抽表格的原生形态，见下）
 //   公式   $…$ / $$…$$ → OMML（LaTeX → MathML → OMML，方案注册表 src/main/formula）
 //   高亮 ==text==      → TextRun highlight 黄色
 //   内联 <u>…</u>      → 下划线 Run（遗留文档兼容）
 
 import { nativeImage } from 'electron'
+import { readFileSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { unified } from 'unified'
@@ -43,6 +45,7 @@ import {
   EmphasisMarkType,
   ExternalHyperlink,
   HeadingLevel,
+  HeightRule,
   HorizontalPositionAlign,
   HorizontalPositionRelativeFrom,
   ImageRun,
@@ -236,7 +239,8 @@ function asParagraphChild(c: ImportedXmlComponent): ParagraphChild {
 
 // ─── LaTeX 公式 → OMML ──────────────────────────────────────────────────────
 //
-// 方案注册表见 src/main/formula（内置 Temml：LaTeX → MathML → OMML）。
+// 方案注册表见 src/main/formula（默认 MathJax；另一方案是 Temml：
+// LaTeX → MathML → OMML，设置面板里显示为 KaTeX）。
 // 行内公式 m:oMath 直接进入段落 run 流；块级公式包 m:oMathPara（Word
 // 「显示公式」形态）。mml2omml 输出的 m:oMath 自带 xmlns:m 声明，
 // oMathPara 外层自行补一份（XML 重复声明合法），保证独立解析也成立。
@@ -494,32 +498,77 @@ function imagePath(url: string, sourcePath: string | null): string | null {
   return isAbsolute(url) ? url : resolve(dirname(sourcePath), decodeURIComponent(url))
 }
 
-/** 由扩展名/data URL MIME 推断 docx ImageRun 的 type */
-function imageRunType(src: string): 'png' | 'jpg' | 'gif' | 'bmp' | null {
-  const ext = extname(src).toLowerCase()
-  if (ext === '.png') return 'png'
-  if (ext === '.jpg' || ext === '.jpeg') return 'jpg'
-  if (ext === '.gif') return 'gif'
-  if (ext === '.bmp') return 'bmp'
-  const m = /^data:image\/(png|jpe?g|gif|bmp)[;,]/i.exec(src)
-  if (m) return m[1].startsWith('jpeg') ? 'jpg' : (m[1] as 'png' | 'jpg' | 'gif' | 'bmp')
+type ImageType = 'png' | 'jpg' | 'gif' | 'bmp'
+
+/**
+ * 由文件头判断真实格式。扩展名和 data URL 里的 MIME 都不可信 —— MinerU 抽出的
+ * 图常是 .jpg 的名字装着 PNG 数据（data URL 也就跟着写成 image/jpeg），按声明
+ * 走会把 PNG 字节标成 jpg 塞进 docx，Word 打不开那张图。
+ */
+function sniffImageType(bytes: Buffer): ImageType | null {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes.toString('latin1', 1, 4) === 'PNG') return 'png'
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'jpg'
+  if (bytes.length >= 6 && bytes.toString('latin1', 0, 3) === 'GIF') return 'gif'
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return 'bmp'
   return null
 }
 
+/** PNG 的 IHDR 里自带宽高：拿不到 nativeImage（纯 Node）时仍能算出正确比例。 */
+function pngSize(bytes: Buffer): { width: number; height: number } | null {
+  if (sniffImageType(bytes) !== 'png' || bytes.length < 24) return null
+  const width = bytes.readUInt32BE(16)
+  const height = bytes.readUInt32BE(20)
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+/** 图片原始字节：data: URL 解 base64，其余按源文件目录解析成路径后读盘。 */
+function imageBytes(url: string, sourcePath: string | null): Buffer | null {
+  if (/^data:/i.test(url)) {
+    const comma = url.indexOf(',')
+    if (comma < 0 || !/;base64/i.test(url.slice(0, comma))) return null
+    try {
+      return Buffer.from(url.slice(comma + 1), 'base64')
+    } catch {
+      return null
+    }
+  }
+  const path = imagePath(url, sourcePath)
+  if (!path) return null
+  try {
+    return readFileSync(path)
+  } catch {
+    return null
+  }
+}
+
+/** 原始尺寸；nativeImage 缺席时退到 PNG 头，再不行返回 null 由调用方兜底。 */
+function imageNaturalSize(bytes: Buffer): { width: number; height: number } | null {
+  try {
+    const image = nativeImage?.createFromBuffer?.(bytes)
+    if (image && !image.isEmpty()) {
+      const size = image.getSize()
+      if (size.width > 0 && size.height > 0) return size
+    }
+  } catch {
+    // 纯 Node 环境（离线测试）没有 nativeImage：走下面的兜底
+  }
+  return pngSize(bytes)
+}
+
 /**
- * 加载图片为 ImageRun 数据。data: URL（粘贴产生）与本地路径均支持；
- * 纯 Node/无 electron nativeImage 的环境下优雅降级返回 null（导出占位文本）。
+ * 加载图片 → ImageRun 数据。data: URL（内嵌）与本地路径均支持。
+ * 关键是 type 与 data 必须一致：类型按文件头嗅探，data 用原始字节（不再统一
+ * 转 PNG），否则 Word 会因为"声明 jpg、内容 PNG"而显示不出这张图。
  */
-function loadImageData(url: string): { data: Buffer; type: 'png' | 'jpg' | 'gif' | 'bmp'; natural: { width: number; height: number } } | null {
-  const type = imageRunType(url)
+function loadImageData(
+  url: string,
+  sourcePath: string | null
+): { data: Buffer; type: ImageType; natural: { width: number; height: number } } | null {
+  const bytes = imageBytes(url, sourcePath)
+  if (!bytes) return null
+  const type = sniffImageType(bytes)
   if (!type) return null
-  // 纯 Node 环境（如离线测试）下 electron 模块仅返回路径字符串，无 nativeImage
-  if (!nativeImage || typeof nativeImage.createFromPath !== 'function') return null
-  const image = /^data:/i.test(url)
-    ? nativeImage.createFromDataURL(url)
-    : nativeImage.createFromPath(url.startsWith('file:') ? (() => { try { return fileURLToPath(url) } catch { return null } })() ?? url : url)
-  if (image.isEmpty()) return null
-  return { data: image.toPNG(), type, natural: image.getSize() }
+  return { data: bytes, type, natural: imageNaturalSize(bytes) ?? { width: 800, height: 600 } }
 }
 
 /** 按规约D参数计算像素尺寸（无参数时按原始尺寸等比缩放进页面安全区） */
@@ -556,10 +605,7 @@ function imagePixelSize(natural: { width: number; height: number }, params: Imag
 function imageRunOf(node: MarkdownNode, sourcePath: string | null): { run: ImageRun; params: ImageParams } | null {
   const { params } = parseImageAlt(node.alt ?? '')
   const url = node.url ?? ''
-  // data:/http(s)/blob 直接使用；其余按源文件目录解析为绝对路径
-  const resolved = /^(data:|https?:|blob:)/i.test(url) ? url : imagePath(url, sourcePath)
-  if (!resolved) return null
-  const loaded = loadImageData(resolved)
+  const loaded = loadImageData(url, sourcePath)
   if (!loaded) return null
   const size = imagePixelSize(loaded.natural, params)
   const isFloating = params.align === 'float-left' || params.align === 'float-right'
@@ -732,6 +778,25 @@ const BOX_BORDERS = {
   insideHorizontal: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
   insideVertical: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
 }
+/**
+ * 表格边框（Markdown 表格）：淡灰细线，与编辑器里的 #d8d8d8 同色。
+ * 六个方向都画 —— 不给 borders 时 Word 是一张无框表，观感很糙。
+ */
+const TABLE_BORDERS = {
+  top: { style: BorderStyle.SINGLE, size: 4, color: 'D8D8D8' },
+  bottom: { style: BorderStyle.SINGLE, size: 4, color: 'D8D8D8' },
+  left: { style: BorderStyle.SINGLE, size: 4, color: 'D8D8D8' },
+  right: { style: BorderStyle.SINGLE, size: 4, color: 'D8D8D8' },
+  insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: 'D8D8D8' },
+  insideVertical: { style: BorderStyle.SINGLE, size: 4, color: 'D8D8D8' },
+}
+
+/**
+ * 表格行高：Word 默认单行约 240 twips（单倍行距），+50% → 360。
+ * 用 ATLEAST（最小高度）而不是 EXACT —— 单元格内容更高（多行 / 大字 / 图片）时仍会自动撑开。
+ */
+const TABLE_ROW_TWIPS = 360
+
 const NO_BORDERS = {
   top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
   bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
@@ -781,7 +846,7 @@ function colsTable(node: MarkdownNode, sourcePath: string | null, ctx: BlockStyl
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     borders: NO_BORDERS,
-    rows: [new TableRow({ children: cells })],
+    rows: [new TableRow({ height: { value: TABLE_ROW_TWIPS, rule: HeightRule.ATLEAST }, children: cells })],
   })
 }
 
@@ -791,6 +856,7 @@ function subBlockTable(node: MarkdownNode, sourcePath: string | null, ctx: Block
     width: { size: 100, type: WidthType.PERCENTAGE },
     borders: BOX_BORDERS,
     rows: [new TableRow({
+      height: { value: TABLE_ROW_TWIPS, rule: HeightRule.ATLEAST },
       children: [new TableCell({
         width: { size: 100, type: WidthType.PERCENTAGE },
         borders: BOX_BORDERS,
@@ -871,7 +937,7 @@ function blockNodes(
         output.push(...blockNodes(item.children?.filter((child) => child !== first), sourcePath, listDepth + 1, ctx, formula))
       }
     } else if (node.type === 'table') {
-      output.push(tableForNode(node, ctx, formula))
+      output.push(tableForNode(node, sourcePath, ctx, formula))
     } else if (node.type === 'thematicBreak') {
       output.push(new Paragraph({ border: { bottom: { color: 'AEB7C2', space: 1, style: 'single', size: 6 } } }))
     } else if (node.type === 'html') {
@@ -892,15 +958,159 @@ function blockNodes(
   return output
 }
 
-function tableForNode(node: MarkdownNode, ctx: BlockStyle, formula: FormulaConverter | null = null): Table {
+function tableForNode(node: MarkdownNode, sourcePath: string | null, ctx: BlockStyle, formula: FormulaConverter | null = null): Table {
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: TABLE_BORDERS,
     rows: (node.children ?? []).map((row) => new TableRow({
+      height: { value: TABLE_ROW_TWIPS, rule: HeightRule.ATLEAST },
       children: (row.children ?? []).map((cell) => new TableCell({
-        children: [new Paragraph({ alignment: alignmentOf(ctx.align), children: inlineRuns(cell.children, { family: ctx.family, fontSize: ctx.size }, null, formula) })],
+        borders: TABLE_BORDERS,
+        // 上下留 3pt 内边距，文字不再贴着线（左右沿用 Word 默认的 108 twips）
+        margins: { top: 60, bottom: 60, left: 108, right: 108 },
+        // sourcePath 必须传下去：单元格里的图片是相对路径（规约I 的 <img src="images/…">
+        // 和 GFM 的 ![](…) 都是），传 null 的话 imagePath 解析不出文件，图上不去
+        // 只剩 [image] 占位。
+        children: [new Paragraph({ alignment: alignmentOf(ctx.align), children: inlineRuns(cell.children, { family: ctx.family, fontSize: ctx.size }, sourcePath, formula) })],
       })),
     })),
   })
+}
+
+// ─── 规约I：HTML 表格 → Word 表格 ───────────────────────────────────────────
+//
+// MinerU 抽出来的表格在 Markdown 里就是一整行 <table>…</table>（见
+// renderer/layout2md.ts 的 tableHtmlToMarkdown：同一来源，那边转成 GFM 给编辑器）。
+// remark 不加 rehype 时不会解释 HTML，整块原样收成 html 节点 —— 直接导出就会在
+// Word 正文里看到一段字面的 "<table><tr>…"，表格和里头的图全没了。
+//
+// 这里在 transformer 链里把它换成 mdast table 节点，后面仍走 tableForNode
+// （边框、行高、单元格内边距与 GFM 表格完全一致）。
+//
+// 降级策略与 layout2md 保持一致：colspan 按占位数补空单元格、rowspan 忽略。
+// MinerU 的表大多不带合并，真带了的不会错位，只是把合并格摊平。
+
+const HTML_ROW_RE = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi
+const HTML_CELL_RE = /<(td|th)\b([^>]*)>([\s\S]*?)<\/\1>/gi
+/** 单元格内的行内标记：<img> 要变成真图片，<br> 要变成真换行 */
+const HTML_INLINE_TOKEN_RE = /<img\b[^>]*>|<br\s*\/?>/gi
+
+/** 取标签里的属性值（属性值可带引号也可不带，与 layout2md 同款正则）。 */
+function htmlAttr(source: string, name: string): string {
+  const match = source.match(new RegExp(`${name}\\s*=\\s*["']?([^"'\\s>]*)`, 'i'))
+  return match ? match[1] : ''
+}
+
+/** 实体解码。&amp; 必须最后解，否则 &amp;lt; 会提前露出一个 < 出来。 */
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#0*39;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#(\d+);/g, (_match, dec: string) => String.fromCodePoint(Number(dec)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&amp;/gi, '&')
+}
+
+/** HTML 片段 → 纯文本：标签剥掉、实体解码、空白压缩（<br>/<img> 已单独成节点）。 */
+function htmlText(raw: string): string {
+  return decodeEntities(raw.replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
+}
+
+/** 单元格内容 → 行内节点：<img> 成 image 节点（src 留给 imageRunOf 去解析路径）。 */
+function htmlCellChildren(raw: string): MarkdownNode[] {
+  const nodes: MarkdownNode[] = []
+  let last = 0
+  let match: RegExpExecArray | null
+  HTML_INLINE_TOKEN_RE.lastIndex = 0
+  while ((match = HTML_INLINE_TOKEN_RE.exec(raw)) !== null) {
+    const text = htmlText(raw.slice(last, match.index))
+    if (text) nodes.push({ type: 'text', value: text })
+    const tag = match[0]
+    if (/^<img/i.test(tag)) {
+      const url = htmlAttr(tag, 'src')
+      if (url) nodes.push({ type: 'image', url, alt: htmlAttr(tag, 'alt') })
+    } else {
+      nodes.push({ type: 'break' })
+    }
+    last = match.index + match[0].length
+  }
+  const tail = htmlText(raw.slice(last))
+  if (tail) nodes.push({ type: 'text', value: tail })
+  return nodes
+}
+
+interface HtmlCell {
+  children: MarkdownNode[]
+  colspan: number
+}
+
+function parseHtmlRow(rowHtml: string): HtmlCell[] {
+  const cells: HtmlCell[] = []
+  let match: RegExpExecArray | null
+  HTML_CELL_RE.lastIndex = 0
+  while ((match = HTML_CELL_RE.exec(rowHtml)) !== null) {
+    const span = Number.parseInt(htmlAttr(match[2], 'colspan'), 10)
+    cells.push({
+      children: htmlCellChildren(match[3]),
+      colspan: Number.isFinite(span) && span > 1 ? span : 1,
+    })
+  }
+  return cells
+}
+
+/**
+ * <table> HTML → mdast table 节点。解析不出任何一行/一格就返回 null，
+ * 调用方保持原 html 节点（原来的降级行为），不吞内容。
+ */
+function htmlTableToMdast(value: string): MarkdownNode | null {
+  const rowHtmls = value.match(HTML_ROW_RE)
+  if (!rowHtmls?.length) return null
+  const rows = rowHtmls.map(parseHtmlRow).filter((cells) => cells.length > 0)
+  if (!rows.length) return null
+  const columnCount = rows.reduce(
+    (widest, cells) => Math.max(widest, cells.reduce((sum, cell) => sum + cell.colspan, 0)),
+    0,
+  )
+  if (columnCount <= 0) return null
+
+  const expand = (cells: HtmlCell[]): MarkdownNode[][] => {
+    const out: MarkdownNode[][] = []
+    for (const cell of cells) {
+      // 空单元格也要占位（colspan 拆出来的留空格）
+      out.push(cell.children.length > 0 ? cell.children : [{ type: 'text', value: '' }])
+      for (let extra = 1; extra < cell.colspan; extra += 1) out.push([{ type: 'text', value: '' }])
+    }
+    while (out.length < columnCount) out.push([{ type: 'text', value: '' }])
+    return out.slice(0, columnCount)
+  }
+
+  return {
+    type: 'table',
+    children: rows.map((cells) => ({
+      type: 'tableRow',
+      children: expand(cells).map((children) => ({ type: 'tableCell', children })),
+    })),
+  }
+}
+
+/** 规约I 插件：把 html 块节点里的 <table> 换成 mdast table（含嵌套容器）。 */
+function remarkHtmlTable() {
+  return (tree: any): void => {
+    const walk = (parent: any): void => {
+      if (!parent || !Array.isArray(parent.children)) return
+      parent.children = parent.children.flatMap((child: any) => {
+        if (child?.type !== 'html' || typeof child.value !== 'string') return [child]
+        if (!/<table\b/i.test(child.value) || !/<\/table\s*>/i.test(child.value)) return [child]
+        const table = htmlTableToMdast(child.value)
+        return table ? [table] : [child]
+      })
+      for (const child of parent.children) walk(child)
+    }
+    walk(tree)
+  }
 }
 
 // ─── ==高亮== 轻量 remark 插件（避免把 @milkdown/kit 引入主进程） ─────────────
@@ -938,6 +1148,8 @@ function buildProcessor() {
     .use(remarkGfm)
     // 公式（remark-math 是 micromark 解析扩展，$...$ / $$...$$ → inlineMath/math）
     .use(remarkMath)
+    // 规约I：HTML 表格要先变成 table 节点，后面的插件（高亮/字体/拼音…）才认得它
+    .use(remarkHtmlTable)
     // 以下插件的注册顺序与 renderer 编辑器管线一致，保证两端解析结果相同
     .use(remarkColumns)
     .use(remarkFontBlock)
@@ -960,11 +1172,24 @@ export async function markdownToDocx(input: DocxExportInput): Promise<Buffer> {
   const file = new VFile({ value: input.content })
   // runSync 执行全部 transformer 插件；仅 parse 不会运行任何自定义扩展
   const tree = processor.runSync(processor.parse(input.content), file) as unknown as MarkdownNode
-  // 公式转换方案：按 id 选取（未来设置面板），缺省用注册表默认（Temml）
+  // 公式转换方案：按 id 选取（'mathjax' / 'temml'），缺省用注册表默认（MathJax）
   const formula = getFormulaConverter(input.formulaConverter)
   const document = new Document({
     creator: 'Teyoo',
     title: input.sourcePath ? basename(input.sourcePath, extname(input.sourcePath)) : 'Untitled',
+    // Word 内置「标题 N」样式的文字色是主题蓝灰（docx 库默认给的是 2E74B5 /
+    // 1F4D78），看起来不像正文那种纯黑，这里统一压成黑。字号/粗体/段间距按库
+    // 的默认值照写 —— 覆盖是整体替换 run，只给 color 会把这几个也一起抹掉。
+    styles: {
+      default: {
+        heading1: { run: { size: 32, bold: true, color: '000000' } },
+        heading2: { run: { size: 26, bold: true, color: '000000' } },
+        heading3: { run: { size: 24, bold: true, color: '000000' } },
+        heading4: { run: { size: 24, bold: true, italics: true, color: '000000' } },
+        heading5: { run: { color: '000000' } },
+        heading6: { run: { color: '000000' } },
+      },
+    },
     sections: [{ children: blockNodes(tree.children, input.sourcePath, 0, {}, formula) }],
   })
   return Packer.toBuffer(document)

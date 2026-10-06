@@ -1,4 +1,5 @@
 import { $prose } from '@milkdown/kit/utils'
+import { rootCtx } from '@milkdown/kit/core'
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
 import type { EditorState } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
@@ -33,7 +34,10 @@ function findTablePos(state: EditorState): number | null {
   return null
 }
 
-export const tableFloatingToolbarPlugin = $prose(() => {
+export const tableFloatingToolbarPlugin = $prose((ctx) => {
+  // 本实例自己的根元素。原来写死 getElementById('editor')，一页两个编辑器时
+  // 两个实例的工具条都会跟着第一个容器的 hidden class 走。
+  const editorRoot = ctx.get(rootCtx) as HTMLElement | null
   let view: EditorView | null = null
   let toolbarEl: HTMLDivElement | null = null
   // 监听编辑器根元素的可见性变化（切源码模式时 PM 不发 transaction，
@@ -156,10 +160,9 @@ export const tableFloatingToolbarPlugin = $prose(() => {
       // 捕获阶段监听所有滚动容器的滚动，实时重算位置。
       window.addEventListener('scroll', position, true)
       window.addEventListener('resize', position)
-      // 监听 #editor 的 class 变化（源码切换时 main.ts 在上面加 hidden 类）。
+      // 监听本编辑器根元素的 class 变化（源码切换时在其上加 hidden 类）。
       // 不能用 view.dom.parentElement——milkdown 7 在 PM 根节点外又包了一层，
-      // 那个 wrapper 不是 #editor，observer 根本不会被触发。
-      const editorRoot = document.getElementById('editor')
+      // 那个 wrapper 不是根元素，observer 根本不会被触发。
       if (editorRoot) {
         visObserver = new MutationObserver(position)
         visObserver.observe(editorRoot, { attributes: true, attributeFilter: ['class'] })

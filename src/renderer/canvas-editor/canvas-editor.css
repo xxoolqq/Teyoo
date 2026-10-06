@@ -1,0 +1,93 @@
+/* ─── 类 docx 文档标签页（canvas-editor 视图） ──────────────────────────────
+   与提交页同一手法：body class 收起工具栏并让出高度，Markdown 编辑面
+   （#editor / #source-editor）整块隐藏，画布面板接管编辑区。
+   工具栏/状态栏的配色与图标来自官方 demo（toolbar/menu.css），这里只负责
+   把它们放进标签页的流式布局里。 */
+
+body.canvas-doc-view {
+  --toolbar-height: 0px;
+}
+
+body.canvas-doc-view #toolbar {
+  display: none;
+}
+
+body.canvas-doc-view #editor,
+body.canvas-doc-view #source-editor,
+body.canvas-doc-view #doc-json {
+  display: none;
+}
+
+/* 面板铺满标题行以下的整个编辑区；滚动由每个 view 自己的滚动区负责。 */
+#canvas-editor-panel {
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px));
+  overflow: hidden;
+  background: var(--bg-color);
+}
+
+#canvas-editor-panel[hidden] {
+  display: none;
+}
+
+body.show-file-panel #canvas-editor-panel {
+  margin-right: var(--file-panel-width, 220px);
+}
+
+/* 一个标签页一份 view：工具栏 → 文档滚动区 → 状态栏 */
+.canvas-editor-view {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.canvas-editor-view[hidden] {
+  display: none;
+}
+
+/* 官方 demo 的 .menu / .footer 是 position: fixed（贴在浏览器窗口上下沿）。
+   这里是标签页内部，改回 static；窄窗口下允许换行，免得右半截被裁掉。 */
+.canvas-editor-view > .menu {
+  position: static;
+  height: auto;
+  flex: none;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  padding: 6px 8px;
+}
+
+.canvas-editor-view > .footer {
+  position: static;
+  flex: none;
+}
+
+.canvas-editor-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: #f2f4f7;
+}
+
+/* 目录：官方是 fixed 侧栏，这里改成挂在 view 内、覆盖文档区左侧 */
+.canvas-editor-view > .catalog {
+  position: absolute;
+  left: 0;
+  top: 56px;
+  bottom: 30px;
+  display: none;
+  background: #fff;
+  z-index: 5;
+}
+
+/* 宿主页：canvas-editor 会在它内部再包一层 div 当真正的容器
+   （构造里的 _wrapContainer，带 editor-component="main"），并把那层的宽度
+   显式设成纸宽（A4 = 794px，见 _formatContainer）。所以纸是 794px 宽、
+   左对齐地躺在 100% 宽的宿主里 —— 居中要加在那一层身上，加在宿主上无效
+   （宿主自己写 width 也会被它覆盖）。 */
+.canvas-editor-host {
+  padding: 24px 0;
+}
+
+.canvas-editor-host > [editor-component="main"] {
+  margin: 0 auto;
+}

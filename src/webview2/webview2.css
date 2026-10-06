@@ -1,0 +1,215 @@
+/* WebView2 宿主页自己的外壳。颜色全部取主题变量，换主题时外壳跟着换。 */
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+/* #toolbar 的样式（高度、底色、分隔线、按下态）全在 base.css 里，这里只管排布：
+   工具栏占自己那一行（高度由 --toolbar-height 决定），编辑器吃掉剩下的高度。 */
+#toolbar {
+  flex: none;
+}
+
+/* base.css 里 #editor 的高度是按桌面窗口算的（100vh 减去标题栏/标签栏/工具栏），
+   在只有一个工具栏的页面里换成 flex 自适应，窗口多高都不用改算式。 */
+#editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+/* ===== 两栏：习题在上（500px），答案在下（400px）=====
+   两个编辑器各自滚动；窗口不够放下两栏时，外层整体滚动。 */
+#editor {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.editor-pane {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor-pane[data-pane='exercise'] {
+  height: 500px;
+}
+
+.editor-pane[data-pane='answer'] {
+  height: 400px;
+}
+
+.editor-pane + .editor-pane {
+  border-top: 1px solid var(--border-color);
+}
+
+/* 每栏底部的搬运按钮条。有焦点的那一栏整条加亮 —— 工具栏作用在谁身上，
+   以及「搬到哪一栏」，一眼可见。 */
+.pane-actions {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--text-color) 4%, transparent);
+  transition: background 0.15s ease;
+}
+
+.editor-pane:focus-within .pane-actions {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
+.transfer-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.transfer-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 12%, transparent);
+}
+
+.transfer-btn:active {
+  background: color-mix(in srgb, var(--text-color) 20%, transparent);
+}
+
+/* 真正的编辑器 root（传给 createEditor 的那个）。
+   padding 沿用 base.css 给 #editor 的「40px 空气」，滚动容器内边距实现。 */
+.editor-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative; /* 代码块复制按钮的绝对定位锚点 */
+  padding: calc(40px + var(--editor-top-gap, 0px)) 40px 40px;
+}
+
+/* 下面几条在 base.css 里是 #editor 的直接子选择器（>），而 .milkdown /
+   .code-copy-btn 现在是 .editor-root 的子元素，不再是 #editor 的。按同样的
+   值补一份，桌面版那条规则不动。 */
+.editor-root > .milkdown {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-root > .code-copy-btn {
+  position: absolute;
+  z-index: 10;
+  padding: 3px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transform: translate(-100%, 0);
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.editor-root > .code-copy-btn.hovering,
+.editor-root > .code-copy-btn:focus-visible,
+.editor-root > .code-copy-btn.copied {
+  opacity: 1;
+}
+
+.editor-root > .code-copy-btn:hover,
+.editor-root > .code-copy-btn.copied {
+  background: color-mix(in srgb, var(--text-color) 14%, transparent);
+  color: var(--text-color);
+}
+
+/* 字体/字号下拉换成纯图标后，base.css 里为「字体」「小四」这批文字预留的
+   min-width: 50px 就多余了，图标左右会空一大片。这里收成贴合图标的宽度。 */
+.toolbar-btn.font-select-btn,
+.toolbar-btn.fontsize-select-btn {
+  min-width: 0;
+  padding: 0 6px;
+}
+
+/* 底部状态条：只在有事要说时出现（main.ts 控制 hidden）。错误是红色且不
+   自动消失，其余信息 4 秒后自行收起。 */
+#status-bar {
+  flex: none;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--text-color) 6%, transparent);
+  color: var(--text-color);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#status-bar[data-kind='error'] {
+  background: color-mix(in srgb, #d93025 16%, transparent);
+  color: #d93025;
+}
+
+#status-bar[data-kind='ok'] {
+  background: color-mix(in srgb, #188038 14%, transparent);
+  color: #188038;
+}
+
+/* ?debug=1 的自测区：正式用法下是 hidden 的，样式只影响调试会话。 */
+#debug-panel {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-color);
+  font-size: 12px;
+}
+
+#debug-panel .debug-label {
+  color: var(--text-color);
+  opacity: 0.7;
+}
+
+#debug-panel select,
+#debug-panel input[type='file'] {
+  max-width: 220px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-color);
+  background: var(--bg-color);
+}
+
+/* 启动失败时的错误块：WebView2 里默认没有开发者工具，摆在页面上才看得见。 */
+#boot-error {
+  position: absolute;
+  inset: 24px;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--code-block-bg, var(--bg-color));
+  color: var(--text-color);
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  z-index: 99;
+}

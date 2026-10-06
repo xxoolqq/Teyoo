@@ -20,6 +20,9 @@
     "src/extensions/pinyin-ruby/**/*",
     "src/extensions/tianzi-grid/**/*",
     "src/renderer/editor/residual-emphasis.ts",
-    "src/renderer/editor/math-guard.ts"
+    "src/renderer/editor/math-guard.ts",
+    // 主进程的 temml-omml.ts 从这边取 physics 宏（TS6307：不在 include 里会被判
+    // 成"不在本工程文件列表内"）。
+    "src/renderer/math-engine/physics-macros.ts"
   ]
 }

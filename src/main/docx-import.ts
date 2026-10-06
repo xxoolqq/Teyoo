@@ -4,7 +4,7 @@
 //   阶段 1 — OOXML 预处理
 //     用 JSZip 解压 .docx，从 word/document.xml 中提取 ColaMD 扩展对应的
 //     OOXML 元素（OMML 公式、EQ 域公式、MathType OLE 公式、ruby 拼音、
-//     着重号、田字格、带圈序号），替换为占位符文本。
+//     着重号、下划线、田字格、带圈序号），替换为占位符文本。
 //     另有 zip 级媒体修复：WMF/EMF 图片（MathType 转图片型公式）经
 //     wmf-emf-renderer（纯 JS）+ @napi-rs/canvas（Skia）栅格化为 PNG
 //     回写，浏览器不渲染 WMF。
@@ -27,7 +27,9 @@
 //
 // 对应 docx-export.ts 的逆向映射（完整可逆）。
 
-import { readFile } from 'fs/promises'
+// 【浏览器可运行】本模块同时被两处使用：桌面版主进程（Node）与 WebView2
+// 任务窗格页（浏览器）。因此不得出现 fs / process.env / Buffer 等 Node 专属
+// 设施：文件读取由调用方完成，这里只吃字节。
 import JSZip from 'jszip'
 // mammoth 的 .d.ts 用 export = 语法，ambient 接口不在 namespace 中，
 // 无法用 mammoth.Input 引用类型。直接 import 值并用内联类型。
@@ -41,7 +43,9 @@ import { oleToLatex } from './mtef'
 // Cambria Math（Word 原生公式字体）藏在 Windows 的 TTC 集合文件里，
 // @napi-rs/canvas 的系统扫描不含 TTC → 手动注册一次供 WMF 渲染使用。
 // 失败静默：下方字体回退链自动降级（Times New Roman / Segoe UI Symbol）。
-if (process.platform === 'win32') {
+// 浏览器里没有 process（也没有本地字体注册能力），跳过即可：那边由 canvas
+// 替身的 GlobalFonts 用 document.fonts.check 探测本机字体。
+if (typeof process !== 'undefined' && process.platform === 'win32') {
   try {
     GlobalFonts.registerFromPath('C:/Windows/Fonts/cambria.ttc')
   } catch {
@@ -54,9 +58,11 @@ interface MammothMessage {
   type: string
   message: string
 }
+// 两个 key 都给：Node 版 unzip 认 `buffer`，浏览器版 unzip 只认 `arrayBuffer`
+// （各自最终都交给 JSZip.loadAsync，Uint8Array / ArrayBuffer 都能吃）。
 const mammothAny = mammoth as unknown as {
   convertToMarkdown: (
-    input: { path: string } | { buffer: Buffer },
+    input: { path: string } | { buffer: Uint8Array; arrayBuffer: Uint8Array },
     options?: {
       convertImage?: unknown
       styleMap?: string | string[]
@@ -109,18 +115,22 @@ interface Extracted {
 }
 
 /**
- * 将指定路径的 .docx 文件转换为 Markdown 字符串。
+ * 将 .docx 的字节转换为 Markdown 字符串。
  *
- * @param filePath  .docx 文件的绝对路径
+ * 入参是字节而不是路径：浏览器里没有 fs，读文件的活儿交给调用方
+ * （桌面版在主进程里 readFile，WebView2 在页面里 fetch / 收 postMessage），
+ * 这样本模块两侧通用。
+ *
+ * @param docx      .docx 文件字节（Uint8Array / ArrayBuffer 均可）
  * @returns         转换后的 Markdown（含 ColaMD 扩展语法）+ warnings
  * @throws          文件无法解析时抛出 Error
  */
 export async function docxToMarkdown(
-  filePath: string,
+  docx: Uint8Array | ArrayBuffer,
   options?: DocxImportOptions,
 ): Promise<DocxImportResult> {
   // ── 阶段 1：OOXML 预处理 ───────────────────────────────────────────
-  const fileBuffer = await readFile(filePath)
+  const fileBuffer = docx instanceof Uint8Array ? docx : new Uint8Array(docx)
   const zip = await JSZip.loadAsync(fileBuffer)
   const docFile = zip.file('word/document.xml')
   if (!docFile) {
@@ -156,6 +166,10 @@ export async function docxToMarkdown(
   processedXml = extractTianziGrid(processedXml, extracted)
   processedXml = extractCircledSup(processedXml, extracted)
   processedXml = extractRuby(processedXml, extracted)
+  // 下划线（w:u）：在着重号之前——只改写 w:t 文本、保留整段 run，
+  // 着重号 run 再提取时 extractAllText 会解出 <u>…</u>，输出 @.<u>…</u>.@
+  // （同一 run 同时有下划线与着重号时两者都保留）
+  processedXml = extractUnderline(processedXml)
   processedXml = extractEmphasis(processedXml, extracted)
   // 通用上下标（vertAlign run）：在 circledSup 之后（带圈序号优先消费上标
   // run）、ruby/emphasis 之后（避免误提取这些容器内的 run）
@@ -176,13 +190,13 @@ export async function docxToMarkdown(
   // 将修改后的 XML 写回 zip，生成新的 .docx buffer
   zip.file('word/document.xml', processedXml)
   const modifiedBuffer = await zip.generateAsync({
-    type: 'nodebuffer',
+    type: 'uint8array',
     compression: 'DEFLATE',
   })
 
   // ── 阶段 2：mammoth 转换标准格式 ──────────────────────────────────
   const mammothResult = await mammothAny.convertToMarkdown(
-    { buffer: modifiedBuffer },
+    { buffer: modifiedBuffer, arrayBuffer: modifiedBuffer },
     { convertImage: mammothAny.images.dataUri },
   )
 
@@ -277,6 +291,28 @@ export async function docxToMarkdown(
 // （imagePixelSize）读同一参数 → 尺寸往返一致。
 //
 // 单张转换失败：保留原样 + warning（沿用 mammoth 既有行为，不中断导入）。
+
+/** createCanvas 的产物（Node 的 @napi-rs/canvas 或浏览器的 canvas-shim）。
+ *  只用到三件事：宽高、2d 上下文、导出 PNG。 */
+type CanvasSurface = {
+  width: number
+  height: number
+  getContext(id: '2d'): unknown
+}
+
+/**
+ * 画布导出 PNG 字节。
+ * Node 侧 toBuffer('image/png') 是同步的，浏览器只能异步拿 blob —— 统一成 await。
+ */
+async function canvasToPngBytes(canvas: CanvasSurface): Promise<Uint8Array> {
+  const surface = canvas as unknown as {
+    toBuffer?: (format: string) => Uint8Array
+    toPngBytes?: () => Promise<Uint8Array>
+  }
+  if (typeof surface.toBuffer === 'function') return surface.toBuffer('image/png')
+  if (typeof surface.toPngBytes === 'function') return await surface.toPngBytes()
+  throw new Error('画布实现不支持导出 PNG')
+}
 
 /** 数学符号渲染链：优先 Cambria Math（Word 原生公式字体，衬线数学风格，
  *  顶部注册 TTC 后可用）→ Segoe UI Symbol（Windows 自带全量数学符号）→
@@ -467,18 +503,18 @@ async function convertWmfEmfImages(
   // 超采样：小图放大出图（矢量无损），显示尺寸由 alt 参数控制，高分屏
   // 缩小显示仍清晰；大图原尺寸避免 PNG 字节膨胀。
   // 单张失败保留原样（warning），不影响其余
-  const pngs: { item: WmfItem; bytes: Buffer }[] = []
+  const pngs: { item: WmfItem; bytes: Uint8Array }[] = []
   const displayByRid = new Map<string, { w: number; h: number }>()
   let failed = 0
   let lastError: Error | null = null
   for (const it of items) {
     try {
-      const bytes = await zip.file(it.zipPath)!.async('nodebuffer')
+      const bytes = await zip.file(it.zipPath)!.async('uint8array')
       const rid = ridByTarget.get(it.relTarget)
       const size = (rid ? sizeByRid.get(rid) : undefined) ?? intrinsicMetafileSize(bytes)
       const scale = size.h <= 128 ? 4 : size.h <= 320 ? 2 : 1
       const canvas = createCanvas(size.w * scale, size.h * scale)
-      renderToContext(bytes, ctxWithFontFallback(canvas.getContext('2d')), {
+      renderToContext(bytes, ctxWithFontFallback(canvas.getContext('2d') as { font: string }), {
         viewWidth: size.w * scale,
         viewHeight: size.h * scale,
       })
@@ -488,7 +524,7 @@ async function convertWmfEmfImages(
           h: Math.round(canvas.height / scale),
         })
       }
-      pngs.push({ item: it, bytes: canvas.toBuffer('image/png') })
+      pngs.push({ item: it, bytes: await canvasToPngBytes(canvas) })
     } catch (e) {
       failed++
       lastError = e as Error
@@ -558,6 +594,25 @@ async function convertWmfEmfImages(
   return patchedXml
 }
 
+// ─── OMML→LaTeX 后处理：还原 mhchem 的「隐形占位基座」 ──────────────────
+//
+// 化学式（\ce）插入 Word 走的是 TeX → MathML → OMML：mhchem 对没有基座的
+// 上下标（SO4^2- 里的 4 与 2-）生成的是
+//   <mpadded width="0"><mphantom><mi>A</mi></mphantom></mpadded>
+// ——借一个零宽、不可见的字母占住基座（MathJax 用 A，KaTeX 用 X、width="0px"）。
+// Word 里看不见，但 MML2OMML.XSL 把它变成
+// <m:phant><m:zeroWid/>…<m:phant><m:show val=0/><m:t>A</m:t>…，dwml-ts 再翻回来
+// 就得到带 \phantom{A} 的 LaTeX。实测往返：
+//   MathJax: SO\phantom{A}_{4}\phantom{A}^{2-}+Ba\phantom{A}^{2+}⟶BaSO\phantom{A}_{4}\downarrow
+//   KaTeX  : SO\phantom{X}_{4}\phantom{X}^{2-}+Ba\phantom{X}^{2+}\rightarrow BaSO\phantom{X}_{4}\downarrow
+// 编辑器里 \phantom{A} 会占满一个 A 的宽度，SO₄²⁻ 被拆成「SO 4 2-」。
+// 空基座在 LaTeX 里的规范写法就是空组，故统一还原成 {}（`SO{}_{4}{}^{2-}`
+// 与 mhchem 原意一致；独立出现的 \phantom{A} 本来就什么都不显示，也在其内）。
+// 只认 A / X 这两个占位字母，用户自己写的 \phantom{xy} 不受影响。
+function restoreInvisiblePhantomBase(latex: string): string {
+  return latex.replace(/\\phantom\s*\{\s*[AX]\s*\}/g, '{}')
+}
+
 // ─── OMML 块级公式提取（m:oMathPara） ──────────────────────────────────
 //
 // ColaMD 导出：块级公式 → <m:oMathPara><m:oMath>…</m:oMath></m:oMathPara>
@@ -572,10 +627,12 @@ function extractOmmlBlock(
   const pattern = /<m:oMathPara\b[^>]*>([\s\S]*?)<\/m:oMathPara>/g
   return xml.replace(pattern, (fullMatch) => {
     try {
-      const latex = ommlToLatex(fullMatch, {
-        onUnsupported: (name) =>
-          warnings.push(`OMML 元素 ${name} 不支持，已降级为文本`),
-      })
+      const latex = restoreInvisiblePhantomBase(
+        ommlToLatex(fullMatch, {
+          onUnsupported: (name) =>
+            warnings.push(`OMML 元素 ${name} 不支持，已降级为文本`),
+        }),
+      )
       const idx = extracted.length
       // 块级公式独占一行 → $$ … $$
       extracted.push({ type: T_FB, replacement: `$$${latex}$$` })
@@ -599,10 +656,12 @@ function extractOmmlInline(
   const pattern = /<m:oMath\b[^>]*>([\s\S]*?)<\/m:oMath>/g
   return xml.replace(pattern, (fullMatch) => {
     try {
-      const latex = ommlToLatex(fullMatch, {
-        onUnsupported: (name) =>
-          warnings.push(`OMML 元素 ${name} 不支持，已降级为文本`),
-      })
+      const latex = restoreInvisiblePhantomBase(
+        ommlToLatex(fullMatch, {
+          onUnsupported: (name) =>
+            warnings.push(`OMML 元素 ${name} 不支持，已降级为文本`),
+        }),
+      )
       const idx = extracted.length
       extracted.push({ type: T_FI, replacement: `$${latex}$` })
       return placeholderRun(T_FI, idx)
@@ -1049,6 +1108,52 @@ function extractRuby(xml: string, extracted: Extracted[]): string {
     extracted.push({ type: T_RU, replacement: `${baseText}(${pinyin})` })
     return placeholderRun(T_RU, idx)
   })
+}
+
+// ─── 下划线提取（w:u） ─────────────────────────────────────────────────
+//
+// ColaMD 导出：underline <u>内容</u> → <w:r><w:rPr><w:u w:val="single"/>…
+// mammoth 读取 run 时不识别 w:u → 文字保留但下划线丢失。
+//
+// 处理：把 run 的文本就地包成 <u>…</u>（写进 w:t 需转义为 XML 实体，
+// 后续 extractAllText 会解码回 <u>）。与着重号（extractEmphasis）不同，
+// 这里不把整段 run 换成占位符 —— rFonts / w:b / w:sz 等属性原样保留，
+// 后续字体识别（injectFontMarkers）、加粗、上下标等处理不受影响，
+// 同一 run 的「加粗 + 下划线」「换字体 + 下划线」都能一并还原。
+//
+// 标记能原样穿到 markdown：mammoth 的 escapeMarkdown 只转义
+// \ ` * _ { } [ ] ( ) # + - . !，不转义 < 与 >，故无需占位符回填。
+//
+// 取值：w:u 有 w:val 且非 none → 有下划线（single/double/dotted/wave…
+// 一律还原为普通下划线）；显式 <w:u w:val="none"/> → 无下划线。
+function extractUnderline(xml: string): string {
+  const runPattern = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g
+  return xml.replace(runPattern, (fullMatch, inner: string) => {
+    const rPr = /<w:rPr\b[^>]*>([\s\S]*?)<\/w:rPr>/.exec(inner)
+    if (!rPr) return fullMatch
+    const uMatch = /<w:u\b([^>]*?)\/?>/.exec(rPr[1])
+    if (!uMatch) return fullMatch
+    const val = /\bw:val\s*=\s*["']([^"']*)["']/.exec(uMatch[1])
+    if (val && val[1] === 'none') return fullMatch
+    if (!extractAllText(inner).trim()) return fullMatch // 纯空白 run：无需包裹
+    return wrapRunText(inner, '<u>', '</u>')
+  })
+}
+
+/** 把 run 的文本内容整体包进 open/close（只改 w:t，不动 rPr） */
+function wrapRunText(inner: string, open: string, close: string): string {
+  const first = /<w:t\b[^>]*?>/.exec(inner)
+  if (!first) return inner
+  const start = first.index + first[0].length
+  const last = inner.lastIndexOf('</w:t>')
+  if (last < start) return inner // 自闭合 <w:t …/>（空文本）不包裹
+  return (
+    inner.slice(0, start) +
+    encodeXml(open) +
+    inner.slice(start, last) +
+    encodeXml(close) +
+    inner.slice(last)
+  )
 }
 
 // ─── 着重号提取（w:em w:val="dot"） ───────────────────────────────────
@@ -1498,6 +1603,11 @@ function extractContainerText(xml: string, container: string): string {
   return match ? extractAllText(match[1]) : ''
 }
 
+/** 编码 XML 文本中的特殊字符（<、>、&） */
+function encodeXml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 /** 解码 XML 实体（&amp; → & 等） */
 function decodeXml(str: string): string {
   return str
@@ -1582,8 +1692,23 @@ function diacriticToToneNum(pinyin: string): string {
 // 单张识别失败 / 服务不可达 / 超时：静默退回保留原图片（与偏好
 // 「保留图片」行为一致），不产生 warning，不中断导入。
 
-const OCR_API_URL = process.env.COLAMD_OCR_URL || 'http://127.0.0.1:8787/api/latex_ocr'
-const OCR_API_TOKEN = process.env.COLAMD_OCR_TOKEN || 'test-token'
+/** 环境变量读取（浏览器里没有 process → undefined，走默认/调用方传值） */
+function nodeEnv(name: string): string | undefined {
+  return typeof process !== 'undefined' ? process.env[name] : undefined
+}
+
+/** base64 → 字节。Node 的 Buffer 在浏览器里没有替代品，手写一份 */
+// 显式标注底层是 ArrayBuffer（而不是更宽的 ArrayBufferLike）：下面要把它作为
+// BlobPart 交给 FormData，SharedArrayBuffer 视图在那条路上类型不合。
+function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+const OCR_API_URL = nodeEnv('COLAMD_OCR_URL') || 'http://127.0.0.1:8787/api/latex_ocr'
+const OCR_API_TOKEN = nodeEnv('COLAMD_OCR_TOKEN') || 'test-token'
 const OCR_CONCURRENCY = 4
 const OCR_TIMEOUT_MS = 15000
 
@@ -1620,7 +1745,7 @@ async function mapWithConcurrency<T, R>(
 
 /** 单张图片 → OCR 接口 → LaTeX；任何失败返回 null（调用方保留原图） */
 async function recognizeFormulaImage(match: InlineImageMatch): Promise<string | null> {
-  const bytes = Buffer.from(match.b64, 'base64')
+  const bytes = base64ToBytes(match.b64)
   // image/jpeg → 扩展名 jpg；image/svg+xml → svg
   const ext = match.ext === 'jpeg' ? 'jpg' : match.ext.replace('svg+xml', 'svg')
   const form = new FormData()

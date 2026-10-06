@@ -6,6 +6,10 @@
 //   2. 插入新图片：工具栏「图片」按钮调用 show()（无参），
 //      保存时用 tr.replaceSelectionWith 在光标处插入新 image 节点。
 //
+// 有 Electron 通道时「浏览」走 pickImageFile（拿到本地绝对路径）；没有时
+// （Word 任务窗格 / 纯浏览器）退化为原生 <input type="file">，读成 base64
+// data URL 内嵌 —— 本地路径进了 Word 文档就失效了，只有内嵌活得下来。
+//
 // 与 math-modal 的关键差异：
 //   - 表单字段而非单个 textarea：图片参数多且类型不一（文本/尺寸/枚举/布尔），
 //     用 input + select + checkbox 各自呈现更清晰。
@@ -15,6 +19,8 @@
 import { getEditorView } from './editor'
 import { isChinese, type UiLanguage } from '../ui-language'
 import { toFileUrl } from '../../extensions/image-style/lib'
+// 内嵌与压缩：本地文件 → base64（超限时等比压缩），阈值与桌面版共用一份
+import { fileToEmbeddableDataUrl, urlToDataUrl, describeCompression } from './image-embed'
 
 // 图片节点的全部 attrs（与 image-style/schema.ts 一致，不含 title）
 // title（悬停提示）不在模态框中编辑：编辑模式下保留节点已有 title，
@@ -28,6 +34,21 @@ export interface ImageAttrs {
   border: boolean
   shadow: boolean
   radius: boolean
+}
+
+/** 路径 → 「文件名（去扩展名）」，用作 alt 兜底 */
+function altFromPath(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? ''
+  return base.replace(/\.[^.]+$/, '')
+}
+
+/**
+ * 是否有 Electron 的本地文件通道：桌面版 true（pickImageFile 返回磁盘路径），
+ * WebView2 / 纯浏览器 false（只能内嵌 base64）。
+ */
+function hasElectronChannel(): boolean {
+  const api = window.electronAPI
+  return !!api && typeof api.pickImageFile === 'function'
 }
 
 // 插入模式使用的默认 attrs（全空）
@@ -58,6 +79,8 @@ export class ImageModal {
   private previewWrap: HTMLDivElement
   private srcInput: HTMLInputElement
   private browseButton: HTMLButtonElement
+  // 没有 Electron 通道时（WebView2 / 纯浏览器）用来弹系统文件对话框的隐藏 input
+  private fileInput: HTMLInputElement
   private convertButton: HTMLButtonElement
   private altInput: HTMLInputElement
   private widthInput: HTMLInputElement
@@ -115,6 +138,14 @@ export class ImageModal {
     this.browseButton.className = 'image-modal-convert-btn image-modal-browse-btn'
     this.browseButton.textContent = 'Browse'
     this.browseButton.addEventListener('click', () => void this.browseLocalFile())
+    // 无 Electron 通道时的文件选择框。必须挂在 DOM 上（display:none 不影响
+    // click() 弹窗），也不放进 modal 内部，免得被模态框的键盘/点击处理吃掉。
+    this.fileInput = document.createElement('input')
+    this.fileInput.type = 'file'
+    this.fileInput.accept = 'image/*'
+    this.fileInput.style.display = 'none'
+    this.fileInput.addEventListener('change', () => void this.onFilePicked())
+    document.body.appendChild(this.fileInput)
     this.convertButton = document.createElement('button')
     this.convertButton.type = 'button'
     this.convertButton.className = 'image-modal-convert-btn'
@@ -197,7 +228,7 @@ export class ImageModal {
     this.saveButton = saveBtn
     saveBtn.textContent = 'Update'
     saveBtn.className = 'math-modal-btn save'
-    saveBtn.addEventListener('click', () => this.save())
+    saveBtn.addEventListener('click', () => void this.save())
 
     footer.append(cancelBtn, saveBtn)
     modal.appendChild(footer)
@@ -218,7 +249,7 @@ export class ImageModal {
       }
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
-        this.save()
+        void this.save()
       }
     })
 
@@ -351,49 +382,94 @@ export class ImageModal {
 
   /**
    * 「浏览」按钮：弹系统文件对话框选一张本地图片。
-   * - 填入 src（绝对路径）；alt 为空时用文件名兜底；
+   *
+   * 两条通道，结果都是「src 填好 + alt 用文件名兜底」：
+   *   1. 桌面版：Electron 的 pickImageFile 返回**本地绝对路径**
+   *      （渲染时 toFileUrl 转成 file://，存盘时主进程可再处理）。
+   *   2. WebView2 / 纯浏览器：没有 Electron，走下面那个隐藏 input，
+   *      读成 base64 data URL —— 本地路径进了 Word 文档就失效了，
+   *      只有内嵌才活得下来（与粘贴图片的处理一致，见 editor.ts）。
+   *
    * - 插入模式：选中即插入并关闭（工具栏入口的预期行为）；
    * - 编辑模式：只更新 src，等其他参数改完再点「更新」。
    */
   private async browseLocalFile(): Promise<void> {
     if (this.browsing) return
+    // typeof 判断而不是直接取真值：属性一存在 TS 就认为条件恒真（TS2774），而这里
+    // 要探的是运行时有没有 Electron（纯浏览器下 window.electronAPI 是 undefined）。
+    const api = typeof window.electronAPI?.pickImageFile === 'function' ? window.electronAPI : null
+    if (!api) {
+      // 无 Electron：交给隐藏 input，选完在 change 里接着走 applyPicked。
+      // 这里不等结果 —— 原生对话框没有可靠的「已取消」事件，等下去按钮会
+      // 一直卡在「选择中」；取消对话框时什么都不发生，模态框照旧开着。
+      this.fileInput.value = '' // 允许连选同一个文件
+      this.fileInput.click()
+      return
+    }
     const zh = this.currentLanguage === 'zh'
     this.browsing = true
     this.browseButton.disabled = true
     this.browseButton.textContent = zh ? '选择中...' : 'Choosing...'
     try {
-      const path = await window.electronAPI?.pickImageFile?.()
+      const path = await api.pickImageFile()
       if (!path) {
         // 用户取消
         this.flashButton(zh ? '已取消' : 'Cancelled', 1200, this.browseButton)
         return
       }
-      this.srcInput.value = path
-      if (!this.altInput.value.trim()) {
-        const base = path.split(/[\\/]/).pop() ?? ''
-        this.altInput.value = base.replace(/\.[^.]+$/, '')
-      }
-      this.updatePreview()
-      if (this.isInsertMode) {
-        this.save()
-        return
-      }
-      this.flashButton(zh ? '已选择' : 'Picked', 1200, this.browseButton)
+      this.applyPicked(path, altFromPath(path))
     } finally {
       this.browsing = false
       this.browseButton.disabled = false
     }
   }
 
+  /** 隐藏 input 的 change：读成 base64（超限时压缩）后填回表单 */
+  private async onFilePicked(): Promise<void> {
+    const file = this.fileInput.files?.[0]
+    this.fileInput.value = '' // 立刻清空，否则下次选同一个文件不会再触发 change
+    if (!file) return
+    const zh = this.currentLanguage === 'zh'
+    this.browsing = true
+    this.browseButton.disabled = true
+    this.browseButton.textContent = zh ? '读取中...' : 'Reading...'
+    try {
+      const result = await fileToEmbeddableDataUrl(file)
+      // 压缩摘要：编辑模式下闪在「浏览」按钮上；插入模式弹框会立刻关掉，
+      // 所以同时打一条 console，方便事后核（Word 里没有 F12，看宿主日志）
+      if (result.compressed) {
+        console.info('[image] 已压缩内嵌：', describeCompression(result))
+        this.flashButton(`${zh ? '已压缩' : 'Compressed'} ${describeCompression(result)}`, 3000, this.browseButton)
+      }
+      this.applyPicked(result.dataUrl, altFromPath(file.name))
+    } catch (err) {
+      console.error('读取本地图片失败:', err)
+      this.flashButton(zh ? '读取失败' : 'Read failed', 3000, this.browseButton)
+    } finally {
+      this.browsing = false
+      this.browseButton.disabled = false
+    }
+  }
+
+  /** 填 src（alt 为空时用名字兜底）；插入模式随即插入，编辑模式停在表单上 */
+  private applyPicked(src: string, alt: string): void {
+    this.srcInput.value = src
+    if (!this.altInput.value.trim()) this.altInput.value = alt
+    this.updatePreview()
+    if (this.isInsertMode) {
+      void this.save()
+      return
+    }
+    this.flashButton(this.currentLanguage === 'zh' ? '已选择' : 'Picked', 1200, this.browseButton)
+  }
+
   /**
    * 将当前 src（网络 URL 或本地路径）转为 Base64 data URL。
    *
-   * 策略：
-   *  1. 先尝试 fetch + FileReader（保留原始格式，对 CORS 允许的服务器有效）
-   *  2. fetch 失败时（file:// 被拦 / 跨域）走 canvas 兜底：
-   *     用 <img> 加载 URL（<img> 不受 fetch 同源策略限制），
-   *     画到 canvas 后 toDataURL 取 base64。
-   *     缺点：canvas 会将图重编码为 PNG（JPEG 体积可能膨胀）。
+   * 两条路（见 image-embed.ts 的 urlToDataUrl）：
+   *  1. fetch + FileReader（保留原始格式，服务器给 CORS 头时可用）
+   *  2. canvas 兜底（<img> 不受 fetch 同源策略限制；跨域会污染 canvas，
+   *     此时失败 —— 桌面版还可以退回本地路径，任务窗格里只能保留原 URL）
    */
   private async convertToBase64(): Promise<void> {
     if (this.converting) return
@@ -422,22 +498,8 @@ export class ImageModal {
     this.convertButton.textContent = zh ? '转换中...' : 'Converting...'
 
     try {
-      let dataUrl: string
-      // 方法 1：fetch + FileReader（保留原始编码格式）
-      try {
-        const response = await fetch(url)
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const blob = await response.blob()
-        dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve(reader.result as string)
-          reader.onerror = () => reject(new Error('FileReader error'))
-          reader.readAsDataURL(blob)
-        })
-      } catch {
-        // 方法 2：canvas 兜底（file:// 被 fetch 拦截时的退路）
-        dataUrl = await this.convertViaCanvas(url)
-      }
+      const dataUrl = await urlToDataUrl(url)
+      if (!dataUrl) throw new Error(zh ? '跨域被拦或图片加载失败' : 'CORS blocked or load failed')
       this.srcInput.value = dataUrl
       this.updatePreview()
       this.flashButton(zh ? '已转换' : 'Done')
@@ -451,37 +513,6 @@ export class ImageModal {
     }
   }
 
-  /**
-   * canvas 兜底转换：用 <img> 加载 URL（不受 fetch 同源策略限制），
-   * 画到 canvas 后 toDataURL 取 base64 PNG。
-   * webSecurity 关闭时 file:// 图片不会污染 canvas；跨域网络图片若
-   * 服务器未返回 CORS 头则 toDataURL 会抛 SecurityError。
-   */
-  private convertViaCanvas(url: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      const img = new Image()
-      img.onload = () => {
-        try {
-          const canvas = document.createElement('canvas')
-          canvas.width = img.naturalWidth
-          canvas.height = img.naturalHeight
-          const ctx = canvas.getContext('2d')
-          if (!ctx) {
-            reject(new Error('Canvas 2D context unavailable'))
-            return
-          }
-          ctx.drawImage(img, 0, 0)
-          resolve(canvas.toDataURL('image/png'))
-        } catch (e) {
-          // SecurityError: canvas 被跨域图片污染
-          reject(e instanceof Error ? e : new Error(String(e)))
-        }
-      }
-      img.onerror = () => reject(new Error('Image load failed (CORS or not found)'))
-      img.src = url
-    })
-  }
-
   /** 短暂更改按钮文案，超时后恢复为当前语言对应文案（默认作用于转 Base64 按钮）。 */
   private flashButton(text: string, duration = 1500, btn: HTMLButtonElement = this.convertButton): void {
     btn.textContent = text
@@ -493,7 +524,7 @@ export class ImageModal {
     }, duration)
   }
 
-  private save(): void {
+  private async save(): Promise<void> {
     const view = getEditorView()
     if (!view) {
       this.hide()
@@ -505,8 +536,17 @@ export class ImageModal {
     const width = this.widthInput.value.trim()
     const height = this.heightInput.value.trim()
 
+    let src = this.srcInput.value.trim()
+    // 没有 Electron 通道时（Word 任务窗格 / 纯浏览器），网络图片也尽量内嵌：
+    // 外链一旦离开当前会话就断（离线、换机器、图床挂了），内嵌才稳。
+    // 转成不成功（跨域/CORS）就保留原 URL，总比插不进去强。
+    if (src && /^https?:/i.test(src) && !hasElectronChannel()) {
+      const dataUrl = await urlToDataUrl(src).catch(() => null)
+      if (dataUrl) src = dataUrl
+    }
+
     const newAttrs: ImageAttrs = {
-      src: this.srcInput.value.trim(),
+      src,
       alt: this.altInput.value,
       width: sizeRe.test(width) ? width : '',
       height: sizeRe.test(height) ? height : '',
