@@ -285,6 +285,11 @@ interface WindowState {
   // 菜单「PDF转md」在无窗口可发时先建窗，请求暂存在这里，等渲染端就绪再补发
   //（与 pendingTabFiles 同一套时机，见 flushPendingTabFiles）。
   pendingPdfTab: boolean
+  // 菜单「图片转md」同上（同一套时机，见 importImageDocument）。
+  pendingImageTab: boolean
+  // 图片转md 标签页挂着的那张图片（渲染端在切标签页、选图时上报）：与 pdfPath
+  // 同一个用途 —— 「另存为」的默认文件名按它取（见 suggestFileName）。
+  imagePath: string | null
   // 前台标签页的类型（渲染端在切标签页时上报，见 set-active-tab-kind）。目前只
   // 服务于一件事：类 docx 文档（canvas-editor）标签页自成一套，菜单栏的
   // 打印/打印预览不该对它生效 —— 打印只走它自己工具栏里那一个（canvas 把内容
@@ -318,7 +323,7 @@ const pendingDocumentStateRequests = new Map<string, PendingDocumentStateRequest
 function getState(win: BrowserWindow): WindowState {
   let state = windowStates.get(win.id)
   if (!state) {
-    state = { filePath: null, browsePath: null, watcher: null, isInternalSave: false, internalSaveCount: 0, lastKnownMtime: 0, lastInternalSaveContent: null, debounceTimer: null, siblingsTimer: null, dirty: false, closePromise: null, rendererReady: false, writeQueue: Promise.resolve(), closeAuthorized: false, tabFiles: [], pendingTabFiles: [], initialDocDelivered: false, reveal: null, pdfPath: null, pendingPdfTab: false, activeTabKind: null }
+    state = { filePath: null, browsePath: null, watcher: null, isInternalSave: false, internalSaveCount: 0, lastKnownMtime: 0, lastInternalSaveContent: null, debounceTimer: null, siblingsTimer: null, dirty: false, closePromise: null, rendererReady: false, writeQueue: Promise.resolve(), closeAuthorized: false, tabFiles: [], pendingTabFiles: [], initialDocDelivered: false, reveal: null, pdfPath: null, pendingPdfTab: false, pendingImageTab: false, imagePath: null, activeTabKind: null }
     windowStates.set(win.id, state)
   }
   return state
@@ -527,6 +532,23 @@ function importPdfDocument(): void {
   win.webContents.send('menu-pdf-tab')
 }
 
+// 「文件 → 图片转md」：在当前窗口开一个标签页（左图片预览 / 右编辑器），图片由
+// 用户在标签页里点「选择图片…」选，转换走与 PDF 同一套 MinerU 在线解析（服务
+// 端认 PDF 也认图片）。时机与上面那条完全一样。
+function importImageDocument(): void {
+  const win = getFocusedWindow() ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+  if (!win) {
+    getState(createWindow()).pendingImageTab = true
+    return
+  }
+  const state = getState(win)
+  if (!state.rendererReady || !state.initialDocDelivered) {
+    state.pendingImageTab = true
+    return
+  }
+  win.webContents.send('menu-image-tab')
+}
+
 function updateTitle(win: BrowserWindow): void {
   const state = getState(win)
   const fileName = state.filePath ? basename(state.filePath) : 'Untitled'
@@ -538,6 +560,8 @@ function suggestFileName(win: BrowserWindow, content?: string): string | undefin
   if (state.filePath) return basename(state.filePath, '.md')
   // PDF 对照标签页：默认就用源文件的同名 md，这样下次开该 PDF 能直接带出来。
   if (state.pdfPath) return basename(state.pdfPath, extname(state.pdfPath))
+  // 图片转md 同一条规则：存出来的 md 与源图同名（xxx.png → xxx.md）。
+  if (state.imagePath) return basename(state.imagePath, extname(state.imagePath))
   if (!content) return undefined
   // Extract first heading or first non-empty line
   const match = content.match(/^#\s+(.+)/m) || content.match(/^(.+)/m)
@@ -879,6 +903,11 @@ function flushPendingTabFiles(win: BrowserWindow): void {
   if (state.pendingPdfTab) {
     state.pendingPdfTab = false
     win.webContents.send('menu-pdf-tab')
+  }
+  // 「图片转md」同上。
+  if (state.pendingImageTab) {
+    state.pendingImageTab = false
+    win.webContents.send('menu-image-tab')
   }
 }
 
@@ -1658,6 +1687,13 @@ ipcMain.on('set-active-pdf-path', (event, pdfPath: unknown) => {
   getState(win).pdfPath = typeof pdfPath === 'string' && pdfPath ? pdfPath : null
 })
 
+// 图片转md 标签页挂着的那张图片：同一套上报方式、同一个用途（另存为的默认名）。
+ipcMain.on('set-active-image-path', (event, imagePath: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  getState(win).imagePath = typeof imagePath === 'string' && imagePath ? imagePath : null
+})
+
 // 渲染端上报前台标签页的类型（切标签页时发）。类 docx 文档标签页（canvas-editor）
 // 自成一体的那套：打印只走它自己工具栏里那一个（executePrint 把页面渲成图再
 // 交给打印），窗口级的 print/printToPDF 对它没有意义 —— 所以菜单栏的打印相关
@@ -1696,8 +1732,9 @@ interface MineruParseResponse {
 ipcMain.handle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruParseResponse> => {
   const win = getWinFromEvent(event)
   if (!win) return { ok: false, error: uiText('窗口已关闭', 'Window is closed') }
+  // 同一个接口也服务「图片转md」：服务端认 PDF 也认图片，所以这里不再说 PDF。
   if (typeof pdfPath !== 'string' || !pdfPath) {
-    return { ok: false, error: uiText('还没有选中 PDF', 'No PDF selected yet') }
+    return { ok: false, error: uiText('还没有选中文件', 'No file selected yet') }
   }
   // token：环境变量优先（调试/CI 不用改 userSetting.json），其次偏好设置。
   const token =
@@ -1744,6 +1781,25 @@ ipcMain.handle('pick-image-file', async (event) => {
     filters: [
       { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg'] },
       { name: 'All Files', extensions: ['*'] }
+    ]
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
+
+// 「图片转md」的选图：只列 MinerU 认的图片格式（官方「文件限制」表）。
+// 与上面共用的 pick-image-file 分开是故意的 —— 那个也服务编辑器插图，要支持
+// svg / avif 这类只用来显示的格式，而 MinerU 收到它们只会回 -60002。
+ipcMain.handle('pick-mineru-image-file', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return null
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('选择图片（交给 MinerU 解析）', 'Choose Image for MinerU'),
+    buttonLabel: uiText('选择', 'Choose'),
+    properties: ['openFile'],
+    defaultPath: defaultDialogDir('read'),
+    filters: [
+      { name: 'Images (MinerU)', extensions: ['png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp'] }
     ]
   })
   if (result.canceled || result.filePaths.length === 0) return null
@@ -2300,7 +2356,7 @@ function buildMenu(): void {
         newTab: '新建标签页', closeTab: '关闭标签页',
         recentOpen: '最近打开', restoreOnLaunch: '启动时打开上次文档', clearRecent: '清除最近记录', noRecent: '没有最近打开的文件',
         exportWord: '导出md为docx', exportHTML: '导出md为HTML', exportPDF: '导出md为PDF', exportImageDesktop: '导出图片（电脑阅读）', exportImageMobile: '导出图片（手机阅读）', find: '查找',
-        importDocx: 'docx转md', importPdf: 'PDF转md',
+        importDocx: 'docx转md', importPdf: 'PDF转md', importImage: '图片转md',
         setDefault: '设置为默认应用',
         insertFormula: '插入公式', filePanel: '显示 / 隐藏文件列表', sourceMode: '切换 Markdown 源码',
         // 菜单栏「格式」/「插入」里与工具栏一一对应的功能项
@@ -2333,7 +2389,7 @@ function buildMenu(): void {
         newTab: 'New Tab', closeTab: 'Close Tab',
         recentOpen: 'Open Recent', restoreOnLaunch: 'Reopen last document at launch', clearRecent: 'Clear Recent', noRecent: 'No recent files',
         exportWord: 'Export MD to DOCX', exportHTML: 'Export MD to HTML', exportPDF: 'Export MD to PDF', exportImageDesktop: 'Export Image (Desktop)', exportImageMobile: 'Export Image (Mobile)', find: 'Find',
-        importDocx: 'DOCX to MD', importPdf: 'PDF to MD',
+        importDocx: 'DOCX to MD', importPdf: 'PDF to MD', importImage: 'Image to MD',
         setDefault: 'Set as Default',
         insertFormula: 'Insert Formula', filePanel: 'Show / Hide File List', sourceMode: 'Toggle Markdown Source',
         // Format / Insert menu counterparts of the toolbar buttons
@@ -2431,6 +2487,11 @@ function buildMenu(): void {
           // 在当前窗口开一个标签页；窗口都没有时才建一个（见 importPdfDocument）。
           label: labels.importPdf,
           click: () => importPdfDocument()
+        },
+        {
+          // 开一个「左图片预览 / 右 Markdown」的标签页（见 importImageDocument）。
+          label: labels.importImage,
+          click: () => importImageDocument()
         },
         {
           label: labels.recentOpen,

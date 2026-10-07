@@ -9,6 +9,7 @@ import { applyTheme, loadSavedTheme } from './themes/theme-manager'
 import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
 import { enterPdfTabChrome, getOpenedPdfPath, initPdfView, leavePdfTab, loadPdfTab } from './pdf-view'
+import { enterImageTabChrome, initImageView, leaveImageTab, loadImageTab } from './image-view'
 import { initDocBar, type DocFormat } from './doc-bar'
 import { getJsonOrigin, getJsonPath, getJsonText, initJsonView, refreshJsonLayout } from './json-view'
 import { initPrintPreview, showPrintPreview } from './print-preview'
@@ -200,6 +201,14 @@ interface DocumentTab {
   pdfTab: boolean
   /** 对照的源文件路径；还没选（用户没点「打开 PDF…」）就是 null，面板显示空态。 */
   pdfPath: string | null
+  /**
+   * 这个标签页是不是「图片转md」标签页（左图片预览 / 右文档）。与 PDF 对照同一
+   * 个套路：仍是普通文档标签页（转换结果填进来后照样能改能存），只是挂着一张
+   * 源图片，窗口里最多一个（再点「图片转md」就聚焦已有的那个）。
+   */
+  imageTab: boolean
+  /** 源图片路径；还没选就是 null，面板显示空态。 */
+  imagePath: string | null
   dirty: boolean
   revision: number
   sourceMode: boolean
@@ -246,6 +255,11 @@ function tabLabel(tab: DocumentTab): string {
   if (tab.pdfTab) {
     if (!tab.pdfPath) return 'PDF'
     return (tab.pdfPath.split(/[\\/]/).pop() || tab.pdfPath).replace(PDF_SUFFIX, '')
+  }
+  // 图片转md 标签页同源：挂了图片就写图片名，没选时写「图片」。
+  if (tab.imageTab) {
+    if (!tab.imagePath) return isChinese() ? '图片' : 'Image'
+    return tab.imagePath.split(/[\\/]/).pop() || tab.imagePath
   }
   return untitledLabel()
 }
@@ -512,6 +526,16 @@ function reportActiveTabKind(): void {
   window.electronAPI.setActiveTabKind(kind)
 }
 
+/**
+ * 主进程要知道前台这份标签页挂着哪个源文件（PDF 对照 / 图片转md）：「另存为」的
+ * 默认文件名按它取（见 main 的 suggestFileName）。两个上报绑在一起，免得只清一个、
+ * 留下上一份文件的名字。
+ */
+function reportActiveSource(tab: DocumentTab | null): void {
+  window.electronAPI.setActivePdfPath(tab?.pdfTab ? tab.pdfPath : null)
+  window.electronAPI.setActiveImagePath(tab?.imageTab ? tab.imagePath : null)
+}
+
 function showBlankDocument(): void {
   releaseMermaidRenderer()
   exitSourceMode()
@@ -548,9 +572,9 @@ async function saveTabForLeaving(tab: DocumentTab | null): Promise<boolean> {
 // file seeds the first tab here, and a file that arrives later adopts it.
 function ensureTab(): DocumentTab {
   const existing = activeTab()
-  if (existing && existing.kind === 'document' && !existing.pdfTab) return existing
-  // 提交页 / 类docx文档页 / PDF 对照页是活动标签页时，到来的文档不能落在它
-  // 身上：种一个新的文档标签页接管活动位（它们退回后台，供切回）。
+  if (existing && existing.kind === 'document' && !existing.pdfTab && !existing.imageTab) return existing
+  // 提交页 / 类docx文档页 / PDF 对照页 / 图片转md 页是活动标签页时，到来的文档
+  // 不能落在它身上：种一个新的文档标签页接管活动位（它们退回后台，供切回）。
   if (existing) {
     const tab: DocumentTab = {
       id: `tab-${nextTabId++}`,
@@ -558,6 +582,8 @@ function ensureTab(): DocumentTab {
       filePath: null,
       pdfTab: false,
       pdfPath: null,
+      imageTab: false,
+      imagePath: null,
       dirty: false,
       revision: documentRevision,
       sourceMode: false,
@@ -573,6 +599,7 @@ function ensureTab(): DocumentTab {
     hideCanvasDocView()
     // 对照面板跟着标签页走：新文档标签页没有它。
     leavePdfTabChrome()
+    leaveImageTab()
     updatePanelVisibility()
     return tab
   }
@@ -582,6 +609,8 @@ function ensureTab(): DocumentTab {
     filePath: null,
     pdfTab: false,
     pdfPath: null,
+    imageTab: false,
+    imagePath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -609,17 +638,20 @@ async function openNewTab(): Promise<void> {
   const previous = activeTab()
   captureActiveTab()
   if (!await saveTabForLeaving(previous)) return
-  // 从提交页 / 类docx文档页 / PDF 对照页新建文档标签页时，先把这些视图收
-  // 起来（编辑面归位）
+  // 从提交页 / 类docx文档页 / PDF 对照页 / 图片转md 页新建文档标签页时，先把
+  // 这些视图收起来（编辑面归位）
   hideSubmitView()
   hideCanvasDocView()
   leavePdfTabChrome()
+  leaveImageTab()
   const tab: DocumentTab = {
     id: `tab-${nextTabId++}`,
     kind: 'document',
     filePath: null,
     pdfTab: false,
     pdfPath: null,
+    imageTab: false,
+    imagePath: null,
     dirty: false,
     revision: ++documentRevision,
     sourceMode: false,
@@ -635,7 +667,7 @@ async function openNewTab(): Promise<void> {
   // Tell the main process the window is now on an untitled document, otherwise
   // its notion of the active file still points at the previous tab's file.
   await window.electronAPI.activateFile(null)
-  window.electronAPI.setActivePdfPath(null)
+  reportActiveSource(null)
   showBlankDocument()
   updatePanelVisibility()
   renderTabBar()
@@ -706,6 +738,8 @@ async function openSubmitTab(): Promise<void> {
     filePath: null,
     pdfTab: false,
     pdfPath: null,
+    imageTab: false,
+    imagePath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -720,9 +754,10 @@ async function openSubmitTab(): Promise<void> {
   currentFilePath = null
   // 与未命名文档标签页同一规则：窗口停止指向上一个文档（watcher、标题、最近列表）
   await window.electronAPI.activateFile(null)
-  window.electronAPI.setActivePdfPath(null)
+  reportActiveSource(null)
   // PDF 对照面板不属于提交页：连同格式一起收回普通编辑面。
   leavePdfTabChrome()
+  leaveImageTab()
   showSubmitView()
   document.title = isChinese() ? '提交' : 'Submit'
   renderTabBar()
@@ -749,6 +784,8 @@ async function openPdfTab(): Promise<void> {
     filePath: null,
     pdfTab: true,
     pdfPath: null,
+    imageTab: false,
+    imagePath: null,
     dirty: false,
     revision: ++documentRevision,
     sourceMode: false,
@@ -763,14 +800,64 @@ async function openPdfTab(): Promise<void> {
   currentFilePath = null
   hideSubmitView()
   hideCanvasDocView()
+  leaveImageTab()
   await window.electronAPI.activateFile(null)
-  window.electronAPI.setActivePdfPath(null)
+  reportActiveSource(null)
   showBlankDocument()
   enterPdfTabChrome()
   updatePanelVisibility()
   renderTabBar()
   // 还没选源文件：面板摆出空态，由里面的「打开 PDF…」把人送去选文件。
   void loadPdfTab(null)
+  focusEditor()
+}
+
+// ─── 图片转md 标签页 ────────────────────────────────────────────────────
+// 菜单「文件 → 图片转md」：开一个左图片预览 / 右编辑器的文档标签页，与上面的
+// PDF 对照同一个套路（转换结果填进右边后照样能改、能保存）。窗口里最多一个
+//（已存在就聚焦），图片由标签页里的「选择图片…」按钮选。
+async function openImageTab(): Promise<void> {
+  const existing = tabs.find((tab) => tab.imageTab)
+  if (existing) {
+    await activateTab(existing.id)
+    return
+  }
+  const previous = activeTab()
+  captureActiveTab()
+  if (!await saveTabForLeaving(previous)) return
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'document',
+    filePath: null,
+    pdfTab: false,
+    pdfPath: null,
+    imageTab: true,
+    imagePath: null,
+    dirty: false,
+    revision: ++documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  tabs.push(tab)
+  activeTabId = tab.id
+  currentFilePath = null
+  hideSubmitView()
+  hideCanvasDocView()
+  leavePdfTabChrome()
+  await window.electronAPI.activateFile(null)
+  reportActiveSource(null)
+  showBlankDocument()
+  enterImageTabChrome()
+  // 与 activateTab 同一个理由：这个视图没有 JSON 面，格式一律归位到 Markdown。
+  setDocFormat('markdown')
+  updatePanelVisibility()
+  renderTabBar()
+  // 还没选图片：面板摆出空态，由里面的「选择图片…」把人送去选文件。
+  void loadImageTab(null)
   focusEditor()
 }
 
@@ -793,6 +880,8 @@ async function openCanvasDocTab(init?: CanvasDocInit): Promise<void> {
     filePath: null,
     pdfTab: false,
     pdfPath: null,
+    imageTab: false,
+    imagePath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -808,9 +897,10 @@ async function openCanvasDocTab(init?: CanvasDocInit): Promise<void> {
   // 编辑面归位：提交表单与 PDF 对照面板都不属于这个标签页。
   hideSubmitView()
   leavePdfTabChrome()
+  leaveImageTab()
   // 与未命名文档标签页同一规则：窗口停止指向上一个文档（watcher、标题、最近列表）
   await window.electronAPI.activateFile(null)
-  window.electronAPI.setActivePdfPath(null)
+  reportActiveSource(null)
   showCanvasDocView(tab.id, init)
   document.title = canvasDocWindowTitle()
   renderTabBar()
@@ -868,8 +958,15 @@ async function activateTab(id: string): Promise<void> {
     // 内容恢复完再做（填内容会清掉块锚点，先渲染就白装一遍）。
     if (target.pdfTab) enterPdfTabChrome()
     else leavePdfTabChrome()
+    // 图片转md 面板同理：只有那个标签页才展开左图片 / 右文档。
+    if (target.imageTab) {
+      enterImageTabChrome()
+      // 图片转md 没有 JSON 视图：从 PDF 对照切过来时格式可能还停在 JSON，
+      // 那会让右边变成只读的 layout.json。
+      setDocFormat('markdown')
+    } else leaveImageTab()
     // 主进程要知道前台这份标签页挂着哪个源文件：「另存为」的默认名按它取。
-    window.electronAPI.setActivePdfPath(target.pdfTab ? target.pdfPath : null)
+    reportActiveSource(target)
     // 提交表单标签页：不接管编辑器，只切换视图（编辑面由 CSS +
     // showSubmitView 整体隐藏），也无 dirty/大纲/字数可谈。
     if (target.kind === 'submit') {
@@ -954,6 +1051,8 @@ async function activateTab(id: string): Promise<void> {
     requestAnimationFrame(restoreScroll)
     // 内容到位之后才渲染 PDF：锚点要装在这份正文上（setContent 会清锚点）。
     if (target.pdfTab) void loadPdfTab(target.pdfPath)
+    // 图片转md 面板：切回来按标签页记下的那张图片重新显示（主进程读盘给 data URL）。
+    if (target.imageTab) void loadImageTab(target.imagePath)
     renderTabBar()
     if (changedOnDisk && target.dirty) raiseExternalConflict()
   } finally {
@@ -1001,8 +1100,8 @@ async function closeTab(id: string): Promise<void> {
     activeTabId = null
     await activateTab(tabs[Math.min(index, tabs.length - 1)].id)
   }
-  // 关掉的正是挂着源文件的那个标签页时，主进程记的那份「当前 PDF」要跟着走。
-  window.electronAPI.setActivePdfPath(activeTab()?.pdfPath ?? null)
+  // 关掉的正是挂着源文件的那个标签页时，主进程记的那份「当前源文件」要跟着走。
+  reportActiveSource(activeTab() ?? null)
   renderTabBar()
 }
 
@@ -1146,6 +1245,8 @@ function bindTabBar(api: import('../preload/index').ElectronAPI): void {
   api.onMenuCloseTab(() => { if (activeTabId) void closeTab(activeTabId) })
   // 菜单「文件 → PDF转md」：在当前窗口开对照标签页（已存在就聚焦它）。
   api.onMenuPdfTab(() => { void openPdfTab() })
+  // 菜单「文件 → 图片转md」：开图片转md 标签页（已存在就聚焦它）。
+  api.onMenuImageTab(() => { void openImageTab() })
   api.onOpenInNewTab(enqueueTabOpen)
   const handleTabMenuAction = ({ action, tabId }: { action: string; tabId: string }) => {
     if (action === 'close') { void closeTab(tabId); return }
@@ -1485,8 +1586,9 @@ function toggleSourceMode(): void {
 }
 
 function updatePanelVisibility(): void {
-  // PDF 对照标签页没有文件面板：左边已经是源文件，右边就是要编辑的那一个文档。
-  const show = !manualHidden && !activeTab()?.pdfTab
+  // PDF 对照 / 图片转md 标签页没有文件面板：左边已经是源文件，右边就是要编辑的
+  // 那一个文档。
+  const show = !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab
   filePanelEl().hidden = !show
   document.body.classList.toggle('show-file-panel', show)
   fileToggleBtnEl().classList.toggle('active', show)
@@ -2541,13 +2643,32 @@ function applyAppearanceFontSize(): void {
       const tab = activeTab()
       if (!tab || !tab.pdfTab) return
       tab.pdfPath = path
-      window.electronAPI.setActivePdfPath(path)
+      reportActiveSource(tab)
+      renderTabBar()
+    }
+  })
+  // 图片转md：转换结果里的 full.md → 填进编辑器；只有 layout.json 时退一步把
+  // 现转出来的 Markdown 直接写进去。
+  initImageView(api, {
+    onMarkdownFile: (path) => applyMarkdownFile(path),
+    onMarkdownText: (markdown) => {
+      setContent(markdown, true)
+      setDirty()
+    },
+    // 用户在面板里选了图片：记回标签页（标签条上的名字跟着变），并告诉主进程 ——
+    // 「另存为」会用图片名当默认文件名。
+    onImageSourceChange: (path) => {
+      const tab = activeTab()
+      if (!tab || !tab.imageTab) return
+      tab.imagePath = path
+      reportActiveSource(tab)
       renderTabBar()
     }
   })
   initJsonView()
-  // 右侧栏顶部条（Markdown/JSON + 复制）：目前只在 PDF 对照窗口可见，
-  // 但绑定不分窗口 —— 可见性由 CSS 的 body.pdf-view 决定。
+  // 右侧栏顶部条（保存 + 复制）：PDF 对照与图片转md 两个视图都有，绑定不分视图
+  // —— 可见性由 CSS 的 body.pdf-view / body.image-view 决定（图片视图里那组
+  // Markdown/JSON 分段控件被 CSS 收起来，见 base.css）。
   initDocBar({
     getText: (format) => (format === 'json' ? getJsonText() : getContent()),
     onFormatChange: setDocFormat,

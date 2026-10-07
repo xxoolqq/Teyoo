@@ -2774,6 +2774,216 @@ body.pdf-resizing {
   cursor: col-resize;
 }
 
+/* ─── 图片转md 视图（菜单「文件 → 图片转md」）────────────────────────────────
+   左图片预览 + 右编辑器，与 PDF 对照同一骨架（body class 收起文件面板、编辑器
+   让出左半边）。没有分隔条：图片按容器等比缩放，拖宽窄没有意义。 */
+body.image-view #file-toggle-btn,
+body.image-view #file-panel,
+body.image-view #panel-resizer {
+  display: none;
+}
+
+#image-panel {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
+  bottom: 0;
+  left: 0;
+  width: var(--image-panel-width, 50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-color);
+  border-right: 1px solid var(--shell-line);
+}
+
+#image-panel[hidden] {
+  display: none;
+}
+
+/* 与 PDF 栏的头部同高：两条都在窗口顶行下面，高度保持一致才不会错位。
+   右侧那条顶部条（保存/复制）现在图片视图也有，高度共用同一个变量。 */
+body.image-view {
+  --doc-bar-height: 40px;
+}
+
+.image-panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--doc-bar-height, 40px);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--shell-line);
+}
+
+.image-panel-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.image-source-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 缩放：与 PDF 栏同一套按钮（⊖ ⊕ + 比例），推到最右，「转为 Markdown」跟在它后面。 */
+.image-zoom {
+  flex: none;
+  align-self: center;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.image-zoom-btn {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.image-zoom-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.image-zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.image-zoom-level {
+  flex: none;
+  align-self: center;
+  min-width: 32px;
+  font-size: 12px;
+  opacity: 0.55;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「转为 Markdown」：跟在缩放按钮组后面（往右推的那段由 .image-zoom 承担）。 */
+.image-panel-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.image-panel-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.image-panel-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 预览区：整张图等比塞进栏里（max-* 而不是 width:100%，小图不会被拉大）。
+   居中用子元素的 margin:auto 而不是 justify/align-items —— flex 居中的内容一旦
+   超出容器，溢出方向（左/上）是滚不到的，放大后就看不见左上角那一片。 */
+.image-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+  padding: 12px;
+}
+
+.image-preview img {
+  flex: none;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.image-preview[hidden],
+.image-empty[hidden],
+.image-status[hidden] {
+  display: none;
+}
+
+/* 空态：还没选图片。 */
+.image-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 32px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.image-empty-text {
+  margin: 0;
+  text-align: center;
+  white-space: pre-line;
+}
+
+.image-open-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.image-open-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+/* 进度 / 报错：贴在栏底，不挤占预览区。 */
+.image-status {
+  flex: none;
+  margin: 0;
+  padding: 6px 12px;
+  border-top: 1px solid var(--shell-line);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-line;
+}
+
+body.image-view #editor,
+body.image-view #source-editor {
+  margin-left: var(--image-panel-width, 50%);
+  /* 顶部条在流里占掉一行，编辑器高度要减掉（与 body.pdf-view 同一个算式）。 */
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px) - var(--toolbar-height, 0px) - var(--doc-bar-height, 40px));
+}
+
+body.image-view #source-editor {
+  width: calc(100% - var(--image-panel-width, 50%));
+}
+
 /* ─── 右侧栏顶部条：文档格式切换 + 复制 ────────────────────────────────────
    只在 PDF 对照窗口出现。它和左侧「源文件」条同高、同底色，横向拼成一条完整的
    顶栏；left 让位给 PDF 栏，和编辑器用同一个算式。 */
@@ -2790,6 +3000,17 @@ body.pdf-resizing {
 
 body.pdf-view #doc-bar {
   display: flex;
+}
+
+/* 图片转md 用同一条顶部条，只是左边那条让位给图片栏（宽度变量不同），
+   而且没有 JSON 视图 —— 分段控件收起来，只留保存 / 复制（用户明确不要 JSON 切换）。 */
+body.image-view #doc-bar {
+  display: flex;
+  margin-left: var(--image-panel-width, 50%);
+}
+
+body.image-view .doc-mode-switch {
+  display: none;
 }
 
 /* 分段控件：一条浅灰蓝的轨道，选中项是白色药丸 + 蓝字（如同 MinerU 顶栏）。 */

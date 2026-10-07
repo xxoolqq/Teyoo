@@ -100,6 +100,9 @@ export interface ElectronAPI {
   saveCanvasMarkdown: (content: string, fileName?: string) => Promise<string | null>
   // 图片模态框「浏览」：主进程弹系统文件对话框，返回图片绝对路径
   pickImageFile: () => Promise<string | null>
+  // 「图片转md」专用的选图：只列 MinerU 认的格式（与上面那个共用的分开，
+  // 编辑器插图要支持 svg/avif 这类 MinerU 不认的格式）。
+  pickMineruImageFile: () => Promise<string | null>
   // 偏好设置里选目录（工作目录「浏览…」）：返回绝对路径
   pickDirectory: (current?: string) => Promise<string | null>
   // JSON 视图：只读一个文本文件（PDF 旁边的同名 .json），读不到返回 null
@@ -117,12 +120,17 @@ export interface ElectronAPI {
   // 上报当前活动标签页挂着的那份 PDF（切到别的标签页就传 null）：主进程用它给
   // 「另存为」起默认文件名。
   setActivePdfPath: (path: string | null) => void
+  // 图片转md 标签页挂着的那张图片：主进程用它给「另存为」起默认文件名。
+  setActiveImagePath: (path: string | null) => void
   // 上报前台标签页类型。类 docx 文档（canvas-editor）标签页有自己的打印通道，
   // 菜单栏的打印/打印预览对它不生效（见 main 的 isCanvasTabActive）。
   setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => void
   // 在线解析（MinerU）：请求全在主进程发起（渲染端 CSP 拦外部请求、上传链接是
   // 签名 URL 不能外泄）。progress 由主进程逐条推回来。
   parsePdfOnline: (pdfPath: string) => Promise<MineruParseResponse>
+  // 「图片转md」：与上面同一个主进程接口（MinerU 认 PDF 也认图片），单独起名
+  // 只为让调用处看得懂传的是图片路径。
+  parseImageOnline: (imagePath: string) => Promise<MineruParseResponse>
   onMineruProgress: (callback: (payload: MineruProgressPayload) => void) => void
   // 用户偏好设置（主进程 userSetting.json，经 IPC 访问）
   getPreferences: () => Promise<Record<string, unknown>>
@@ -155,6 +163,8 @@ export interface ElectronAPI {
   onMenuCloseTab: (callback: () => void) => void
   // 菜单「文件 → PDF转md」：在当前窗口开一个 PDF 对照标签页。
   onMenuPdfTab: (callback: () => void) => void
+  // 菜单「文件 → 图片转md」：开一个图片转md 标签页。
+  onMenuImageTab: (callback: () => void) => void
   // 菜单「文件 → 新建类docx文档」：开一个 canvas-editor 标签页。
   onMenuNewCanvasDoc: (callback: () => void) => void
   onMenuExportPDF: (callback: () => void) => void
@@ -229,6 +239,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickCanvasJson: () => ipcRenderer.invoke('canvas-pick-json') as Promise<{ path: string; data: CanvasEditorData } | null>,
   saveCanvasMarkdown: (content: string, fileName?: string) => ipcRenderer.invoke('canvas-save-md', content, fileName) as Promise<string | null>,
   pickImageFile: () => ipcRenderer.invoke('pick-image-file') as Promise<string | null>,
+  pickMineruImageFile: () => ipcRenderer.invoke('pick-mineru-image-file') as Promise<string | null>,
   pickDirectory: (current?: string) => ipcRenderer.invoke('pick-directory', current) as Promise<string | null>,
   // JSON 视图：只读文本 + 选一个 .json，都不动窗口的文档绑定。
   readTextFile: (path: string) => ipcRenderer.invoke('read-text-file', path) as Promise<{ path: string; content: string } | null>,
@@ -237,8 +248,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickPdfFile: () => ipcRenderer.invoke('pick-pdf-file') as Promise<PickPdfResult | null>,
   readPdfFile: (path: string) => ipcRenderer.invoke('read-pdf-file', path) as Promise<PickPdfResult | null>,
   setActivePdfPath: (path: string | null) => ipcRenderer.send('set-active-pdf-path', path),
+  setActiveImagePath: (path: string | null) => ipcRenderer.send('set-active-image-path', path),
   setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => ipcRenderer.send('set-active-tab-kind', kind),
   parsePdfOnline: (pdfPath: string) => ipcRenderer.invoke('mineru-parse', pdfPath) as Promise<MineruParseResponse>,
+  parseImageOnline: (imagePath: string) => ipcRenderer.invoke('mineru-parse', imagePath) as Promise<MineruParseResponse>,
   onMineruProgress: (callback: (payload: MineruProgressPayload) => void) => {
     ipcRenderer.on('mineru-progress', (_event, payload: MineruProgressPayload) => callback(payload))
   },
@@ -301,6 +314,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMenuPdfTab: (callback: () => void) => {
     ipcRenderer.on('menu-pdf-tab', () => callback())
+  },
+  onMenuImageTab: (callback: () => void) => {
+    ipcRenderer.on('menu-image-tab', () => callback())
   },
   onMenuNewCanvasDoc: (callback: () => void) => {
     ipcRenderer.on('menu-new-canvas-doc', () => callback())

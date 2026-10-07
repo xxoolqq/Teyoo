@@ -362,6 +362,32 @@
     </div>
   </aside>
   <div id="pdf-resizer" aria-hidden="true" hidden></div>
+  <!-- 图片转md 视图（菜单「文件 → 图片转md」开的标签页）：左侧图片预览，右侧
+       编辑器放转换出来的 Markdown。默认隐藏，image-view.ts 在切进该标签页时
+       显示它、切走时收起。 -->
+  <aside id="image-panel" aria-label="图片源文件" hidden>
+    <div class="image-panel-head">
+      <span class="image-panel-title">图片</span>
+      <span id="image-source-name" class="image-source-name"></span>
+      <!-- 缩放：⊖ ⊕ + 当前比例（与 PDF 栏同一套交互与语义：100% = 适应窗口） -->
+      <span class="image-zoom">
+        <button id="image-zoom-out" class="image-zoom-btn" type="button">⊖</button>
+        <button id="image-zoom-in" class="image-zoom-btn" type="button">⊕</button>
+        <span id="image-zoom-level" class="image-zoom-level">100%</span>
+      </span>
+      <!-- 转为 Markdown：上传给 MinerU 解析（同「PDF转md」那条链路）。选中图片
+           后才露出来（没源文件就没有可转换的东西）。 -->
+      <button id="image-convert-btn" class="image-panel-btn" type="button" hidden>转为 Markdown</button>
+    </div>
+    <div id="image-preview" class="image-preview" hidden></div>
+    <!-- 空态：标签页刚开出来还没选图片。选中后换成上面的预览（与 PDF 栏空态同一个套路）。 -->
+    <div id="image-empty" class="image-empty">
+      <p id="image-empty-text" class="image-empty-text"></p>
+      <button id="image-open-btn" class="image-open-btn" type="button">选择图片…</button>
+    </div>
+    <!-- 进度 / 结果提示：转换中与失败原因都写在这里。 -->
+    <p id="image-status" class="image-status" aria-live="polite" hidden></p>
+  </aside>
   <!-- 右侧栏顶部条：文档格式切换 + 保存 + 复制当前内容。只在 PDF 对照标签页显示
        （base.css 的 body.pdf-view），普通标签页那一行是标签条 + 格式工具栏。 -->
   <div id="doc-bar">

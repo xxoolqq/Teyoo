@@ -26,13 +26,25 @@
 import { net } from 'electron'
 import { request as httpsRequest } from 'node:https'
 import AdmZip from 'adm-zip'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, extname, join } from 'node:path'
 
 const API_BASE = 'https://mineru.net/api/v4'
 
 // 服务端限制：单文件 ≤ 200MB / ≤ 200 页（页数由服务端判定，超了报 -60006）。
 const MAX_FILE_BYTES = 200 * 1024 * 1024
+
+/**
+ * 服务端认的扩展名（官方「文件限制」表 + file.name 说明）：PDF / Office / HTML /
+ * 图片。上传名必须带对后缀，否则服务端以 -60002 拒掉 —— 图片选择器里能选到
+ * svg / avif，这两种不在列，本地先挡一道给出人话，比让用户对着错误码猜好。
+ */
+const SUPPORTED_EXTENSIONS = new Set([
+  'pdf',
+  'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx',
+  'html', 'htm',
+  'png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp',
+])
 // 逐个请求的超时。普通请求 20s；上传放宽到 10 分钟（大文件 + 弱网）；
 // 结果包下载 5 分钟。net.fetch 不像浏览器有默认超时，不设就是无限等。
 const REQUEST_TIMEOUT_MS = 20_000
@@ -397,9 +409,19 @@ const LAYOUT_JSON_RE = /(^|\/)layout\.json$/i
 const MIDDLE_JSON_RE = /_middle\.json$/i
 const IMAGE_RE = /^images\/.+/i
 
-/** 结果包解压到哪：PDF 同目录的 <pdf 名>.mineru。 */
-export function extractDirFor(pdfPath: string): string {
-  return pdfPath.replace(/\.pdf$/i, '.mineru')
+/**
+ * 结果包解压到哪：源文件同目录的 <源文件名>.mineru（PDF 与图片一视同仁）。
+ *
+ * 注意这里**必须**带上 .mineru 后缀、且绝不等于源文件路径：extractZip 第一步就是
+ * rmSync(recursive) 清空目标目录，一旦返回源文件本身，等于把用户的原件删掉。
+ * （原来写的是 replace(/\.pdf$/i)，图片路径不匹配就原样返回 —— 传 x.png 进来
+ * 会把 x.png 删掉再建一个同名目录。）
+ */
+export function extractDirFor(sourcePath: string): string {
+  const base = sourcePath.replace(/\.[^.\\/]+$/, '')
+  const dir = `${base}.mineru`
+  // 源文件自己就叫 xxx.mineru 的极端情况：换个后缀，仍不与源文件重合。
+  return dir === sourcePath ? `${base}.mineru-result` : dir
 }
 
 /** 包内路径必须是相对路径：挡掉 zip slip（../ 与绝对路径）写穿到目录外面。 */
@@ -419,7 +441,12 @@ function extractZip(
   zipBytes: Buffer,
   dir: string,
 ): { markdownPath?: string; jsonPath?: string; imageCount: number } {
-  // 同一份 PDF 重复解析：先清掉上一次的目录，免得残留文件混进这一轮的结果。
+  // 保险丝：这个 rmSync 只允许落在目录上。万一算出来的路径撞上了一个真实文件
+  // （源文件、或用户恰好有个同名文件），宁可报错也不能删 —— 删掉就找不回来了。
+  if (existsSync(dir) && !statSync(dir).isDirectory()) {
+    throw new Error(`结果目录与已存在的文件重名，已中止：${dir}`)
+  }
+  // 同一份源文件重复解析：先清掉上一次的目录，免得残留文件混进这一轮的结果。
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   const zip = new AdmZip(zipBytes)
@@ -507,11 +534,20 @@ export async function parsePdfOnline(input: {
   onProgress?: (p: MineruProgress) => void
 }): Promise<MineruParseResult> {
   const emit = input.onProgress
+  const extension = extname(input.filePath).slice(1).toLowerCase()
+  if (!SUPPORTED_EXTENSIONS.has(extension)) {
+    return {
+      ok: false,
+      error: `MinerU 不支持这种格式（${extension || '无扩展名'}）：支持 pdf / docx / pptx / xlsx / html / png / jpg / jpeg / jp2 / webp / gif / bmp`,
+      imageCount: 0,
+    }
+  }
   let bytes: Buffer
   try {
     bytes = readFileSync(input.filePath)
   } catch (error) {
-    return { ok: false, error: `读不到 PDF：${error instanceof Error ? error.message : String(error)}`, imageCount: 0 }
+    // 这条链路 PDF 与图片共用，文案不提格式
+    return { ok: false, error: `读不到文件：${error instanceof Error ? error.message : String(error)}`, imageCount: 0 }
   }
   if (bytes.byteLength === 0) return { ok: false, error: '文件是空的', imageCount: 0 }
   if (bytes.byteLength > MAX_FILE_BYTES) {
@@ -537,7 +573,7 @@ export async function parsePdfOnline(input: {
 
     emit?.({ stage: 'downloading', batchId })
     const zipBytes = await downloadResult(outcome.zipUrl as string, input.insecureDownload === true)
-    // 压缩包不留盘：整包解压到 <pdf 名>.mineru/ 就完事（见 extractZip）。
+    // 压缩包不留盘：整包解压到 <源文件名>.mineru/ 就完事（见 extractZip）。
     const extractDir = extractDirFor(input.filePath)
     const extracted = extractZip(zipBytes, extractDir)
     emit?.({ stage: 'done', batchId })
