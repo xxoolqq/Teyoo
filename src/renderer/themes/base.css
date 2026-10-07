@@ -2984,6 +2984,316 @@ body.image-view #source-editor {
   width: calc(100% - var(--image-panel-width, 50%));
 }
 
+/* ─── 工具箱标签页（帮助 → 工具箱） ────────────────────────────────────────
+   与提交页同一手法：body class 收起工具栏与编辑面，工具面板铺满编辑区。
+   区别是这里不用搬 DOM —— 编辑器整块藏起来就够了（工具页自成一体，没有
+   「右边还有一份文档」这回事，所以不像 PDF/图片对照那样左右分栏）。 */
+body.tool-view {
+  --toolbar-height: 0px;
+}
+
+body.tool-view #toolbar,
+body.tool-view #editor,
+body.tool-view #source-editor,
+body.tool-view #doc-bar,
+body.tool-view #doc-json,
+body.tool-view #file-toggle-btn,
+body.tool-view #file-panel,
+body.tool-view #panel-resizer {
+  display: none;
+}
+
+#tool-panel {
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px));
+  overflow-y: auto;
+  padding: 32px 24px 64px;
+  background: var(--bg-color);
+}
+
+#tool-panel[hidden] {
+  display: none;
+}
+
+.tool-sheet {
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tool-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.tool-subtitle {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+/* 「✓ 免费 / ✓ 离线 / ✓ 无限制 / ✓ 安全」—— 参考界面那一条 */
+.tool-badges {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.tool-badges li::before {
+  content: '✓';
+  margin-right: 4px;
+  color: var(--tool-ok, #2f9e5f);
+}
+
+/* 源文件区：虚线框（同参考界面），里面是空态或文件卡片 */
+.tool-source {
+  padding: 22px;
+  border: 1px dashed color-mix(in srgb, var(--link-color) 45%, var(--border-color));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--link-color) 5%, var(--bg-color));
+}
+
+.tool-source[hidden],
+.tool-empty[hidden],
+.tool-file[hidden],
+.tool-status[hidden],
+.tool-result[hidden],
+.tool-preview[hidden] {
+  display: none;
+}
+
+.tool-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 26px 0;
+}
+
+.tool-empty-text {
+  margin: 0;
+  font-size: 13px;
+  text-align: center;
+  white-space: pre-line;
+  color: var(--text-secondary);
+}
+
+.tool-file {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+/* 缩略图：一页纸的感觉（白底 + 阴影），点它放大 */
+.tool-thumb {
+  position: relative;
+  flex: none;
+  width: 120px;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  cursor: zoom-in;
+}
+
+/* 放大镜角标：悬停时变实（平时淡着，不抢缩略图） */
+.tool-thumb-zoom {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 1px;
+  border-radius: 50%;
+  background: var(--bg-color);
+  color: var(--link-color);
+  opacity: 0.65;
+}
+
+.tool-thumb:hover .tool-thumb-zoom {
+  opacity: 1;
+}
+
+.tool-thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tool-file-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-file-name {
+  font-size: 14px;
+  word-break: break-all;
+}
+
+.tool-file-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tool-file-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.tool-outline-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tool-outline-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.tool-outline-btn.is-danger {
+  color: var(--tool-danger, #d14343);
+  border-color: color-mix(in srgb, var(--tool-danger, #d14343) 40%, var(--border-color));
+}
+
+.tool-settings {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+}
+
+.tool-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-field-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.tool-select,
+.tool-input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.tool-input {
+  width: 72px;
+}
+
+/* 主按钮（分割）：参考界面那颗实心大按钮，蓝色沿用标题栏「提交」按钮的配色 */
+.tool-primary {
+  --tool-accent: #3b82f6;
+  --tool-accent-hover: #2f74e0;
+  height: 46px;
+  border: none;
+  border-radius: 10px;
+  background: var(--tool-accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .12s ease;
+}
+
+.tool-primary:hover:not(:disabled) {
+  background: var(--tool-accent-hover);
+}
+
+.tool-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tool-status {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+  white-space: pre-line;
+  color: var(--text-secondary);
+}
+
+.tool-status.is-error {
+  color: var(--tool-danger, #d14343);
+}
+
+/* 结果清单：每行「文件名 …… 页码范围」 */
+.tool-result {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 180px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--shell-line);
+  border-radius: 8px;
+  background: var(--chrome-bg);
+  font-size: 12px;
+}
+
+.tool-result li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.tool-result li span:last-child {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+/* 放大预览层：点缩略图打开，点任意处 / Esc 收起 */
+.tool-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: rgba(0, 0, 0, 0.62);
+  cursor: zoom-out;
+}
+
+.tool-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  background: #fff;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
 /* ─── 右侧栏顶部条：文档格式切换 + 复制 ────────────────────────────────────
    只在 PDF 对照窗口出现。它和左侧「源文件」条同高、同底色，横向拼成一条完整的
    顶栏；left 让位给 PDF 栏，和编辑器用同一个算式。 */

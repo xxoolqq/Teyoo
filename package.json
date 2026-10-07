@@ -1,6 +1,6 @@
 {
   "name": "teyoo",
-  "version": "5.1.0",
+  "version": "5.3.0",
   "description": "A free, elegant Markdown editor for macOS, Windows and Linux. Simple by design, always in sync with the file on disk.",
   "main": "dist/main/index.js",
   "author": {
@@ -30,6 +30,7 @@
     "preview:web": "vite preview --config vite.web.config.ts"
   },
   "dependencies": {
+    "@cantoo/pdf-lib": "^2.11.1",
     "@hufe921/canvas-editor": "^1.0.4",
     "@hufe921/canvas-editor-plugin-special-characters": "^0.0.3",
     "@milkdown/kit": "^7.19.2",

@@ -8,6 +8,7 @@ import { watch, FSWatcher, existsSync, readdirSync, readFileSync, writeFileSync,
 import { mkdirSync } from 'fs'
 import { getUserSetting, getUserSettingByPath, setUserSetting, setUserSettingBatch, DEFAULT_WORK_DIR } from './user-setting'
 import { parsePdfOnline, findExtractedResult } from './http/mineru'
+import { splitPdfByPageCount, type SplitResult } from './pdf-split'
 import { setAsDefaultApp } from './default-app'
 
 const startupStartedAt = performance.now()
@@ -547,6 +548,20 @@ function importImageDocument(): void {
     return
   }
   win.webContents.send('menu-image-tab')
+}
+
+// 「文件 → 新建md文件」：在当前窗口开一个空的 Markdown 标签页（不是新窗口）。
+// 窗口一个都没有时就先建一个 —— 新窗口首屏本来就带一个空文档标签页，正好就是
+// 用户要的东西，所以这条分支不需要再补发 IPC；窗口还没就绪时同理，直接返回。
+function openNewDocumentTab(): void {
+  const win = getFocusedWindow() ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+  if (!win) {
+    createWindow()
+    return
+  }
+  const state = getState(win)
+  if (!state.rendererReady || !state.initialDocDelivered) return
+  win.webContents.send('menu-new-tab')
 }
 
 function updateTitle(win: BrowserWindow): void {
@@ -1679,6 +1694,22 @@ ipcMain.handle('read-pdf-file', async (_event, pdfPath: unknown): Promise<{ path
   }
 })
 
+// 「工具箱 → PDF拆分」：按「每 N 页一份」把 PDF 切开，结果写进原文件旁边的
+// <原名>_拆分_<日期>/ 目录。真正的活在主进程做（pdf-lib 跑在 Node 侧），渲染端
+// 只管把路径与页数递进来、把结果画出来。
+ipcMain.handle('split-pdf', async (_event, payload: unknown): Promise<SplitResult> => {
+  const { path: sourcePath, pagesPerFile } = (payload ?? {}) as { path?: unknown; pagesPerFile?: unknown }
+  if (typeof sourcePath !== 'string' || !sourcePath) return { ok: false, error: 'BAD_PATH' }
+  if (typeof pagesPerFile !== 'number') return { ok: false, error: 'INVALID_PAGES' }
+  const result = await splitPdfByPageCount(sourcePath, pagesPerFile)
+  // 与导出 docx / pdf / 图片同一个习惯：文件写完就在系统文件管理器里亮出来，
+  // 用户不用自己去翻那个新建的文件夹。
+  if (result.ok && result.dir && result.shards?.length) {
+    shell.showItemInFolder(join(result.dir, result.shards[0].name))
+  }
+  return result
+})
+
 // 渲染端上报当前活动标签页挂着的那份 PDF（切到别的标签页就是 null）：只有它
 // 知道哪个标签页在前台。「另存为」的默认文件名按它取（见 suggestFileName）。
 ipcMain.on('set-active-pdf-path', (event, pdfPath: unknown) => {
@@ -2352,7 +2383,7 @@ function buildMenu(): void {
     ? {
         file: '文件', edit: '编辑', format: '格式', insert: '插入', view: '视图', theme: '主题', window: '窗口', help: '帮助',
         print: '打印', printPage: '打印', printPreview: '打印预览',
-        newFile: '新建markdown', open: '打开', save: '保存', saveAs: '另存为',
+        newFile: '新建markdown', newMdFile: '新建md文件', open: '打开', save: '保存', saveAs: '另存为',
         newTab: '新建标签页', closeTab: '关闭标签页',
         recentOpen: '最近打开', restoreOnLaunch: '启动时打开上次文档', clearRecent: '清除最近记录', noRecent: '没有最近打开的文件',
         exportWord: '导出md为docx', exportHTML: '导出md为HTML', exportPDF: '导出md为PDF', exportImageDesktop: '导出图片（电脑阅读）', exportImageMobile: '导出图片（手机阅读）', find: '查找',
@@ -2370,7 +2401,7 @@ function buildMenu(): void {
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
         importTheme: '导入主题', whatsNew: '新功能演示',
         cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
-        preferences: '偏好设置…',
+        preferences: '偏好设置…', toolbox: '工具箱',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         newCanvasDoc: '新建类docx文档',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
@@ -2385,7 +2416,7 @@ function buildMenu(): void {
     : {
         file: 'File', edit: 'Edit', format: 'Format', insert: 'Insert', view: 'View', theme: 'Theme', window: 'Window', help: 'Help',
         print: 'Print', printPage: 'Print', printPreview: 'Print Preview',
-        newFile: 'New Markdown', open: 'Open', save: 'Save', saveAs: 'Save As',
+        newFile: 'New Markdown', newMdFile: 'New MD File', open: 'Open', save: 'Save', saveAs: 'Save As',
         newTab: 'New Tab', closeTab: 'Close Tab',
         recentOpen: 'Open Recent', restoreOnLaunch: 'Reopen last document at launch', clearRecent: 'Clear Recent', noRecent: 'No recent files',
         exportWord: 'Export MD to DOCX', exportHTML: 'Export MD to HTML', exportPDF: 'Export MD to PDF', exportImageDesktop: 'Export Image (Desktop)', exportImageMobile: 'Export Image (Mobile)', find: 'Find',
@@ -2403,7 +2434,7 @@ function buildMenu(): void {
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
         importTheme: 'Import Theme', whatsNew: "What's New",
         cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
-        preferences: 'Preferences…',
+        preferences: 'Preferences…', toolbox: 'Toolbox',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         newCanvasDoc: 'New DOCX-like Document',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
@@ -2469,10 +2500,21 @@ function buildMenu(): void {
     {
       label: labels.file,
       submenu: [
+        // 已停用：新建markdown（原来是开一个**新窗口**）。新建文档现在一律落在
+        // 当前窗口的标签页里，与「打开」「PDF转md」等行为一致，见下一项。
+        // 底层的 createWindow() 保留未删，取消注释即可恢复。
+        // {
+        //   label: labels.newFile,
+        //   accelerator: 'CmdOrCtrl+N',
+        //   click: () => createWindow()
+        // },
         {
-          label: labels.newFile,
+          // 新建一个空的 Markdown 标签页（不是新窗口）。走的是原本「新建标签页」
+          // 那条还在的通道 —— 渲染端 menu-new-tab → openNewTab()：建标签页、
+          // 切过去、光标落进编辑器。
+          label: labels.newMdFile,
           accelerator: 'CmdOrCtrl+N',
-          click: () => createWindow()
+          click: () => openNewDocumentTab()
         },
         {
           label: labels.open,
@@ -2760,6 +2802,12 @@ function buildMenu(): void {
           label: labels.preferences,
           accelerator: 'CmdOrCtrl+,',
           click: () => sendToFocused('menu-preferences')
+        },
+        // 工具箱：独立工具页（目前只有 PDF拆分）。与「PDF转md / 图片转md」同一
+        // 套路 —— 开在当前窗口的标签页里，不另起窗口。
+        {
+          label: labels.toolbox,
+          click: () => sendToFocused('menu-toolbox-tab')
         },
         { type: 'separator' },
         {

@@ -10,6 +10,7 @@ import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
 import { enterPdfTabChrome, getOpenedPdfPath, initPdfView, leavePdfTab, loadPdfTab } from './pdf-view'
 import { enterImageTabChrome, initImageView, leaveImageTab, loadImageTab } from './image-view'
+import { enterToolTabChrome, initToolView, leaveToolTab, loadToolTab, toolTabLabel, type ToolId } from './tool-view'
 import { initDocBar, type DocFormat } from './doc-bar'
 import { getJsonOrigin, getJsonPath, getJsonText, initJsonView, refreshJsonLayout } from './json-view'
 import { initPrintPreview, showPrintPreview } from './print-preview'
@@ -209,6 +210,15 @@ interface DocumentTab {
   imageTab: boolean
   /** 源图片路径；还没选就是 null，面板显示空态。 */
   imagePath: string | null
+  /**
+   * 工具箱标签页（菜单「帮助 → 工具箱」）：整页工具界面，不是文档编辑器。这里写
+   * 的是当前打开的工具（见 tool-view.ts），非 null 即表示这个标签页是工具页 ——
+   * 与 pdfTab / imageTab 那套布尔标志位同一个用法，只是工具箱以后会有多个工具，
+   * 所以存工具 id 而不是再开一个 boolean。窗口里最多一个工具标签页。
+   */
+  tool: ToolId | null
+  /** 工具当前挂着的源文件（PDF拆分选中的那份 PDF）；没选就是 null。 */
+  toolPath: string | null
   dirty: boolean
   revision: number
   sourceMode: boolean
@@ -261,6 +271,8 @@ function tabLabel(tab: DocumentTab): string {
     if (!tab.imagePath) return isChinese() ? '图片' : 'Image'
     return tab.imagePath.split(/[\\/]/).pop() || tab.imagePath
   }
+  // 工具箱标签页：标题就是工具名（目前只有「PDF拆分」），不带文件名。
+  if (tab.tool) return toolTabLabel(tab.tool)
   return untitledLabel()
 }
 
@@ -584,6 +596,8 @@ function ensureTab(): DocumentTab {
       pdfPath: null,
       imageTab: false,
       imagePath: null,
+      tool: null,
+      toolPath: null,
       dirty: false,
       revision: documentRevision,
       sourceMode: false,
@@ -611,6 +625,8 @@ function ensureTab(): DocumentTab {
     pdfPath: null,
     imageTab: false,
     imagePath: null,
+    tool: null,
+    toolPath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -652,6 +668,8 @@ async function openNewTab(): Promise<void> {
     pdfPath: null,
     imageTab: false,
     imagePath: null,
+    tool: null,
+    toolPath: null,
     dirty: false,
     revision: ++documentRevision,
     sourceMode: false,
@@ -740,6 +758,8 @@ async function openSubmitTab(): Promise<void> {
     pdfPath: null,
     imageTab: false,
     imagePath: null,
+    tool: null,
+    toolPath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -786,6 +806,8 @@ async function openPdfTab(): Promise<void> {
     pdfPath: null,
     imageTab: false,
     imagePath: null,
+    tool: null,
+    toolPath: null,
     dirty: false,
     revision: ++documentRevision,
     sourceMode: false,
@@ -833,6 +855,8 @@ async function openImageTab(): Promise<void> {
     pdfPath: null,
     imageTab: true,
     imagePath: null,
+    tool: null,
+    toolPath: null,
     dirty: false,
     revision: ++documentRevision,
     sourceMode: false,
@@ -861,6 +885,57 @@ async function openImageTab(): Promise<void> {
   focusEditor()
 }
 
+// ─── 工具箱标签页 ───────────────────────────────────────────────────────
+// 菜单「帮助 → 工具箱」：开一个整页工具界面的标签页（目前只有 PDF拆分）。
+// 与上面两种对照页不同，它不是文档编辑器 —— 编辑面整块藏起来（body.tool-view），
+// 也不进保存 / 脏标记体系（没有 Markdown 可存）。窗口里最多一个，已存在就聚焦。
+function openToolTab(tool: ToolId): void {
+  const existing = tabs.find((tab) => tab.tool)
+  if (existing) {
+    // 已经是同一个工具就直接切过去；换成别的工具时把工具换掉（目前只有一个工具，
+    // 这条分支先留着，免得以后加工具时忘了换）。
+    existing.tool = tool
+    void activateTab(existing.id)
+    return
+  }
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'document',
+    filePath: null,
+    pdfTab: false,
+    pdfPath: null,
+    imageTab: false,
+    imagePath: null,
+    tool,
+    toolPath: null,
+    dirty: false,
+    revision: ++documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  tabs.push(tab)
+  activeTabId = tab.id
+  currentFilePath = null
+  // 编辑面归位：提交表单 / 类docx / PDF 对照 / 图片转md 都不属于这个标签页。
+  hideSubmitView()
+  hideCanvasDocView()
+  leavePdfTabChrome()
+  leaveImageTab()
+  // 与未命名文档标签页同一规则：窗口停止指向上一个文档（watcher、标题、最近列表）
+  void window.electronAPI.activateFile(null)
+  reportActiveSource(null)
+  showBlankDocument()
+  enterToolTabChrome()
+  updatePanelVisibility()
+  renderTabBar()
+  // 还没选文件：工具页摆出空态，由里面的「选择 PDF…」把人送去选文件。
+  void loadToolTab(null)
+}
+
 // ─── 类 docx 文档标签页 ────────────────────────────────────────────────
 // 菜单「文件 → 新建类docx文档」：开一个 canvas-editor 标签页（画布排版、
 // 分页的类 Word 文档）。它与提交页同一层级 —— 不是 Markdown 编辑器视图，
@@ -882,6 +957,8 @@ async function openCanvasDocTab(init?: CanvasDocInit): Promise<void> {
     pdfPath: null,
     imageTab: false,
     imagePath: null,
+    tool: null,
+    toolPath: null,
     dirty: false,
     revision: documentRevision,
     sourceMode: false,
@@ -965,6 +1042,9 @@ async function activateTab(id: string): Promise<void> {
       // 那会让右边变成只读的 layout.json。
       setDocFormat('markdown')
     } else leaveImageTab()
+    // 工具箱同理：只有工具标签页才把整页工具界面铺出来。
+    if (target.tool) enterToolTabChrome()
+    else leaveToolTab()
     // 主进程要知道前台这份标签页挂着哪个源文件：「另存为」的默认名按它取。
     reportActiveSource(target)
     // 提交表单标签页：不接管编辑器，只切换视图（编辑面由 CSS +
@@ -978,6 +1058,20 @@ async function activateTab(id: string): Promise<void> {
       document.title = isChinese() ? '提交' : 'Submit'
       renderTabBar()
       submitInputEl().focus()
+      return
+    }
+    // 工具箱标签页：同样不接管编辑器（编辑面由 CSS 的 body.tool-view 收起），
+    // 只有工具页自己的那点状态要说：源文件按标签页记下的路径重新画。
+    if (target.tool) {
+      await window.electronAPI.activateFile(null)
+      activeTabId = target.id
+      currentFilePath = null
+      hideSubmitView()
+      hideCanvasDocView()
+      document.title = toolTabLabel(target.tool)
+      updatePanelVisibility()
+      renderTabBar()
+      void loadToolTab(target.toolPath)
       return
     }
     // 类 docx 文档标签页（canvas-editor）：与提交页同层级 —— 不接管编辑器，
@@ -1247,6 +1341,8 @@ function bindTabBar(api: import('../preload/index').ElectronAPI): void {
   api.onMenuPdfTab(() => { void openPdfTab() })
   // 菜单「文件 → 图片转md」：开图片转md 标签页（已存在就聚焦它）。
   api.onMenuImageTab(() => { void openImageTab() })
+  // 菜单「帮助 → 工具箱」：开工具标签页（目前只有 PDF拆分，已存在就聚焦它）。
+  api.onMenuToolboxTab(() => openToolTab('pdf-split'))
   api.onOpenInNewTab(enqueueTabOpen)
   const handleTabMenuAction = ({ action, tabId }: { action: string; tabId: string }) => {
     if (action === 'close') { void closeTab(tabId); return }
@@ -1588,7 +1684,7 @@ function toggleSourceMode(): void {
 function updatePanelVisibility(): void {
   // PDF 对照 / 图片转md 标签页没有文件面板：左边已经是源文件，右边就是要编辑的
   // 那一个文档。
-  const show = !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab
+  const show = !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab && !activeTab()?.tool
   filePanelEl().hidden = !show
   document.body.classList.toggle('show-file-panel', show)
   fileToggleBtnEl().classList.toggle('active', show)
@@ -2662,6 +2758,15 @@ function applyAppearanceFontSize(): void {
       if (!tab || !tab.imageTab) return
       tab.imagePath = path
       reportActiveSource(tab)
+      renderTabBar()
+    }
+  })
+  // 工具箱（帮助 → 工具箱）：整页工具界面。选中的源文件记回标签页。
+  initToolView(api, {
+    onToolSourceChange: (path) => {
+      const tab = activeTab()
+      if (!tab || !tab.tool) return
+      tab.toolPath = path
       renderTabBar()
     }
   })

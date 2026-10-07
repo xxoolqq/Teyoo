@@ -388,6 +388,68 @@
     <!-- 进度 / 结果提示：转换中与失败原因都写在这里。 -->
     <p id="image-status" class="image-status" aria-live="polite" hidden></p>
   </aside>
+  <!-- 工具箱标签页（菜单「帮助 → 工具箱」）：整页工具界面，铺满编辑区（不显示
+       编辑器与工具栏，见 base.css 的 body.tool-view）。默认隐藏，tool-view.ts 在
+       切进该标签页时显示。目前只有一个工具：PDF拆分。 -->
+  <div id="tool-panel" hidden>
+    <div class="tool-sheet">
+      <h1 id="tool-title" class="tool-title"></h1>
+      <p id="tool-subtitle" class="tool-subtitle"></p>
+      <!-- 与参考界面同一条「✓ 免费 / ✓ 在线 / …」节奏，只是把「在线」换成
+           「离线」—— 这个工具全程在本机做，文件不上传。 -->
+      <ul id="tool-badges" class="tool-badges"><li></li><li></li><li></li><li></li></ul>
+
+      <!-- 源文件区：没选文件是空态，选了就换成文件卡片 -->
+      <div class="tool-source">
+        <div id="tool-empty" class="tool-empty">
+          <p id="tool-empty-text" class="tool-empty-text"></p>
+          <button id="tool-open-btn" class="tool-outline-btn" type="button"></button>
+        </div>
+        <div id="tool-file" class="tool-file" hidden>
+          <!-- 缩略图 = 第一页；点它放大看（放大镜那个图标的作用）。 -->
+          <button id="tool-thumb-btn" class="tool-thumb" type="button">
+            <img id="tool-thumb" alt="" />
+            <!-- 参考界面那个放大镜：提示「点这里能放大看」 -->
+            <svg class="tool-thumb-zoom" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <path d="M10.4 10.4 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </button>
+          <div class="tool-file-info">
+            <div id="tool-file-name" class="tool-file-name"></div>
+            <div id="tool-file-meta" class="tool-file-meta"></div>
+            <div class="tool-file-actions">
+              <button id="tool-replace-btn" class="tool-outline-btn" type="button"></button>
+              <button id="tool-remove-btn" class="tool-outline-btn is-danger" type="button"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 设置行：与参考界面一致（模式下拉 + 页面/PDF 数字框）。
+           模式目前只有一项，留着这个下拉是为了以后加「按页码范围」之类的模式。 -->
+      <div class="tool-settings">
+        <label class="tool-field">
+          <span id="tool-mode-label" class="tool-field-label"></span>
+          <select id="tool-mode" class="tool-select">
+            <option value="pages-per-file"></option>
+          </select>
+        </label>
+        <label class="tool-field">
+          <span id="tool-pages-label" class="tool-field-label"></span>
+          <input id="tool-pages" class="tool-input" type="number" min="1" step="1" value="1" />
+        </label>
+      </div>
+
+      <button id="tool-split-btn" class="tool-primary" type="button" disabled></button>
+      <p id="tool-status" class="tool-status" aria-live="polite" hidden></p>
+      <ul id="tool-result" class="tool-result" hidden></ul>
+    </div>
+    <!-- 放大预览层：点缩略图打开，点任意处 / Esc 收起。 -->
+    <div id="tool-preview" class="tool-preview" hidden>
+      <img id="tool-preview-img" alt="" />
+    </div>
+  </div>
   <!-- 右侧栏顶部条：文档格式切换 + 保存 + 复制当前内容。只在 PDF 对照标签页显示
        （base.css 的 body.pdf-view），普通标签页那一行是标签条 + 格式工具栏。 -->
   <div id="doc-bar">

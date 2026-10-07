@@ -15,6 +15,21 @@ type CanvasEditorData = { header?: unknown[]; main: unknown[]; footer?: unknown[
 // layout.json → 右侧 JSON，没解析过就没有。渲染端无法自己 fetch file://，只能
 // 由主进程读盘送过来，所以「打开 PDF…」和「切回 PDF 标签页」都是这个形状。
 type PickPdfResult = { path: string; data: Uint8Array; markdownPath?: string; jsonPath?: string }
+// 「工具箱 → PDF拆分」的结果（主进程 pdf-split.ts 的形状，同上面一个理由在本地重声明）。
+export interface PdfSplitShard {
+  name: string
+  startPage: number
+  endPage: number
+  bytes: number
+}
+export interface PdfSplitResult {
+  ok: boolean
+  /** 输出文件夹（原 PDF 同级的 <原名>_拆分_<日期>/） */
+  dir?: string
+  shards?: PdfSplitShard[]
+  pageCount?: number
+  error?: string
+}
 // 在线解析（MinerU）的两份载荷在这里重新声明，而不是 import 主进程那份：
 // preload 是独立 bundle（tsconfig.preload.json 只收 src/preload），跨工程 import
 // 会让 tsc 报 TS6307（文件不在工程列表里）。
@@ -120,6 +135,8 @@ export interface ElectronAPI {
   // 上报当前活动标签页挂着的那份 PDF（切到别的标签页就传 null）：主进程用它给
   // 「另存为」起默认文件名。
   setActivePdfPath: (path: string | null) => void
+  // 工具箱的 PDF拆分：按「每 N 页一份」切开，写进原文件旁边的 <原名>_拆分_<日期>/。
+  splitPdf: (path: string, pagesPerFile: number) => Promise<PdfSplitResult>
   // 图片转md 标签页挂着的那张图片：主进程用它给「另存为」起默认文件名。
   setActiveImagePath: (path: string | null) => void
   // 上报前台标签页类型。类 docx 文档（canvas-editor）标签页有自己的打印通道，
@@ -167,6 +184,8 @@ export interface ElectronAPI {
   onMenuImageTab: (callback: () => void) => void
   // 菜单「文件 → 新建类docx文档」：开一个 canvas-editor 标签页。
   onMenuNewCanvasDoc: (callback: () => void) => void
+  // 菜单「帮助 → 工具箱」：开一个工具箱标签页（目前是 PDF拆分）。
+  onMenuToolboxTab: (callback: () => void) => void
   onMenuExportPDF: (callback: () => void) => void
   /** 菜单「打印 → 打印预览」：预览层在渲染端（main 先把 PDF 生成好） */
   onMenuPrintPreview: (callback: () => void) => void
@@ -248,6 +267,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickPdfFile: () => ipcRenderer.invoke('pick-pdf-file') as Promise<PickPdfResult | null>,
   readPdfFile: (path: string) => ipcRenderer.invoke('read-pdf-file', path) as Promise<PickPdfResult | null>,
   setActivePdfPath: (path: string | null) => ipcRenderer.send('set-active-pdf-path', path),
+  splitPdf: (path: string, pagesPerFile: number) =>
+    ipcRenderer.invoke('split-pdf', { path, pagesPerFile }) as Promise<PdfSplitResult>,
   setActiveImagePath: (path: string | null) => ipcRenderer.send('set-active-image-path', path),
   setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => ipcRenderer.send('set-active-tab-kind', kind),
   parsePdfOnline: (pdfPath: string) => ipcRenderer.invoke('mineru-parse', pdfPath) as Promise<MineruParseResponse>,
@@ -320,6 +341,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMenuNewCanvasDoc: (callback: () => void) => {
     ipcRenderer.on('menu-new-canvas-doc', () => callback())
+  },
+  onMenuToolboxTab: (callback: () => void) => {
+    ipcRenderer.on('menu-toolbox-tab', () => callback())
   },
   onMenuSaveAs: (callback: () => void) => {
     ipcRenderer.on('menu-save-as', () => callback())
