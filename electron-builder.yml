@@ -11,11 +11,24 @@ files:
   # All runtime JavaScript is bundled by electron-vite. Do not let
   # electron-builder copy the complete production dependency tree into app.asar.
   - '!node_modules/**/*'
+  # ...with one exception: @napi-rs/canvas is a native module (the Skia .node
+  # binary), so rollup cannot bundle it and the main process requires it from
+  # node_modules at runtime (see the `external` list in electron.vite.config.ts).
+  # Dropping it broke "docx转md" in installed builds: the WMF/EMF branch of
+  # docx-import.js died with `Cannot find module '@napi-rs/canvas'`.
+  # The wildcard also picks up the platform binary package
+  # (@napi-rs/canvas-win32-x64-msvc / -darwin-arm64 / -linux-x64-gnu …) that
+  # @napi-rs/canvas loads internally. ~37 MB unpacked, mostly Skia.
+  - 'node_modules/@napi-rs/**/*'
 
+# Native .node files cannot be dlopen'd from inside an asar archive, so keep
+# the automatic unpacking heuristics off but unpack the one native module we
+# ship: Electron resolves it from app.asar.unpacked.
 asar:
-  # The packaged app has no native modules. Avoid builder's broad automatic
-  # unpacking heuristics and keep the archive self-contained.
   smartUnpack: false
+
+asarUnpack:
+  - node_modules/@napi-rs/**/*
 
 # ColaMD provides its own Chinese/English UI and only needs these Chromium
 # locale resources. Keeping every Electron locale adds tens of megabytes.
