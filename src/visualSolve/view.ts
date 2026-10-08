@@ -381,7 +381,10 @@ function renderSteps(): void {
     badge.textContent = String(step.index)
     const title = document.createElement('span')
     title.className = 'solver-step-title'
-    title.textContent = step.title || (zh ? '（这一步）' : '(step)')
+    // 标题里常有公式（"第 7 步：在约束下求 $\dfrac{m^2+n^2}{k^2}$ 的下确界"），
+    // 与正文走同一条行内渲染；空标题的占位仍是纯文本。
+    if (step.title) appendInline(title, step.title)
+    else title.textContent = zh ? '（这一步）' : '(step)'
     head.append(badge, title)
     card.append(head)
     const body = document.createElement('div')
@@ -410,7 +413,8 @@ function renderSteps(): void {
     extra.className = 'solver-extra'
     const label = document.createElement('div')
     label.className = 'solver-extra-label'
-    label.textContent = item.title
+    // 追问的标题就是用户的问题，可能带行内公式 —— 与步骤标题同一条渲染。
+    appendInline(label, item.title)
     const body = document.createElement('div')
     renderRich(body, item.body)
     extra.append(label, body)
