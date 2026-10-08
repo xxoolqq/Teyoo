@@ -3006,6 +3006,482 @@ body.tool-view #file-panel,
 body.tool-view #panel-resizer {
   display: none;
 }
+/* ─── 可视化解题标签页（菜单「帮助 → 可视化解题」）────────────────────────────
+   与工具箱同一手法：body.solver-view 收起编辑面（编辑器 / 工具栏 / 文件面板 /
+   助手侧边栏都不出现），解题面板自己铺满编辑区。默认隐藏，切进该标签页时由
+   src/visualSolve/view.ts 显示。 */
+body.solver-view {
+  --toolbar-height: 0px;
+}
+
+body.solver-view #toolbar,
+body.solver-view #editor,
+body.solver-view #source-editor,
+body.solver-view #doc-bar,
+body.solver-view #doc-json,
+body.solver-view #file-toggle-btn,
+body.solver-view #file-panel,
+body.solver-view #panel-resizer,
+body.solver-view #assistant-panel {
+  display: none;
+}
+
+#solver-panel {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px));
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+#solver-panel[hidden] {
+  display: none;
+}
+
+.solver-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--shell-line);
+}
+
+.solver-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.solver-model {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.solver-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.solver-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 8px;
+}
+
+.solver-problem {
+  max-width: 900px;
+  margin: 0 auto 18px;
+}
+
+.solver-input {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--shell-line);
+  border-radius: 8px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.solver-problem-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.solver-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.solver-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  font-size: 12px;
+}
+
+.solver-chip-remove {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.solver-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--shell-line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.solver-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.solver-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.solver-btn-primary {
+  border-color: transparent;
+  background: var(--link-color);
+  color: #fff;
+}
+
+.solver-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--link-color);
+}
+
+.solver-steps {
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.solver-empty,
+.solver-streaming {
+  opacity: 0.6;
+  font-size: 13px;
+}
+
+.solver-intro {
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.solver-step {
+  border: 1px solid var(--shell-line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--text-color) 2%, transparent);
+}
+
+.solver-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.solver-step-index {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--link-color);
+  color: #fff;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.solver-step-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.solver-step-body,
+.solver-answer-body,
+.solver-extra > div {
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.solver-step-body p,
+.solver-answer-body p {
+  margin: 6px 0;
+}
+
+.solver-math-block {
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.solver-graphic {
+  margin-top: 8px;
+  border: 1px dashed var(--shell-line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.solver-graphic-head {
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.solver-graphic pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+
+/* 沙箱回传的 SVG：用 <img> 显示（独立文档，安全） */
+.solver-graphic-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 4px 0;
+}
+
+/* 步骤播放器：逐步看 / 一次看全 */
+.solver-player {
+  max-width: 900px;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.solver-player[hidden] {
+  display: none;
+}
+
+.solver-progress {
+  margin-left: auto;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* 题型模板：轻量胶囊，点一下把该题型的"要求"补进这一轮 */
+.solver-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.solver-template {
+  padding: 2px 10px;
+  border: 1px solid var(--shell-line);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.solver-template:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.solver-template.active {
+  border-color: transparent;
+  background: var(--link-color);
+  color: #fff;
+}
+
+/* 自由参数滑块：拖了就重画 */
+.solver-params {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.solver-param {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.solver-param-name {
+  flex: none;
+  min-width: 1.2em;
+  font-family: var(--mono-font, monospace);
+}
+
+.solver-param input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--link-color);
+}
+
+.solver-param-value {
+  flex: none;
+  min-width: 3em;
+  text-align: right;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 复核卡片：单独一张，摆在步骤上方 */
+.solver-review {
+  max-width: 900px;
+  margin: 0 auto 12px;
+  border: 1px solid color-mix(in srgb, var(--link-color) 40%, var(--shell-line));
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--link-color) 6%, transparent);
+}
+
+.solver-review[hidden] {
+  display: none;
+}
+
+.solver-review-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  opacity: 0.75;
+}
+
+.solver-review-body {
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.solver-review-body p {
+  margin: 6px 0;
+}
+
+/* 历史面板：从头部按钮下拉，占满宽度的一栏 */
+.solver-history {
+  flex: none;
+  max-height: 42vh;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--shell-line);
+  padding: 8px 18px 12px;
+  background: color-mix(in srgb, var(--text-color) 3%, transparent);
+}
+
+.solver-history[hidden] {
+  display: none;
+}
+
+.solver-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.solver-history-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.solver-history-row:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.solver-history-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.solver-history-time {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.solver-answer {
+  border: 1px solid color-mix(in srgb, var(--assistant-ok, #2f9e5f) 45%, var(--shell-line));
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--assistant-ok, #2f9e5f) 7%, transparent);
+}
+
+.solver-answer-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  opacity: 0.75;
+}
+
+.solver-extra {
+  border-left: 3px solid var(--shell-line);
+  padding-left: 10px;
+}
+
+.solver-extra-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  opacity: 0.8;
+}
+
+.solver-ask {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--shell-line);
+}
+
+.solver-ask-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--shell-line);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.solver-status {
+  flex: none;
+  margin: 0;
+  padding: 6px 18px 10px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.solver-status-error {
+  color: var(--assistant-danger, #d14343);
+  opacity: 1;
+}
 
 #tool-panel {
   height: calc(100vh - 40px - var(--tab-bar-height, 0px));

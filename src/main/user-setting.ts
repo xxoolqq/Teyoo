@@ -115,6 +115,14 @@ export interface UserSetting {
      */
     sidebarOpen: boolean
   }
+  // 可视化解题（「帮助 → 可视化解题」开的整页标签页）。
+  // 三个字段**留空即沿用上面的 assistant 配置** —— 只想给解题换个更会推理的模型
+  // 时，只填 model 就行（密钥/端点跟侧边栏共用）。
+  visualSolve: {
+    baseUrl: string
+    apiKey: string
+    model: string
+  }
 }
 
 /** 工作目录的默认值（渲染端 preferences-modal.ts 里的 DEFAULT_WORK_DIR 与此同一份）。 */
@@ -188,6 +196,14 @@ const DEFAULT_SETTING: UserSetting = {
     model: 'deepseek-chat',
     // 默认关：不打扰，用户自己去 外观 里打开。
     sidebarOpen: false,
+  },
+  visualSolve: {
+    // 留空 = 沿用 assistant 的端点
+    baseUrl: '',
+    // 留空 = 沿用 assistant 的密钥
+    apiKey: '',
+    // 留空 = 沿用 assistant 的模型；解题想用更会推理的模型就在这里填
+    model: '',
   },
 }
 

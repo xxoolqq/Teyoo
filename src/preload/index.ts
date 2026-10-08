@@ -61,6 +61,14 @@ export interface AssistantMessage {
   /** 纯文本，或分片数组（多模态） */
   content: string | AssistantContentPart[]
 }
+/** 可视化解题的一条历史：题目 + 模型原文 + 时间（id 由渲染端生成） */
+export interface VisualSolveHistoryEntry {
+  id: string
+  problem: string
+  answer: string
+  at: number
+}
+
 export interface AssistantResult {
   ok: boolean
   /** 成功时的完整回答（Markdown） */
@@ -191,6 +199,21 @@ export interface ElectronAPI {
   // 「停止生成」：中止本窗口正在跑的那一个流。
   assistantCancel: () => void
   onAssistantDelta: (callback: (payload: { text: string }) => void) => void
+  // 可视化解题：与文档助手同一套对话接口，但走**独立的一条流**（channel: 'solver'），
+  // 两边同时用不会互相打断；连接信息见偏好设置里的「可视化解题」。
+  visualSolveStream: (messages: AssistantMessage[]) => Promise<AssistantResult>
+  visualSolveCancel: () => void
+  onVisualSolveDelta: (callback: (payload: { text: string }) => void) => void
+  /** 可视化解题的非流式调用（偏好设置里的「测试连接」用；走 solver 通道与配置） */
+  visualSolveComplete: (messages: AssistantMessage[]) => Promise<AssistantResult>
+  /** 解题历史（最近 50 条，存 userData/visual-solve-history.json，不进设置文件） */
+  visualSolveHistory: () => Promise<VisualSolveHistoryEntry[]>
+  visualSolveHistoryAdd: (entry: VisualSolveHistoryEntry) => Promise<boolean>
+  visualSolveHistoryClear: () => Promise<boolean>
+  /** 把解题过程存成 .md 文件（弹保存对话框，返回落盘路径） */
+  visualSolveSave: (markdown: string, name?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
+  /** 菜单「帮助 → 可视化解题」 */
+  onMenuSolverTab: (callback: () => void) => void
   // 文档助手附件：选文件（可多选）→ 主进程把它转成文本再交给模型
   // （图片=data URL + 可选公式、pdf=MinerU、docx=本地转换、md/txt=直读）。
   pickAssistantAttachment: () => Promise<AssistantAttachment[]>
@@ -334,9 +357,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('assistant-complete', { messages }) as Promise<AssistantResult>,
   assistantStream: (messages: AssistantMessage[]) =>
     ipcRenderer.invoke('assistant-stream', { messages }) as Promise<AssistantResult>,
-  assistantCancel: () => ipcRenderer.send('assistant-cancel'),
+  assistantCancel: () => ipcRenderer.send('assistant-cancel', { channel: 'assistant' }),
   onAssistantDelta: (callback: (payload: { text: string }) => void) => {
-    ipcRenderer.on('assistant-delta', (_event, payload: { text: string }) => callback(payload))
+    ipcRenderer.on('assistant-delta', (_event, payload: { text: string; channel?: string }) => {
+      // 可视化解题那条流有自己的监听者（onVisualSolveDelta），别串台
+      if (payload?.channel === 'solver') return
+      callback(payload)
+    })
+  },
+  visualSolveStream: (messages: AssistantMessage[]) =>
+    ipcRenderer.invoke('assistant-stream', { messages, channel: 'solver' }) as Promise<AssistantResult>,
+  visualSolveCancel: () => ipcRenderer.send('assistant-cancel', { channel: 'solver' }),
+  visualSolveComplete: (messages: AssistantMessage[]) =>
+    ipcRenderer.invoke('assistant-complete', { messages, channel: 'solver' }) as Promise<AssistantResult>,
+  visualSolveHistory: () => ipcRenderer.invoke('visual-solve-history') as Promise<VisualSolveHistoryEntry[]>,
+  visualSolveHistoryAdd: (entry: VisualSolveHistoryEntry) =>
+    ipcRenderer.invoke('visual-solve-history-add', entry) as Promise<boolean>,
+  visualSolveHistoryClear: () => ipcRenderer.invoke('visual-solve-history-clear') as Promise<boolean>,
+  visualSolveSave: (markdown: string, name?: string) =>
+    ipcRenderer.invoke('visual-solve-save', { markdown, name }) as Promise<{ ok: boolean; path?: string; error?: string }>,
+  onVisualSolveDelta: (callback: (payload: { text: string }) => void) => {
+    ipcRenderer.on('assistant-delta', (_event, payload: { text: string; channel?: string }) => {
+      if (payload?.channel !== 'solver') return
+      callback(payload)
+    })
   },
   pickAssistantAttachment: () => ipcRenderer.invoke('assistant-pick-attachment') as Promise<AssistantAttachment[]>,
   ocrAssistantImage: (path: string) => ipcRenderer.invoke('assistant-ocr-image', path) as Promise<AssistantOcrResult>,
@@ -417,6 +461,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMenuToolboxTab: (callback: () => void) => {
     ipcRenderer.on('menu-toolbox-tab', () => callback())
+  },
+  onMenuSolverTab: (callback: () => void) => {
+    ipcRenderer.on('menu-solver-tab', () => callback())
   },
   onMenuSaveAs: (callback: () => void) => {
     ipcRenderer.on('menu-save-as', () => callback())

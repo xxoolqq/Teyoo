@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Vision Sandbox</title>
+    <!-- 可视化解题的绘图沙箱页（菜单「帮助 → 可视化解题」里的函数图像 / 几何图）。
+         只在这一页里加载 function-plot / JSXGraph，画完把**序列化后的 SVG** 回传给
+         宿主（src/visualSolve/sandbox-bridge.ts），库对象一个都不出去。 -->
+  </head>
+  <body style="margin: 0; background: transparent">
+    <div id="stage"></div>
+    <script type="module" src="./sandbox/vision-sandbox.ts"></script>
+  </body>
+</html>

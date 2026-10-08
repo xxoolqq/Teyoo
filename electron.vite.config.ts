@@ -55,7 +55,9 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
-          'mermaid-sandbox': resolve(__dirname, 'src/renderer/mermaid-sandbox.html')
+          'mermaid-sandbox': resolve(__dirname, 'src/renderer/mermaid-sandbox.html'),
+          // 可视化解题的绘图沙箱（function-plot / JSXGraph 只在这一页里加载）
+          'vision-sandbox': resolve(__dirname, 'src/renderer/vision-sandbox.html')
         }
       }
     }

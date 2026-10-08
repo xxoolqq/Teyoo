@@ -1807,39 +1807,50 @@ ipcMain.handle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruPa
 ipcMain.handle('assistant-complete', async (_event, payload: unknown): Promise<ChatResult> => {
   const clean = readAssistantMessages(payload)
   if (!clean) return { ok: false, error: 'BAD_MESSAGES' }
-  return completeChat({ ...assistantConnection(), messages: clean })
+  return completeChat({ ...streamConnection(readStreamChannel(payload)), messages: clean })
 })
 
 // 文档助手的流式版本：每收到一块就经 assistant-delta 推给发起的那窗口。
 // 同一窗口同一时刻只允许一个在跑（发起新的先中止旧的）—— 侧边栏也只有一个输入框。
-const assistantStreams = new Map<number, AbortController>()
+const assistantStreams = new Map<string, AbortController>()
+
+/** 窗口 + 通道：侧边栏助手与可视化解题各占一条流，互不打断（同一个窗口可以同时跑）。 */
+type StreamChannel = 'assistant' | 'solver'
+function readStreamChannel(payload: unknown): StreamChannel {
+  return (payload as { channel?: unknown })?.channel === 'solver' ? 'solver' : 'assistant'
+}
+/** 通道 → 用哪套连接信息：可视化解题的字段留空就沿用文档助手的。 */
+function streamConnection(channel: StreamChannel): { baseUrl: string; apiKey: string; model: string } {
+  return channel === 'solver' ? visualSolveConnection() : assistantConnection()
+}
 
 ipcMain.handle('assistant-stream', async (event, payload: unknown): Promise<ChatResult> => {
   const win = getWinFromEvent(event)
   if (!win) return { ok: false, error: 'NO_WINDOW' }
   const clean = readAssistantMessages(payload)
   if (!clean) return { ok: false, error: 'BAD_MESSAGES' }
-  const senderId = event.sender.id
-  assistantStreams.get(senderId)?.abort()
+  const channel = readStreamChannel(payload)
+  const key = `${event.sender.id}:${channel}`
+  assistantStreams.get(key)?.abort()
   const controller = new AbortController()
-  assistantStreams.set(senderId, controller)
+  assistantStreams.set(key, controller)
   try {
     return await streamChat(
-      { ...assistantConnection(), messages: clean },
+      { ...streamConnection(channel), messages: clean },
       (chunk) => {
         if (win.isDestroyed()) return
-        win.webContents.send('assistant-delta', { text: chunk })
+        win.webContents.send('assistant-delta', { text: chunk, channel })
       },
       controller.signal
     )
   } finally {
-    if (assistantStreams.get(senderId) === controller) assistantStreams.delete(senderId)
+    if (assistantStreams.get(key) === controller) assistantStreams.delete(key)
   }
 })
 
-// 「停止生成」：中止发起窗口那一个流（其余窗口不受影响）
-ipcMain.on('assistant-cancel', (event) => {
-  assistantStreams.get(event.sender.id)?.abort()
+// 「停止生成」：中止发起窗口那一条流（按通道；其余窗口不受影响）
+ipcMain.on('assistant-cancel', (event, payload?: unknown) => {
+  assistantStreams.get(`${event.sender.id}:${readStreamChannel(payload)}`)?.abort()
 })
 
 // ─── 文档助手：附件与公式识别 ──────────────────────────────────────────
@@ -1877,6 +1888,62 @@ ipcMain.handle('assistant-pick-attachment', async (event) => {
 ipcMain.handle('assistant-ocr-image', async (_event, filePath: unknown) => {
   if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'BAD_PATH' }
   return ocrImageToLatex(filePath, attachmentOptions())
+})
+
+// ─── 可视化解题：历史记录 + 另存为 ─────────────────────────────────────
+// 历史存在 userData 的独立文件里，**不塞进 userSetting.json** —— 那是设置，会被
+// 每次写盘整份重写，塞正文进去既臃肿又容易互相踩。保留最近 N 条，超了丢最老的。
+const VISUAL_SOLVE_HISTORY_MAX = 50
+function visualSolveHistoryPath(): string {
+  return join(app.getPath('userData'), 'visual-solve-history.json')
+}
+function readVisualSolveHistory(): unknown[] {
+  try {
+    const parsed = JSON.parse(readFileSync(visualSolveHistoryPath(), 'utf-8'))
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    // 文件不存在 / 坏了都当空历史（不是错误）
+    return []
+  }
+}
+function writeVisualSolveHistory(items: unknown[]): void {
+  try {
+    writeFileSync(visualSolveHistoryPath(), JSON.stringify(items.slice(0, VISUAL_SOLVE_HISTORY_MAX)), 'utf-8')
+  } catch {
+    /* 写不进去就算了：历史是附赠品，不该打断解题 */
+  }
+}
+
+ipcMain.handle('visual-solve-history', () => readVisualSolveHistory())
+
+ipcMain.handle('visual-solve-history-add', (_event, entry: unknown) => {
+  const item = entry as { id?: unknown; problem?: unknown; answer?: unknown; at?: unknown }
+  if (typeof item?.id !== 'string' || typeof item?.problem !== 'string' || typeof item?.answer !== 'string') return false
+  const clean = { id: item.id, problem: item.problem.slice(0, 4000), answer: item.answer.slice(0, 200_000), at: Number(item.at) || Date.now() }
+  writeVisualSolveHistory([clean, ...readVisualSolveHistory()])
+  return true
+})
+
+ipcMain.handle('visual-solve-history-clear', () => {
+  writeVisualSolveHistory([])
+  return true
+})
+
+// 「保存为 .md」：解题过程存成文件（弹保存对话框；文件名由渲染端给个建议）
+ipcMain.handle('visual-solve-save', async (event, payload: unknown) => {
+  const { markdown, name } = (payload ?? {}) as { markdown?: unknown; name?: unknown }
+  if (typeof markdown !== 'string' || !markdown.trim()) return { ok: false, error: 'EMPTY' }
+  const suggested = typeof name === 'string' && name.trim() ? name.trim() : '可视化解题.md'
+  const win = getWinFromEvent(event)
+  const options = { defaultPath: suggested, filters: [{ name: 'Markdown', extensions: ['md'] }] }
+  const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+  if (result.canceled || !result.filePath) return { ok: false, error: 'CANCELED' }
+  try {
+    writeFileSync(result.filePath, markdown, 'utf-8')
+    return { ok: true, path: result.filePath }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
 })
 
 // 「粘贴的图片」：剪切板里的图先落成临时文件，再按普通图片附件走
@@ -1955,6 +2022,17 @@ function readAssistantMessages(payload: unknown): ChatMessage[] | null {
     clean.push({ role, content })
   }
   return clean
+}
+
+/**
+ * 可视化解题的连接信息：字段留空就沿用文档助手那套（端点/密钥共用），
+ * 所以「只想给解题换个模型」只需要填 visualSolve.model 一项。
+ */
+function visualSolveConnection(): { baseUrl: string; apiKey: string; model: string } {
+  const fallback = assistantConnection()
+  const pick = (key: 'baseUrl' | 'apiKey' | 'model'): string =>
+    (getUserSettingByPath<string>(`visualSolve.${key}`) ?? '').trim() || fallback[key]
+  return { baseUrl: pick('baseUrl'), apiKey: pick('apiKey'), model: pick('model') }
 }
 
 /** 连接信息每次现读偏好设置：改完不用重启。密钥约定见 user-setting.ts。 */
@@ -2570,7 +2648,7 @@ function buildMenu(): void {
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
         importTheme: '导入主题', whatsNew: '新功能演示',
         cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
-        preferences: '偏好设置…', toolbox: '工具箱',
+        preferences: '偏好设置…', toolbox: '工具箱', visualSolve: '可视化解题',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         newCanvasDoc: '新建类docx文档',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
@@ -2603,7 +2681,7 @@ function buildMenu(): void {
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
         importTheme: 'Import Theme', whatsNew: "What's New",
         cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
-        preferences: 'Preferences…', toolbox: 'Toolbox',
+        preferences: 'Preferences…', toolbox: 'Toolbox', visualSolve: 'Visual Solver',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         newCanvasDoc: 'New DOCX-like Document',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
@@ -2977,6 +3055,12 @@ function buildMenu(): void {
         {
           label: labels.toolbox,
           click: () => sendToFocused('menu-toolbox-tab')
+        },
+        // 可视化解题：整页解题标签页（题目输入 / 分步求解 / 步骤插入正文）。
+        // 与工具箱同一套路 —— 开在当前窗口的标签页里。
+        {
+          label: labels.visualSolve,
+          click: () => sendToFocused('menu-solver-tab')
         },
         { type: 'separator' },
         {

@@ -1,4 +1,4 @@
-import { createEditor, flashHeadingOnArrival, focusEditor, getEditorView, getMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, applyFont } from './editor/editor'
+import { createEditor, flashHeadingOnArrival, focusEditor, getEditorView, getMarkdown, insertMarkdownAtCursor, getSelectionMarkdown, onEditorJumpPhase, setMarkdown, showMathModal, setMathModalLanguage, releaseMermaidRenderer, getEditorState, restoreEditorState, applyMarkdownStyle, applyFont } from './editor/editor'
 import { setupToolbar, toggleToolbarVisible, runToolbarCommand } from './toolbar'
 import { setCurrentImageFilePath } from '../extensions/image-style'
 import { detectMarkdownStyle } from './editor/markdown-style'
@@ -10,6 +10,9 @@ import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
 import { enterPdfTabChrome, getOpenedPdfPath, initPdfView, leavePdfTab, loadPdfTab } from './pdf-view'
 import { enterImageTabChrome, initImageView, leaveImageTab, loadImageTab } from './image-view'
+// 可视化解题（菜单「帮助 → 可视化解题」）：整页解题标签页。模块自己的代码全在
+// src/visualSolve/ 下，这里只做标签页与编辑器两边的接线。
+import { enterSolverTabChrome, initVisualSolve, leaveSolverTab } from '../visualSolve'
 import { enterToolTabChrome, initToolView, leaveToolTab, loadToolTab, toolTabLabel, type ToolId } from './tool-view'
 import { initAssistant, refreshAssistantContext, setAssistantOpen } from './assistant'
 import { initDocBar, type DocFormat } from './doc-bar'
@@ -220,6 +223,12 @@ interface DocumentTab {
   tool: ToolId | null
   /** 工具当前挂着的源文件（PDF拆分选中的那份 PDF）；没选就是 null。 */
   toolPath: string | null
+  /**
+   * 是不是「可视化解题」标签页（菜单「帮助 → 可视化解题」）：整页解题界面，
+   * 不接管编辑器、不进保存/脏标记体系。与 tool 同一用法，只是没有"多种模式"，
+   * 所以用布尔即可（可选字段：其余标签页的字面量不必逐个补）。
+   */
+  solver?: boolean
   dirty: boolean
   revision: number
   sourceMode: boolean
@@ -257,6 +266,7 @@ const PDF_SUFFIX = /\.pdf$/i
 
 function tabLabel(tab: DocumentTab): string {
   if (tab.kind === 'submit') return isChinese() ? '提交' : 'Submit'
+  if (tab.solver) return isChinese() ? '可视化解题' : 'Visual Solver'
   if (tab.kind === 'canvas') return canvasDocTabLabel()
   if (tab.filePath) {
     const name = tab.filePath.split(/[\\/]/).pop() || tab.filePath
@@ -937,6 +947,54 @@ function openToolTab(tool: ToolId): void {
   void loadToolTab(null)
 }
 
+// ─── 可视化解题标签页 ──────────────────────────────────────────────────
+// 菜单「帮助 → 可视化解题」：开一个整页解题界面（题目输入 / 分步解答 / 插入正文）。
+// 与工具箱一样不是文档编辑器 —— 编辑面整块藏起来（body.solver-view），也不进
+// 保存 / 脏标记体系。窗口里最多一个，已存在就聚焦。
+function openSolverTab(): void {
+  const existing = tabs.find((tab) => tab.solver)
+  if (existing) {
+    void activateTab(existing.id)
+    return
+  }
+  captureActiveTab()
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'document',
+    filePath: null,
+    pdfTab: false,
+    pdfPath: null,
+    imageTab: false,
+    imagePath: null,
+    tool: null,
+    toolPath: null,
+    solver: true,
+    dirty: false,
+    revision: ++documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  tabs.push(tab)
+  activeTabId = tab.id
+  currentFilePath = null
+  // 编辑面归位：其它整页视图都不属于这个标签页。
+  hideSubmitView()
+  hideCanvasDocView()
+  leavePdfTabChrome()
+  leaveImageTab()
+  // 与未命名文档标签页同一规则：窗口停止指向上一个文档（watcher、标题、最近列表）
+  void window.electronAPI.activateFile(null)
+  reportActiveSource(null)
+  showBlankDocument()
+  enterSolverTabChrome()
+  updatePanelVisibility()
+  renderTabBar()
+}
+
 // ─── 类 docx 文档标签页 ────────────────────────────────────────────────
 // 菜单「文件 → 新建类docx文档」：开一个 canvas-editor 标签页（画布排版、
 // 分页的类 Word 文档）。它与提交页同一层级 —— 不是 Markdown 编辑器视图，
@@ -1046,6 +1104,9 @@ async function activateTab(id: string): Promise<void> {
     // 工具箱同理：只有工具标签页才把整页工具界面铺出来。
     if (target.tool) enterToolTabChrome()
     else leaveToolTab()
+    // 可视化解题同理（切走时顺带停掉还在跑的那条流）。
+    if (target.solver) enterSolverTabChrome()
+    else leaveSolverTab()
     // 主进程要知道前台这份标签页挂着哪个源文件：「另存为」的默认名按它取。
     reportActiveSource(target)
     // 提交表单标签页：不接管编辑器，只切换视图（编辑面由 CSS +
@@ -1059,6 +1120,19 @@ async function activateTab(id: string): Promise<void> {
       document.title = isChinese() ? '提交' : 'Submit'
       renderTabBar()
       submitInputEl().focus()
+      return
+    }
+    // 可视化解题标签页：不接管编辑器（编辑面由 CSS 的 body.solver-view 收起），
+    // 也没有需要恢复的文档状态 —— 面板自己的会话在模块里活着，切回来就是了。
+    if (target.solver) {
+      await window.electronAPI.activateFile(null)
+      activeTabId = target.id
+      currentFilePath = null
+      hideSubmitView()
+      hideCanvasDocView()
+      document.title = isChinese() ? '可视化解题' : 'Visual Solver'
+      updatePanelVisibility()
+      renderTabBar()
       return
     }
     // 工具箱标签页：同样不接管编辑器（编辑面由 CSS 的 body.tool-view 收起），
@@ -1346,6 +1420,8 @@ function bindTabBar(api: import('../preload/index').ElectronAPI): void {
   api.onMenuImageTab(() => { void openImageTab() })
   // 菜单「帮助 → 工具箱」：开工具标签页（目前只有 PDF拆分，已存在就聚焦它）。
   api.onMenuToolboxTab(() => openToolTab('pdf-split'))
+  // 菜单「帮助 → 可视化解题」：开解题标签页（已存在就聚焦它）。
+  api.onMenuSolverTab(() => openSolverTab())
   api.onOpenInNewTab(enqueueTabOpen)
   const handleTabMenuAction = ({ action, tabId }: { action: string; tabId: string }) => {
     if (action === 'close') { void closeTab(tabId); return }
@@ -1685,9 +1761,13 @@ function toggleSourceMode(): void {
 }
 
 function updatePanelVisibility(): void {
-  // PDF 对照 / 图片转md 标签页没有文件面板：左边已经是源文件，右边就是要编辑的
-  // 那一个文档。
-  const show = !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab && !activeTab()?.tool
+  // 可视化解题标签页整页接管（body.solver-view），顺手把它的外壳收掉 —— 各条
+  // "开别的标签页"的路径最后都会走到这里，leaveSolverTab 幂等，不必逐个补。
+  if (!activeTab()?.solver) leaveSolverTab()
+  // PDF 对照 / 图片转md / 工具箱 / 可视化解题 标签页没有文件面板：左边已经是
+  // 源文件，右边就是要编辑的那一个文档（后两者干脆没有文档）。
+  const show =
+    !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab && !activeTab()?.tool && !activeTab()?.solver
   filePanelEl().hidden = !show
   document.body.classList.toggle('show-file-panel', show)
   fileToggleBtnEl().classList.toggle('active', show)
@@ -2774,6 +2854,37 @@ function applyAppearanceFontSize(): void {
       if (!tab || !tab.tool) return
       tab.toolPath = path
       renderTabBar()
+    }
+  })
+  // 可视化解题（帮助 → 可视化解题）：整页解题界面。产出**不**自动落进文档 ——
+  // 点「插入正文」才走编辑器的插入入口（与侧边栏助手同一个函数）。
+  initVisualSolve(api, {
+    insertMarkdown: (markdown) => {
+      // 当前若停在解题标签页：编辑器里是它那份不可保存的空白状态，直接插等于
+      // 插进虚空。先切回（或新建）一个可编辑的文档标签页，再插。
+      const current = activeTab()
+      const editable = (tab: DocumentTab): boolean =>
+        tab.kind === 'document' && !tab.solver && !tab.tool && !tab.pdfTab && !tab.imageTab
+      if (current && !editable(current)) {
+        const target = [...tabs].reverse().find(editable)
+        if (target) {
+          void activateTab(target.id).then(() => insertMarkdownAtCursor(markdown))
+        } else {
+          void openNewTab().then(() => insertMarkdownAtCursor(markdown))
+        }
+        return true
+      }
+      insertMarkdownAtCursor(markdown)
+      return true
+    },
+    readSelection: () => getSelectionMarkdown(),
+    copyText: (text) => {
+      void navigator.clipboard.writeText(text)
+    },
+    modelLabel: () => {
+      // 留空沿用文档助手的模型（主进程那侧也是这个回退顺序）
+      const model = getPrefs<string>('visualSolve.model') || getPrefs<string>('assistant.model') || ''
+      return model ? (isChinese() ? `模型：${model}` : `Model: ${model}`) : ''
     }
   })
   // 文档助手侧边栏（LLM）：开关在偏好设置 → 外观，产出先落建议卡片、确认后才写入。

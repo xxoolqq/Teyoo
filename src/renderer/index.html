@@ -388,6 +388,60 @@
     <!-- 进度 / 结果提示：转换中与失败原因都写在这里。 -->
     <p id="image-status" class="image-status" aria-live="polite" hidden></p>
   </aside>
+  <!-- 可视化解题标签页（菜单「帮助 → 可视化解题」）：整页解题界面，铺满编辑区
+       （不显示编辑器与工具栏，见 base.css 的 body.solver-view）。默认隐藏，
+       src/visualSolve/view.ts 在切进该标签页时显示它、切走时收起。
+       题目输入（支持截图粘贴）→ 流式分步解答 → 可整段插入正文。 -->
+  <aside id="solver-panel" aria-label="可视化解题" hidden>
+    <div class="solver-head">
+      <span class="solver-title">可视化解题</span>
+      <span id="solver-model" class="solver-model"></span>
+      <span class="solver-head-actions">
+        <button id="solver-history-btn" class="solver-btn" type="button">历史</button>
+        <button id="solver-save-btn" class="solver-btn" type="button">保存为 md</button>
+        <button id="solver-review-btn" class="solver-btn" type="button">复核</button>
+        <button id="solver-insert-btn" class="solver-btn" type="button">插入正文</button>
+        <button id="solver-copy-btn" class="solver-btn" type="button">复制</button>
+        <button id="solver-clear-btn" class="solver-btn" type="button">清空</button>
+      </span>
+    </div>
+    <!-- 解题历史：最近 50 条（userData/visual-solve-history.json），点一条就能载回面板 -->
+    <div id="solver-history" class="solver-history" hidden></div>
+    <div class="solver-scroll">
+      <section class="solver-problem">
+        <!-- 题型模板：点一下把"按什么套路讲"补进这一轮的要求里（可再点取消） -->
+        <div id="solver-templates" class="solver-templates"></div>
+        <textarea
+          id="solver-input"
+          class="solver-input"
+          placeholder="把题目贴到这里（也可以截图后直接 Ctrl+V）"
+        ></textarea>
+        <div id="solver-attachments" class="solver-attachments" hidden></div>
+        <div class="solver-problem-actions">
+          <button id="solver-from-doc-btn" class="solver-btn" type="button">用正文选中内容</button>
+          <button id="solver-start-btn" class="solver-btn solver-btn-primary" type="button">开始解题</button>
+          <button id="solver-stop-btn" class="solver-btn" type="button" hidden>停止</button>
+        </div>
+      </section>
+      <!-- 步骤播放器：逐步看（做题顺序）或一次看全（复习）。出结果后才有意义，
+           所以默认隐藏，visualSolve/view.ts 按步骤数显隐。 -->
+      <div id="solver-player" class="solver-player" hidden>
+        <button id="solver-play-btn" class="solver-btn" type="button">▶ 播放</button>
+        <button id="solver-prev-btn" class="solver-btn" type="button">上一步</button>
+        <button id="solver-next-btn" class="solver-btn" type="button">下一步</button>
+        <button id="solver-all-btn" class="solver-btn" type="button">显示全部</button>
+        <span id="solver-progress" class="solver-progress"></span>
+      </div>
+      <!-- 复核结果：点「复核」后模型只查对错，结论显示在这里（不覆盖解题步骤） -->
+      <div id="solver-review" class="solver-review" hidden></div>
+      <div id="solver-steps" class="solver-steps"></div>
+    </div>
+    <div class="solver-ask">
+      <input id="solver-ask-input" class="solver-ask-input" type="text" placeholder="哪一步不懂就接着问…" />
+      <button id="solver-ask-btn" class="solver-btn" type="button">追问</button>
+    </div>
+    <p id="solver-status" class="solver-status" aria-live="polite" hidden></p>
+  </aside>
   <!-- 工具箱标签页（菜单「帮助 → 工具箱」）：整页工具界面，铺满编辑区（不显示
        编辑器与工具栏，见 base.css 的 body.tool-view）。默认隐藏，tool-view.ts 在
        切进该标签页时显示。目前只有一个工具：PDF拆分。 -->

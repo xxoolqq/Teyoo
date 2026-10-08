@@ -24,6 +24,13 @@
 
 /** KaTeX / Temml 的 macros 选项：键带反斜杠，参数用 #1 #2 #3。 */
 export const PHYSICS_MACROS: Record<string, string> = {
+  // ── 可视化解题用的高亮 ────────────────────────────────────────────────
+  // \hl{2x}：把"这一步变化的那一项"标出来（解题步骤里用，见 src/visualSolve）。
+  // 颜色必须用**命名色**：宏展开体里的 `#` 会被当成参数引用
+  // （写成 \textcolor{#c2410c}{#1} 会报 "Illegal macro parameter reference"，
+  // 真机上踩过）。MathJax 那边见 mathjax-engine.ts 的同名定义，两边一致。
+  '\\hl': '\\textcolor{darkorange}{#1}',
+
   // ── 导数与微分 ────────────────────────────────────────────────────────
   '\\dv': '\\frac{\\mathrm{d}#1}{\\mathrm{d}#2}',
   '\\pdv': '\\frac{\\partial #1}{\\partial #2}',

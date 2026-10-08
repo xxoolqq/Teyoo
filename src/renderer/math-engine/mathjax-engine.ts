@@ -45,7 +45,10 @@ function ensureCompiled(): { doc: ReturnType<typeof mathjax.document> } {
   if (compiled) return compiled
   RegisterHTMLHandler(browserAdaptor())
   const doc = mathjax.document('', {
-    InputJax: new TeX({ packages: TEX_PACKAGES }),
+    // macros：写在这里的命令 MathJax 也要认（与 KaTeX 的 PHYSICS_MACROS 同名同义，
+    // 否则同一份 \hl{…} 在 KaTeX 下是高亮、在 MathJax 下报未定义）。
+    // 颜色同样用命名色 —— 展开体里的 `#` 会被当成参数引用（详见 physics-macros.ts）。
+    InputJax: new TeX({ packages: TEX_PACKAGES, macros: { hl: ['\\textcolor{darkorange}{#1}', 1] } }),
     OutputJax: new SVG(),
   })
   compiled = { doc }
