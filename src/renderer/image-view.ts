@@ -261,7 +261,7 @@ function showConvertError(error?: string): void {
   const zh = isChinese()
   let text: string
   if (error === 'NO_TOKEN') {
-    text = zh ? '还没填 MinerU Token（偏好设置 → 通用）' : 'Set the MinerU Token in Preferences'
+    text = zh ? '还没填 MinerU Token（偏好设置 → 文档助手）' : 'Set the MinerU Token in Preferences'
   } else if (error === 'CANCELED') {
     text = zh ? '已取消' : 'Canceled'
   } else if (error === 'TIMEOUT') {

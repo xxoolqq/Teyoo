@@ -221,42 +221,8 @@ class PreferencesModal {
       this.checkRow('开启调试模式', { key: 'general.debugMode' }),
     ]))
 
-    // MinerU 在线解析的 Token：「PDF转md」窗口里的「在线解析」按钮要用它。
-    // 明文存在主进程的 userSetting.json（桌面端没有更安全的凭据仓），环境变量
-    // MINERU_TOKEN 优先于这里填的值。
-    const tokenRow = document.createElement('div')
-    tokenRow.className = 'prefs-subrow'
-    const tokenLine = this.inline(this.label('MinerU Token：'))
-    const tokenInput = this.input('password', {
-      placeholder: 'sk-…',
-      style: 'flex:0 1 auto; width:60%; min-width:0',
-      value: readPref<string>('mineru.token') ?? '',
-    })
-    const commitToken = (): void => {
-      void writePref('mineru.token', tokenInput.value.trim())
-    }
-    tokenInput.addEventListener('change', commitToken)
-    tokenInput.addEventListener('blur', commitToken)
-    // 光标离开就写回（input 事件只在输入时触发，change 在失焦/回车才触发，
-    // 两个都挂上，避免"改完直接关面板"丢值）。
-    const toggleBtn = this.btn('显示', () => {
-      tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password'
-      toggleBtn.textContent = tokenInput.type === 'password' ? '显示' : '隐藏'
-    })
-    tokenLine.append(tokenInput, toggleBtn)
-    tokenRow.append(tokenLine, this.hint('用于 PDF 转 Markdown 的在线解析（MinerU）。留空则在线解析不可用；设置环境变量 MINERU_TOKEN 时以它为准。'))
-
-    // 逃生开关：默认关。MinerU 的结果 CDN（cdn-mineru.openxlab.org.cn）证书一过期，
-    // 不勾这一项就一定 ERR_CERT_DATE_INVALID 下载不下来。勾选的范围很窄 —— 只有
-    // 结果包下载那一次请求、只有 MinerU 的结果域名（见 http/mineru.ts）。
-    const insecureRow = this.checkRow('忽略结果 CDN 的证书错误', { key: 'mineru.insecureDownload' })
-
-    root.append(this.group('在线解析（MinerU）', [
-      tokenRow,
-      insecureRow,
-      this.hint('MinerU 的结果 CDN 证书过期时（表现为「结果下载失败 … CERT_…」）才需要勾：它会跳过那一次下载的证书校验，网络请求仅限 MinerU 结果域名，不影响其它任何连接。对方证书续期后建议再关掉。'),
-    ]))
-
+    // MinerU 的配置整组搬去了「文档助手」面板：用它的是助手这条线
+    // （图片 → 公式、PDF/图片附件转 Markdown）。
     return root
   }
 
@@ -324,7 +290,7 @@ class PreferencesModal {
   /**
    * 文档助手（LLM）的连接信息：OpenAI 兼容的 Base URL + API Key + 模型名。
    *
-   * 密钥的处理与「通用 → MinerU Token」完全一致：明文存 userSetting.json
+   * 密钥的处理与同面板的「MinerU Token」完全一致：明文存 userSetting.json
    * （桌面端没有更安全的凭据仓），不进日志、只在主进程发请求时作 Authorization
    * 头，环境变量 ASSISTANT_API_KEY 的优先级高于这里。
    */
@@ -421,9 +387,141 @@ class PreferencesModal {
     testRow.append(testBtn, testStatus)
 
     root.append(this.group('连接', [urlRow, keyRow, modelRow, testRow]))
+
+    // 可视化解题（菜单「帮助 → 可视化解题」那个标签页）：三个字段**留空即沿用
+    // 上面文档助手的配置** —— 只想给解题换个更会推理的模型时，只填模型名即可。
+    const solveUrlRow = document.createElement('div')
+    solveUrlRow.className = 'prefs-subrow'
+    const solveUrlLine = this.inline(this.label('Base URL：'))
+    const solveUrlInput = this.input('text', {
+      placeholder: '留空 = 沿用上面的地址',
+      style: 'flex:0 1 auto; width:62%; min-width:0',
+      value: readPref<string>('visualSolve.baseUrl') ?? '',
+    })
+    const commitSolveUrl = (): void => {
+      void writePref('visualSolve.baseUrl', solveUrlInput.value.trim())
+    }
+    solveUrlInput.addEventListener('change', commitSolveUrl)
+    solveUrlInput.addEventListener('blur', commitSolveUrl)
+    solveUrlLine.append(solveUrlInput)
+
+    const solveKeyRow = document.createElement('div')
+    solveKeyRow.className = 'prefs-subrow'
+    const solveKeyLine = this.inline(this.label('API Key：'))
+    const solveKeyInput = this.input('password', {
+      placeholder: '留空 = 沿用上面的密钥',
+      style: 'flex:0 1 auto; width:62%; min-width:0',
+      value: readPref<string>('visualSolve.apiKey') ?? '',
+    })
+    const commitSolveKey = (): void => {
+      void writePref('visualSolve.apiKey', solveKeyInput.value.trim())
+    }
+    solveKeyInput.addEventListener('change', commitSolveKey)
+    solveKeyInput.addEventListener('blur', commitSolveKey)
+    const solveKeyToggle = this.btn('显示', () => {
+      solveKeyInput.type = solveKeyInput.type === 'password' ? 'text' : 'password'
+      solveKeyToggle.textContent = solveKeyInput.type === 'password' ? '显示' : '隐藏'
+    })
+    solveKeyLine.append(solveKeyInput, solveKeyToggle)
+
+    const solveModelRow = document.createElement('div')
+    solveModelRow.className = 'prefs-subrow'
+    const solveModelLine = this.inline(this.label('模型：'))
+    const solveModelInput = this.input('text', {
+      placeholder: '留空 = 沿用上面的模型',
+      style: 'flex:0 1 auto; width:40%; min-width:0',
+      value: readPref<string>('visualSolve.model') ?? '',
+    })
+    const commitSolveModel = (): void => {
+      void writePref('visualSolve.model', solveModelInput.value.trim())
+    }
+    solveModelInput.addEventListener('change', commitSolveModel)
+    solveModelInput.addEventListener('blur', commitSolveModel)
+    solveModelLine.append(solveModelInput)
+
+    // 测试连接：把当前填的值先落盘，再真发一次极短的请求（走 solver 通道，
+    // 留空的那几项按文档助手的值兜底）。
+    const solveTestStatus = document.createElement('span')
+    solveTestStatus.className = 'prefs-hint'
+    const solveTestRow = document.createElement('div')
+    solveTestRow.className = 'prefs-row prefs-btn-row'
+    const solveTestBtn = this.btn('测试连接', () => {
+      void (async () => {
+        commitSolveUrl(); commitSolveKey(); commitSolveModel()
+        solveTestBtn.disabled = true
+        solveTestStatus.textContent = '测试中…'
+        try {
+          const result = await window.electronAPI?.visualSolveComplete?.([{ role: 'user', content: 'ping' }])
+          if (!result) {
+            solveTestStatus.textContent = '当前环境没有解题接口'
+          } else if (result.ok) {
+            solveTestStatus.textContent = '连接正常'
+          } else {
+            const code = result.error ?? ''
+            if (code === 'NO_API_KEY') solveTestStatus.textContent = '没填 API Key（留空时会用文档助手的）'
+            else if (code === 'BAD_BASE_URL') solveTestStatus.textContent = 'Base URL 不是合法地址'
+            else if (code === 'NO_MODEL') solveTestStatus.textContent = '没填模型名'
+            else if (code.startsWith('HTTP_401') || code.startsWith('HTTP_403')) solveTestStatus.textContent = '鉴权失败：API Key 不对或没有权限'
+            else solveTestStatus.textContent = `失败：${code}`
+          }
+        } finally {
+          solveTestBtn.disabled = false
+        }
+      })()
+    })
+    solveTestRow.append(solveTestBtn, solveTestStatus)
+
+    root.append(this.group('可视化解题', [
+      solveUrlRow,
+      solveKeyRow,
+      solveModelRow,
+      solveTestRow,
+      this.hint('「帮助 → 可视化解题」那个标签页用这套配置；三项留空就沿用上面文档助手的地址 / 密钥 / 模型。解题比改写正文更吃推理能力，建议这里单独填一个更强的模型（例如 deepseek-chat、deepseek-reasoner）。')
+    ]))
+
+    // 在线解析（MinerU）：原来在「通用」下面，挪到这里 —— 实际用它的是助手这条线：
+    // 「图片 → 公式」的识别链、以及 PDF/图片附件转 Markdown。
+    // Token 明文存在主进程的 userSetting.json（桌面端没有更安全的凭据仓），
+    // 环境变量 MINERU_TOKEN 优先于这里填的值。
+    const tokenRow = document.createElement('div')
+    tokenRow.className = 'prefs-subrow'
+    const tokenLine = this.inline(this.label('MinerU Token：'))
+    const tokenInput = this.input('password', {
+      placeholder: 'sk-…',
+      style: 'flex:0 1 auto; width:62%; min-width:0',
+      value: readPref<string>('mineru.token') ?? '',
+    })
+    const commitToken = (): void => {
+      void writePref('mineru.token', tokenInput.value.trim())
+    }
+    tokenInput.addEventListener('change', commitToken)
+    tokenInput.addEventListener('blur', commitToken)
+    // 光标离开就写回（change 在失焦/回车才触发，blur 也挂上，避免"改完直接关面板"丢值）。
+    const tokenToggle = this.btn('显示', () => {
+      tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password'
+      tokenToggle.textContent = tokenInput.type === 'password' ? '显示' : '隐藏'
+    })
+    tokenLine.append(tokenInput, tokenToggle)
+    tokenRow.append(
+      tokenLine,
+      this.hint('「图片 → 公式」与 PDF/图片 转 Markdown 的在线识别都用它。留空则这些在线识别不可用（会退到本地 OCR / 你填的模型）；设置环境变量 MINERU_TOKEN 时以它为准。')
+    )
+
+    // 逃生开关：默认关。MinerU 的结果 CDN（cdn-mineru.openxlab.org.cn）证书一过期，
+    // 不勾这一项就一定 ERR_CERT_DATE_INVALID 下载不下来。勾选的范围很窄 —— 只有
+    // 结果包下载那一次请求、只有 MinerU 的结果域名（见 http/mineru.ts）。
+    const insecureRow = this.checkRow('忽略结果 CDN 的证书错误', { key: 'mineru.insecureDownload' })
+
+    root.append(this.group('在线解析（MinerU）', [
+      tokenRow,
+      insecureRow,
+      this.hint('MinerU 的结果 CDN 证书过期时（表现为「结果下载失败 … CERT_…」）才需要勾：它会跳过那一次下载的证书校验，网络请求仅限 MinerU 结果域名，不影响其它任何连接。对方证书续期后建议再关掉。'),
+    ]))
+
     root.append(this.group('使用说明', [
       this.hint('侧边栏的开关在「外观 → 文档助手」里。助手只会在你点「应用到文档」时才改正文，产出先显示为建议卡片。'),
       this.hint('选中一段文字后提指令最有效；没有选中时光标所在的那一段会作为上下文。'),
+      this.hint('选中一张图再问「把图片识别成公式」，识别顺序是 MinerU → 本地 OCR → 你填的模型；都没认出来就把原图直接交给模型，并要它别凭记忆猜。'),
     ]))
     return root
   }
