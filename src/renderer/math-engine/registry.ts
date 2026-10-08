@@ -69,8 +69,26 @@ export function onMathEngineChange(listener: (id: MathEngineId) => void): () => 
   return () => listeners.delete(listener)
 }
 
+/**
+ * 中日韩字符与全角标点。**TeX 字体里没有这些字形**，MathJax 的 SVG 输出会把它们
+ * 当"未知字形"处理：宽度要靠 `CommonOutputJax.getMetrics()` 在**真实文档里**量出来，
+ * 而我们是 `doc.convert()` 脱离文档渲染的 —— 量不到宽度就算 0，相邻汉字全部落在
+ * 同一个 x 上。真机实测 `V_{锥体}=\frac{1}{3}Sh`：`<text>锥` 与 `<text>体` 的
+ * x 都是 0（两个汉字完全叠在一起），而同一个元素放进 DOM 量出来是有宽度的。
+ * 注意写成 `V_{\text{锥体}}` **一样坏**（同样走未知字形那条路），别指望能绕开。
+ *
+ * 所以：MathJax 引擎下遇到 CJK 就改用 KaTeX —— 它用 HTML/CSS 盒子排版，宽度就是
+ * 浏览器真实字形宽度，中文天然正确；两个引擎的字体本来都是 Computer Modern 系，
+ * 同一篇文档里混用看不出差别。
+ */
+const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/
+
 /** 用当前引擎渲染公式（nodeView 调用入口） */
 export function renderMath(latex: string, displayMode: boolean): HTMLElement {
   const engine = engines.get(activeEngineId) ?? engines.get('mathjax')!
+  if (engine.id === 'mathjax' && CJK_RE.test(latex)) {
+    const katex = engines.get('katex')
+    if (katex) return katex.render(latex, displayMode)
+  }
   return engine.render(latex, displayMode)
 }
