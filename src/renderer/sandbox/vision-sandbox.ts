@@ -13,7 +13,7 @@
 
 import functionPlot from 'function-plot'
 import JXG from 'jsxgraph'
-import type { FigureSpec, GraphicPoint, GraphicSpec, PlotSpec } from '../../visualSolve/graphics'
+import type { FigureSpec, GraphicSpec, PlotSpec } from '../../visualSolve/graphics'
 
 const WIDTH = 520
 const HEIGHT = 320
@@ -97,18 +97,40 @@ function renderFigure(spec: FigureSpec, theme: { text: string }): SVGSVGElement 
       })
     )
   }
-  const resolve = (token: string): JXG.GeometryElement | GraphicPoint => nodes.get(token) ?? { name: '', x: 0, y: 0 }
+  // 点名 → 已建好的点元素；坐标字面量 `(x,y)` → 坐标对（JSXGraph 两种都收）；
+  // 认不出来返回 null —— 宁可这一条指令不画，也不要默默画到原点去。
+  // （真机上出过这事：`circle (2,1.5) 2.5` 把普通对象当点交给 JSXGraph，整张图
+  //  直接报错、退成指令原文；早先的 `?? {x:0,y:0}` 更是把画错位置的图当成功。）
+  type Anchor = JXG.GeometryElement | [number, number]
+  const resolve = (token: string): Anchor | null => {
+    const named = nodes.get(token)
+    if (named) return named
+    const coords = /^\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)$/.exec(token)
+    if (!coords) return null
+    const x = Number(coords[1])
+    const y = Number(coords[2])
+    return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null
+  }
+  const anchors = (...tokens: string[]): Anchor[] | null => {
+    const list = tokens.map((token) => resolve(token))
+    return list.every((item): item is Anchor => item !== null) ? list : null
+  }
   const stroke = { strokeColor: theme.text, strokeWidth: 1.5 }
 
   for (const [a, b] of spec.segments) {
-    board.create('segment', [resolve(a), resolve(b)] as never, stroke)
+    const pair = anchors(a, b)
+    if (pair) board.create('segment', pair as never, stroke)
   }
   for (const circle of spec.circles) {
-    const center = circle.center.name ? resolve(circle.center.name) : { name: '', x: circle.center.x, y: circle.center.y }
-    board.create('circle', [center, circle.radius] as never, stroke)
+    const center = circle.center.name
+      ? (nodes.get(circle.center.name) ?? null)
+      : ([circle.center.x, circle.center.y] as [number, number])
+    if (center) board.create('circle', [center, circle.radius] as never, stroke)
   }
   for (const polygon of spec.polygons) {
-    board.create('polygon', polygon.map((name) => resolve(name)) as never, {
+    const points = anchors(...polygon)
+    if (!points) continue
+    board.create('polygon', points as never, {
       ...stroke,
       fillColor: theme.text,
       fillOpacity: 0.08,
@@ -116,7 +138,9 @@ function renderFigure(spec: FigureSpec, theme: { text: string }): SVGSVGElement 
     })
   }
   for (const [a, b, c] of spec.angles) {
-    board.create('angle', [resolve(a), resolve(b), resolve(c)] as never, {
+    const triple = anchors(a, b, c)
+    if (!triple) continue
+    board.create('angle', triple as never, {
       radius: 0.7,
       strokeColor: theme.text,
       fillColor: theme.text,

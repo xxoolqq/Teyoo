@@ -336,10 +336,9 @@ function renderGraphics(container: HTMLElement, blocks: SolveGraphics[]): void {
         params.append(row)
       }
       wrap.append(params)
-      void paintGraphic(area, spec, 'plot', block.code).then(() => {
-        const url = renderedGraphics.get(baseKey)
-        if (url) renderedGraphics.set(baseKey, url)
-      })
+      // 首帧也必须先把参数值代进去再画：直接画 spec 等于让 function-plot 求值一个
+      // 未知符号 a（真机上就表现为首屏"这张图没画出来"，拖一下滑块图才出现）。
+      repaint()
       continue
     }
 
