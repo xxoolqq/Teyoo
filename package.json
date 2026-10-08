@@ -1,6 +1,6 @@
 {
   "name": "teyoo",
-  "version": "5.5.1",
+  "version": "5.5.5",
   "description": "A free, elegant Markdown editor for macOS, Windows and Linux. Simple by design, always in sync with the file on disk.",
   "main": "dist/main/index.js",
   "author": {
