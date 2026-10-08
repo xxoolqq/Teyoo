@@ -57,6 +57,8 @@ export function initImageView(api: import('../preload/index').ElectronAPI, viewH
   bindEmpty()
   bindConvert()
   bindZoom()
+  bindDrop()
+  bindPaste()
   api.onMineruProgress((payload) => showProgress(payload))
 }
 
@@ -313,8 +315,8 @@ async function convertOnline(): Promise<void> {
 
 function emptyMessage(): string {
   return isChinese()
-    ? '还没有图片：选一张，右边编辑器会填上转换出来的 Markdown。'
-    : 'No image yet: pick one and the Markdown lands in the editor on the right.'
+    ? '还没有图片：选择、拖入或粘贴一张，右边编辑器会填上转换出来的 Markdown。'
+    : 'No image yet: choose, drop or paste one and the Markdown lands in the editor on the right.'
 }
 
 function bindEmpty(): void {
@@ -334,6 +336,100 @@ async function pickImage(): Promise<void> {
   const picked = await api.pickMineruImageFile()
   if (!picked) return
   await showImage(picked)
+}
+
+// ── 拖入 / 粘贴图片 ────────────────────────────────────────────────────
+// 除「选择图片…」弹对话框外，也接受把图直接拖进左侧栏、或从剪贴板粘贴（截图最
+// 常见）。两者最终都落到同一处：交给 showImage 预览，转换仍走 MinerU 那条链路。
+// 转换要的是文件路径，所以拖入的本地文件用 webUtils 直接拿回路径；非本地图
+// （浏览器拖来的）和粘贴的图先落成临时文件（与助手粘贴图同一个入口）。
+
+const DROP_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp', 'avif', 'svg'])
+
+function looksLikeImage(file: File, path?: string): boolean {
+  if (file.type.startsWith('image/')) return true
+  const ext = (path || file.name).split('.').pop()?.toLowerCase() ?? ''
+  return DROP_IMAGE_EXTS.has(ext)
+}
+
+function fileToDataUrl(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.addEventListener('load', () => resolve(typeof reader.result === 'string' ? reader.result : null))
+    reader.addEventListener('error', () => resolve(null))
+    reader.readAsDataURL(file)
+  })
+}
+
+/** 收一张拖入 / 粘贴来的图：有本地路径直接用，否则读成 data URL 落成临时文件。 */
+async function acceptImageFile(file: File): Promise<void> {
+  const api = apiRef
+  if (!api) return
+  if (!looksLikeImage(file)) {
+    setStatus(isChinese() ? '这不是图片' : 'Not an image')
+    return
+  }
+  let path = api.getPathForFile(file)
+  if (!path) {
+    const dataUrl = await fileToDataUrl(file)
+    if (dataUrl) path = (await api.pasteAssistantImage(dataUrl))?.path ?? ''
+  }
+  if (!path) {
+    setStatus(isChinese() ? '这张图片收不下来' : 'Could not take this image')
+    return
+  }
+  await showImage(path)
+}
+
+function imageFileFromClipboard(event: ClipboardEvent): File | null {
+  const items = event.clipboardData?.items
+  if (!items) return null
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]
+    if (item.kind === 'file' && item.type.startsWith('image/')) return item.getAsFile()
+  }
+  return null
+}
+
+function bindDrop(): void {
+  const panel = imageEl('image-panel')
+  if (!panel) return
+  let depth = 0
+  panel.addEventListener('dragenter', (event) => {
+    event.preventDefault()
+    depth += 1
+    panel.classList.add('image-drop-over')
+  })
+  panel.addEventListener('dragover', (event) => event.preventDefault())
+  panel.addEventListener('dragleave', () => {
+    depth -= 1
+    if (depth <= 0) {
+      depth = 0
+      panel.classList.remove('image-drop-over')
+    }
+  })
+  panel.addEventListener('drop', (event) => {
+    event.preventDefault()
+    // 别让全局的 drop（拖文件打开文档）把这张图当成要打开的文件
+    event.stopPropagation()
+    depth = 0
+    panel.classList.remove('image-drop-over')
+    const file = event.dataTransfer?.files?.[0]
+    if (file) void acceptImageFile(file)
+  })
+}
+
+function bindPaste(): void {
+  document.addEventListener('paste', (event) => {
+    // 只在图片标签页活动时接管；编辑器正文里的粘贴留给编辑器自己（内嵌图片）。
+    if (!document.body.classList.contains('image-view')) return
+    const target = event.target
+    if (target instanceof Element && target.closest('.ProseMirror')) return
+    const file = imageFileFromClipboard(event)
+    if (!file) return
+    event.preventDefault()
+    void acceptImageFile(file)
+  })
 }
 
 function showEmpty(message: string): void {
