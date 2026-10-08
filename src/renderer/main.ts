@@ -1956,9 +1956,9 @@ function initPanelResize(): void {
     document.body.classList.add('panel-resizing')
     let width = FILE_PANEL_DEFAULT_WIDTH
     const move = (moveEvent: PointerEvent) => {
-      // The panel hangs off the right edge, so the pointer's distance from the
-      // window's right edge is the width.
-      width = clampFilePanelWidth(window.innerWidth - moveEvent.clientX)
+      // The panel hangs off the left edge, so the pointer's distance from the
+      // window's left edge is the width.
+      width = clampFilePanelWidth(moveEvent.clientX)
       applyFilePanelWidth(width)
     }
     const finish = () => {

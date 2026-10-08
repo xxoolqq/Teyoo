@@ -30,7 +30,7 @@ body.canvas-doc-view #doc-json {
 }
 
 body.show-file-panel #canvas-editor-panel {
-  margin-right: var(--file-panel-width, 220px);
+  margin-left: var(--file-panel-width, 220px);
 }
 
 /* 一个标签页一份 view：工具栏 → 文档滚动区 → 状态栏 */
