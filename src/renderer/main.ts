@@ -4,13 +4,14 @@ import { setCurrentImageFilePath } from '../extensions/image-style'
 import { detectMarkdownStyle } from './editor/markdown-style'
 import { SearchPanel } from './editor/search-panel'
 import { DEFAULT_WORK_DIR, showPreferencesModal, getExportFormulaEnginePreference } from './preferences-modal'
-import { initPrefsStore, getPrefs, onPrefsChanged } from './preferences-store'
+import { initPrefsStore, getPrefs, onPrefsChanged, setPrefsPath } from './preferences-store'
 import { applyTheme, loadSavedTheme } from './themes/theme-manager'
 import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
 import { enterPdfTabChrome, getOpenedPdfPath, initPdfView, leavePdfTab, loadPdfTab } from './pdf-view'
 import { enterImageTabChrome, initImageView, leaveImageTab, loadImageTab } from './image-view'
 import { enterToolTabChrome, initToolView, leaveToolTab, loadToolTab, toolTabLabel, type ToolId } from './tool-view'
+import { initAssistant, refreshAssistantContext, setAssistantOpen } from './assistant'
 import { initDocBar, type DocFormat } from './doc-bar'
 import { getJsonOrigin, getJsonPath, getJsonText, initJsonView, refreshJsonLayout } from './json-view'
 import { initPrintPreview, showPrintPreview } from './print-preview'
@@ -1148,6 +1149,8 @@ async function activateTab(id: string): Promise<void> {
     // 图片转md 面板：切回来按标签页记下的那张图片重新显示（主进程读盘给 data URL）。
     if (target.imageTab) void loadImageTab(target.imagePath)
     renderTabBar()
+    // 助手侧边栏的"上下文"跟着标签页走（新标签页＝另一份文档）
+    refreshAssistantContext()
     if (changedOnDisk && target.dirty) raiseExternalConflict()
   } finally {
     switchingTab = false
@@ -2259,6 +2262,8 @@ function enterSourceMode(content: string, ratio = 0): void {
   ta.value = foldBase64(content)
   restoreScrollRatio(ta, ratio)
   updateSourceToggle()
+  // 源码模式下没有 ProseMirror 文档可改，助手这一轮不可用（说明同步刷新）
+  refreshAssistantContext()
 }
 
 function exitSourceMode(): void {
@@ -2266,6 +2271,7 @@ function exitSourceMode(): void {
   editorEl().classList.remove('hidden')
   sourceEl().classList.remove('visible')
   updateSourceToggle()
+  refreshAssistantContext()
 }
 
 // 右侧栏顶部条的 Markdown / JSON 切换：编辑面的显示交给 CSS 的 body.doc-json，
@@ -2770,6 +2776,43 @@ function applyAppearanceFontSize(): void {
       renderTabBar()
     }
   })
+  // 文档助手侧边栏（LLM）：开关在偏好设置 → 外观，产出先落建议卡片、确认后才写入。
+  // 可用性判断放在这里而不是 assistant.ts —— 它要知道当前标签页类型与源码模式。
+  initAssistant(api, {
+    isAvailable: () => {
+      const tab = activeTab()
+      if (!tab || tab.kind !== 'document' || tab.pdfTab || tab.imageTab || tab.tool) return false
+      // 源码模式（含大文件被强制切进去的那种）下没有 ProseMirror 文档可改。
+      return !sourceModeActive
+    },
+    unavailableReason: () => {
+      const tab = activeTab()
+      if (sourceModeActive) {
+        return isChinese() ? '源码模式下不可用（切回所见即所得）' : 'Not available in source mode'
+      }
+      if (!tab || tab.kind !== 'document' || tab.pdfTab || tab.imageTab || tab.tool) {
+        return isChinese() ? '当前标签页没有可编辑的 Markdown' : 'This tab has no editable Markdown'
+      }
+      return ''
+    },
+    // 整篇应用：走编辑器自己的 setMarkdown。不传 flushHistory ⇒ 走事务而不是
+    // 重建 state，所以这一步是可以 Ctrl+Z 撤销的（与格式工具栏一致）。
+    applyDocument: (markdown) => {
+      setMarkdown(markdown)
+    },
+    onApplied: () => {
+      setDirty()
+      updateWordCount()
+      scheduleOutlineUpdate()
+    },
+    onRequestClose: () => {
+      // 收起按钮与「偏好设置 → 外观」里那个开关是同一份状态：写回偏好，
+      // 主进程广播回来后本窗口再收起（单一数据源）。
+      void setPrefsPath('assistant.sidebarOpen', false)
+    }
+  })
+  // 启动时按偏好摆一次（快照在 initPrefsStore 之后已就绪）
+  setAssistantOpen(getPrefs<boolean>('assistant.sidebarOpen') === true)
   initJsonView()
   // 右侧栏顶部条（保存 + 复制）：PDF 对照与图片转md 两个视图都有，绑定不分视图
   // —— 可见性由 CSS 的 body.pdf-view / body.image-view 决定（图片视图里那组
@@ -2951,10 +2994,12 @@ function applyAppearanceFontSize(): void {
   api.onToggleToolbar(() => toggleToolbarVisible())
   api.onEditorFontChanged((prefs) => applyEditorFont(prefs.family || prefs.size ? prefs : null))
   // 偏好「外观 → 字体大小」改动即时生效（含本窗口与其它窗口的广播）
-  onPrefsChanged((key) => {
+  onPrefsChanged((key, value) => {
     if (key === 'appearance.fontSizeMode' || key === 'appearance.fontSizePx') applyAppearanceFontSize()
     if (key === 'appearance.showStatusBar') updateWordCount()
     if (key === 'appearance.allowCollapseOutline') updateFileToggleButton()
+    // 「外观 → 文档助手侧边栏」开关（含别的窗口改的情况，靠主进程广播同步）
+    if (key === 'assistant.sidebarOpen') setAssistantOpen(value === true)
   })
   api.onSetCustomCSS((css) => {
     const theme = loadSavedTheme()

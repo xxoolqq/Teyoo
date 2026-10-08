@@ -8,7 +8,9 @@ import { watch, FSWatcher, existsSync, readdirSync, readFileSync, writeFileSync,
 import { mkdirSync } from 'fs'
 import { getUserSetting, getUserSettingByPath, setUserSetting, setUserSettingBatch, DEFAULT_WORK_DIR } from './user-setting'
 import { parsePdfOnline, findExtractedResult } from './http/mineru'
+import { ocrImageToLatex, readAttachment, savePastedImage } from './assistant-attach'
 import { splitPdfByPageCount, type SplitResult } from './pdf-split'
+import { completeChat, streamChat, type ChatContentPart, type ChatMessage, type ChatResult } from './llm'
 import { setAsDefaultApp } from './default-app'
 
 const startupStartedAt = performance.now()
@@ -1798,6 +1800,173 @@ ipcMain.handle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruPa
     batchId: result.batchId
   }
 })
+
+// 文档助手：把一轮对话发给 OpenAI 兼容端点，拿回完整回答（P0 非流式）。
+// 连接信息每次现读偏好设置 —— 改完不用重启。密钥与 mineru.token 同一约定：
+// 环境变量 ASSISTANT_API_KEY 优先，只作 Authorization 头，不进日志。
+ipcMain.handle('assistant-complete', async (_event, payload: unknown): Promise<ChatResult> => {
+  const clean = readAssistantMessages(payload)
+  if (!clean) return { ok: false, error: 'BAD_MESSAGES' }
+  return completeChat({ ...assistantConnection(), messages: clean })
+})
+
+// 文档助手的流式版本：每收到一块就经 assistant-delta 推给发起的那窗口。
+// 同一窗口同一时刻只允许一个在跑（发起新的先中止旧的）—— 侧边栏也只有一个输入框。
+const assistantStreams = new Map<number, AbortController>()
+
+ipcMain.handle('assistant-stream', async (event, payload: unknown): Promise<ChatResult> => {
+  const win = getWinFromEvent(event)
+  if (!win) return { ok: false, error: 'NO_WINDOW' }
+  const clean = readAssistantMessages(payload)
+  if (!clean) return { ok: false, error: 'BAD_MESSAGES' }
+  const senderId = event.sender.id
+  assistantStreams.get(senderId)?.abort()
+  const controller = new AbortController()
+  assistantStreams.set(senderId, controller)
+  try {
+    return await streamChat(
+      { ...assistantConnection(), messages: clean },
+      (chunk) => {
+        if (win.isDestroyed()) return
+        win.webContents.send('assistant-delta', { text: chunk })
+      },
+      controller.signal
+    )
+  } finally {
+    if (assistantStreams.get(senderId) === controller) assistantStreams.delete(senderId)
+  }
+})
+
+// 「停止生成」：中止发起窗口那一个流（其余窗口不受影响）
+ipcMain.on('assistant-cancel', (event) => {
+  assistantStreams.get(event.sender.id)?.abort()
+})
+
+// ─── 文档助手：附件与公式识别 ──────────────────────────────────────────
+// 附件一律先转成**文本**再进对话（图片→OCR、pdf→MinerU、docx→本地转换、md/txt→直读），
+// 这样换任何模型都能用；转换逻辑在 assistant-attach.ts。
+function attachmentOptions(): { mineruToken: string; insecureDownload: boolean } {
+  return {
+    mineruToken: (getUserSettingByPath<string>('mineru.token') ?? '').trim(),
+    insecureDownload: getUserSettingByPath<boolean>('mineru.insecureDownload') === true
+  }
+}
+
+// 「添加附件」：选文件（可多选）→ 转文本。与编辑器插图那个选择器分开：这里 pdf/docx/md
+// 都要能选，而且不做"插入正文"的动作。
+ipcMain.handle('assistant-pick-attachment', async (event) => {
+  const win = getWinFromEvent(event)
+  if (!win) return []
+  const result = await dialog.showOpenDialog(win, {
+    title: uiText('选择附件（图片 / PDF / Word / 文本）', 'Choose attachment (image / PDF / Word / text)'),
+    buttonLabel: uiText('添加', 'Add'),
+    properties: ['openFile', 'multiSelections'],
+    defaultPath: defaultDialogDir('read'),
+    filters: [
+      { name: uiText('图片', 'Images'), extensions: ['png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp'] },
+      { name: uiText('文档', 'Documents'), extensions: ['pdf', 'docx', 'md', 'markdown', 'txt', 'json', 'csv'] },
+      { name: uiText('全部文件', 'All Files'), extensions: ['*'] }
+    ]
+  })
+  if (result.canceled || result.filePaths.length === 0) return []
+  const options = attachmentOptions()
+  return Promise.all(result.filePaths.map((filePath) => readAttachment(filePath, options)))
+})
+
+// 「识别公式」：一张图片 → LaTeX（先 MinerU，失败退本地 OCR 契约）
+ipcMain.handle('assistant-ocr-image', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'BAD_PATH' }
+  return ocrImageToLatex(filePath, attachmentOptions())
+})
+
+// 「粘贴的图片」：剪切板里的图先落成临时文件，再按普通图片附件走
+ipcMain.handle('assistant-paste-image', async (_event, dataUrl: unknown) => {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return null
+  try {
+    return await savePastedImage(dataUrl)
+  } catch {
+    return null
+  }
+})
+
+/** 多模态消息的内容分片上限（防手滑塞一堆）与单张图片的体积上限 */
+const ASSISTANT_CONTENT_PARTS_MAX = 16
+const ASSISTANT_IMAGE_URL_MAX = 12 * 1024 * 1024
+/** 二进制图片分片的字节上限（渲染端解码后的图片本体） */
+const ASSISTANT_IMAGE_BYTES_MAX = 8 * 1024 * 1024
+
+/** 校验一条消息的 content：纯文本，或白名单内容分片（text / image_url） */
+function readAssistantContent(content: unknown): string | ChatContentPart[] | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content) || content.length === 0 || content.length > ASSISTANT_CONTENT_PARTS_MAX) return null
+  const parts: ChatContentPart[] = []
+  for (const raw of content) {
+    const part = raw as {
+      type?: unknown
+      text?: unknown
+      image_url?: { url?: unknown }
+      mime?: unknown
+      data?: unknown
+    }
+    if (part?.type === 'text' && typeof part.text === 'string') {
+      parts.push({ type: 'text', text: part.text })
+      continue
+    }
+    // 二进制图片分片（渲染端解出来的图片本体）：只收 image/*，且限个体积
+    if (part?.type === 'image') {
+      const bytes = part.data
+      if (
+        typeof part.mime === 'string' &&
+        part.mime.startsWith('image/') &&
+        bytes instanceof Uint8Array &&
+        bytes.byteLength > 0 &&
+        bytes.byteLength <= ASSISTANT_IMAGE_BYTES_MAX
+      ) {
+        parts.push({ type: 'image', mime: part.mime, data: bytes })
+        continue
+      }
+      return null
+    }
+    const url = part?.type === 'image_url' ? part.image_url?.url : undefined
+    // 图片只收 data URL 与 http(s)：本地路径递给模型没有任何意义
+    if (
+      typeof url === 'string' &&
+      url.length <= ASSISTANT_IMAGE_URL_MAX &&
+      (url.startsWith('data:image/') || /^https?:\/\//.test(url))
+    ) {
+      parts.push({ type: 'image_url', image_url: { url } })
+      continue
+    }
+    return null
+  }
+  return parts
+}
+
+/** 校验渲染端递来的消息数组；不合法返回 null */
+function readAssistantMessages(payload: unknown): ChatMessage[] | null {
+  const { messages } = (payload ?? {}) as { messages?: unknown }
+  if (!Array.isArray(messages) || messages.length === 0) return null
+  const clean: ChatMessage[] = []
+  for (const item of messages) {
+    const role = (item as { role?: unknown })?.role
+    if (role !== 'system' && role !== 'user' && role !== 'assistant') return null
+    const content = readAssistantContent((item as { content?: unknown })?.content)
+    if (content === null) return null
+    clean.push({ role, content })
+  }
+  return clean
+}
+
+/** 连接信息每次现读偏好设置：改完不用重启。密钥约定见 user-setting.ts。 */
+function assistantConnection(): { baseUrl: string; apiKey: string; model: string } {
+  return {
+    baseUrl: getUserSettingByPath<string>('assistant.baseUrl') ?? '',
+    apiKey:
+      (typeof process.env.ASSISTANT_API_KEY === 'string' ? process.env.ASSISTANT_API_KEY.trim() : '') ||
+      (getUserSettingByPath<string>('assistant.apiKey') ?? '').trim(),
+    model: getUserSettingByPath<string>('assistant.model') ?? ''
+  }
+}
 
 // 图片模态框的「浏览」按钮：打开系统文件对话框选一张本地图片，
 // 返回绝对路径（渲染端填入 src，插入模式下随即插入）。

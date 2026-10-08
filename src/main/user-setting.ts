@@ -99,6 +99,22 @@ export interface UserSetting {
      */
     insecureDownload: boolean
   }
+  // 文档助手（大语言模型）。与 mineru.token 同一套约定：apiKey 明文存
+  // userSetting.json，不进日志、只在主进程发请求时作 Authorization 头，
+  // 环境变量 ASSISTANT_API_KEY 的优先级高于这里。
+  assistant: {
+    /** OpenAI 兼容的 Base URL；填到 /v1 为止（如 https://api.deepseek.com/v1） */
+    baseUrl: string
+    /** API Key；空串 = 未配置，助手不可用 */
+    apiKey: string
+    /** 模型名（如 deepseek-chat / gpt-4o-mini） */
+    model: string
+    /**
+     * 常驻对话侧边栏是否展开（偏好设置 → 外观 里开关）。
+     * 存这里而不是 localStorage：多窗口要同步，也要能随 userSetting.json 走。
+     */
+    sidebarOpen: boolean
+  }
 }
 
 /** 工作目录的默认值（渲染端 preferences-modal.ts 里的 DEFAULT_WORK_DIR 与此同一份）。 */
@@ -163,6 +179,15 @@ const DEFAULT_SETTING: UserSetting = {
     // 默认严格校验证书：只有对方 CDN 证书过期、又急着要结果时才手动打开。
     // 旧版 userSetting.json 缺这个字段会被 pruneToDefaults 补成 false。
     insecureDownload: false,
+  },
+  assistant: {
+    // 默认 DeepSeek（OpenAI 兼容），用户可改成任何兼容端点。
+    baseUrl: 'https://api.deepseek.com/v1',
+    // 空串 = 未配置。环境变量 ASSISTANT_API_KEY 优先级更高（见 index.ts）。
+    apiKey: '',
+    model: 'deepseek-chat',
+    // 默认关：不打扰，用户自己去 外观 里打开。
+    sidebarOpen: false,
   },
 }
 

@@ -3294,6 +3294,574 @@ body.tool-view #panel-resizer {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 }
 
+/* ─── 文档助手侧边栏（LLM） ───────────────────────────────────────────────
+   右侧常驻对话面板，开关在「偏好设置 → 外观」（assistant.sidebarOpen）。
+   与左侧文件面板同一手法：固定定位 + 让编辑器自己把宽度减掉。在那些"整页
+   接管"的视图里不出现 —— 提交页 / 类docx / PDF对照 / 图片转md / 工具箱都
+   没有可编辑的 Markdown 正文。 */
+#assistant-panel {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
+  right: 0;
+  bottom: 0;
+  width: var(--assistant-width, 360px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-color);
+  border-left: 1px solid var(--shell-line);
+}
+
+#assistant-panel[hidden] {
+  display: none;
+}
+
+body.assistant-open #editor,
+body.assistant-open #source-editor {
+  margin-right: var(--assistant-width, 360px);
+}
+
+/* 源码编辑器有显式 width: 100%，与文件面板那一侧同理：让出的宽度要自己减掉。 */
+body.assistant-open #source-editor {
+  width: calc(100% - var(--assistant-width, 360px));
+}
+
+body.submit-view #assistant-panel,
+body.canvas-doc-view #assistant-panel,
+body.pdf-view #assistant-panel,
+body.image-view #assistant-panel,
+body.tool-view #assistant-panel {
+  display: none;
+}
+
+.assistant-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--shell-line);
+}
+
+.assistant-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 上下文说明（这一轮会带上什么：选区 / 当前段落 / 无） */
+.assistant-context {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 上下文范围下拉（自动 / 整篇）：头部太窄，样式压到最小 */
+.assistant-scope {
+  flex: none;
+  max-width: 92px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+/* 流式中：气泡里带一个光标 */
+.assistant-msg-streaming::after {
+  content: '▍';
+  margin-left: 1px;
+  animation: assistant-caret 1s steps(2, start) infinite;
+}
+
+@keyframes assistant-caret {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* 差异预览：- 删除 / + 新增 */
+.assistant-diff {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.assistant-diff-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistant-diff-remove {
+  background: color-mix(in srgb, var(--assistant-danger, #d14343) 12%, transparent);
+  color: var(--text-color);
+}
+
+.assistant-diff-add {
+  background: color-mix(in srgb, var(--assistant-ok, #2f9e5f) 14%, transparent);
+  color: var(--text-color);
+}
+
+.assistant-proposal-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.assistant-proposal-tabs button {
+  height: 18px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.assistant-proposal-tabs button.is-active {
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+.assistant-proposal-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 停止状态：发送按钮变成「停止」 */
+.assistant-send.is-stopping {
+  background: var(--assistant-danger, #d14343);
+}
+
+/* 校验/回填结果：写什么结构、我替你改了什么、有什么要你留意。
+   这几行由解析后的节点生成，不靠模型自述（见 assistant-syntax.ts）。 */
+.assistant-proposal-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assistant-note.is-structure {
+  color: var(--text-secondary);
+}
+
+.assistant-note.is-fix {
+  color: var(--assistant-ok, #2f9e5f);
+}
+
+.assistant-note.is-warn {
+  color: var(--assistant-danger, #d14343);
+}
+
+/* 「这一轮会带上的选区」：点进助手输入框后原生选区高亮会消失，这条接手继续亮
+   （见 assistant-context-mark.ts）。配色跟侧边栏主色一致（--link-color）。 */
+.assistant-context-mark {
+  background: color-mix(in srgb, var(--link-color) 20%, transparent);
+  border-radius: 3px;
+}
+
+/* ─── 正文内的建议预览（P3）──────────────────────────────────────────────
+   由 assistant-proposal.ts 的 Decoration 打上：原文一段标成待替换，建议就地在
+   其后显示，带一个「接受」。都是纯展示，不改文档内容。 */
+.assistant-inline-remove {
+  background: color-mix(in srgb, var(--assistant-danger, #d14343) 15%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--assistant-danger, #d14343) 55%, transparent);
+}
+
+.assistant-inline-add {
+  display: inline;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--assistant-ok, #2f9e5f) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--assistant-ok, #2f9e5f) 35%, transparent);
+  font-size: 0.94em;
+  white-space: pre-wrap;
+  /* 装饰器里的内容不该被当成正文选中/编辑 */
+  user-select: none;
+}
+
+.assistant-inline-add-text::before {
+  content: '建议：';
+  margin-right: 2px;
+  font-size: 0.85em;
+  opacity: 0.6;
+}
+
+/* 空建议（"清空这段"）：淡一点、斜体，一眼看出不是普通文字 */
+.assistant-inline-add-text.is-empty {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.assistant-inline-accept {
+  margin-left: 4px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: var(--assistant-ok, #2f9e5f);
+  color: #fff;
+  font-family: inherit;
+  font-size: 0.85em;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.assistant-inline-accept:hover {
+  filter: brightness(1.08);
+}
+
+/* 「丢弃」：次要按钮，别抢「接受」的注意力 */
+.assistant-inline-cancel {
+  margin-left: 4px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--assistant-ok, #2f9e5f) 45%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: color-mix(in srgb, var(--text-color) 75%, transparent);
+  font-family: inherit;
+  font-size: 0.85em;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.assistant-inline-cancel:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.assistant-icon-btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.assistant-icon-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+  color: var(--text-color);
+}
+
+.assistant-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.assistant-empty {
+  margin: auto 0;
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+  white-space: pre-line;
+  color: var(--text-secondary);
+}
+
+.assistant-msg {
+  max-width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistant-msg-user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--link-color) 12%, var(--bg-color));
+}
+
+.assistant-msg-error {
+  align-self: stretch;
+  background: color-mix(in srgb, var(--assistant-danger, #d14343) 12%, var(--bg-color));
+  color: var(--assistant-danger, #d14343);
+}
+
+/* 建议卡片：模型产出先落这里，用户点「应用到文档」才写进正文 */
+.assistant-proposal {
+  align-self: stretch;
+  border: 1px solid var(--shell-line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.assistant-proposal-label {
+  padding: 4px 10px;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--shell-line);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.assistant-proposal-body {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-color);
+}
+
+.assistant-proposal-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--shell-line);
+}
+
+.assistant-proposal-actions button {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.assistant-proposal-actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.assistant-proposal-actions .assistant-apply {
+  border-color: transparent;
+  background: var(--link-color);
+  color: var(--bg-color);
+}
+
+.assistant-proposal-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.assistant-proposal-done {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.assistant-composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-top: 1px solid var(--shell-line);
+}
+
+.assistant-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 56px;
+  max-height: 200px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.assistant-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assistant-status {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── 助手附件条（图片缩略图 / 文件名 + 删除；图片上还有「识别公式」）───── */
+.assistant-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 6px;
+}
+
+.assistant-attachments[hidden] {
+  display: none;
+}
+
+.assistant-attachment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-color) 4%, transparent);
+  font-size: 12px;
+}
+
+.assistant-attachment img {
+  width: 26px;
+  height: 26px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--bg-color);
+}
+
+.assistant-attachment-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-attachment-meta {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.assistant-attachment-btn {
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.assistant-attachment-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.assistant-attachment-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.assistant-attachment-remove {
+  flex: none;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.assistant-attachment-remove:hover {
+  color: var(--text-color);
+}
+
+/* 识别出来的公式：等宽显示 + 「行内 / 块级插入」 */
+.assistant-attachment-formula {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--assistant-ok, #2f9e5f) 10%, transparent);
+}
+
+.assistant-attachment-formula code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.assistant-attach {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.assistant-attach:hover {
+  color: var(--text-color);
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.assistant-send {
+  flex: none;
+  height: 28px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 6px;
+  background: var(--link-color);
+  color: var(--bg-color);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.assistant-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ─── 右侧栏顶部条：文档格式切换 + 复制 ────────────────────────────────────
    只在 PDF 对照窗口出现。它和左侧「源文件」条同高、同底色，横向拼成一条完整的
    顶栏；left 让位给 PDF 栏，和编辑器用同一个算式。 */

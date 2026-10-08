@@ -1777,6 +1777,16 @@ async function recognizeFormulaImage(match: InlineImageMatch): Promise<string | 
   }
 }
 
+/**
+ * 给外部（文档助手的「识别公式」）用的入口：字节 + 扩展名 → LaTeX。
+ * 复用的就是上面那套 SimpleTex 契约，不另起一份实现（换端点/换 token 只改一处）。
+ */
+export async function ocrFormulaImageBytes(bytes: Uint8Array, ext: string): Promise<string | null> {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  return recognizeFormulaImage({ start: 0, end: 0, ext, b64: btoa(binary) })
+}
+
 /** 扫描行内图片 → OCR → 替换为 $latex$；独占一行的图片保留；失败静默保留原图 */
 async function ocrInlineFormulaImages(markdown: string): Promise<string> {
   const matches: InlineImageMatch[] = []

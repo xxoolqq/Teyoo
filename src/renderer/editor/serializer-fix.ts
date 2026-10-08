@@ -107,6 +107,27 @@ function fixChildren(children: any[]): void {
   }
 }
 
+/**
+ * 给「空文档」交出来的 root 补上 children 数组（就地修改）。
+ *
+ * milkdown 的 SerializerState 在没有**任何块**时，build() 交出的 root 只有
+ * `{ type: 'root' }`，没有 children；而 mdast-util-to-markdown 的 root 处理器
+ * 第一句就是 `node.children.some(...)`，于是抛
+ *   TypeError: Cannot read properties of undefined (reading 'some')
+ *
+ * 触发场景（真机上踩到的）：光标停在空段落里（或整篇空文档）时序列化选区 /
+ * 整篇 Markdown。**空文档本来就该序列化成空串**，补个空数组即可。
+ *
+ * 注意这不只是"助手取上下文"的事：这个异常会顺着调用方一路抛出去，把
+ * 「文件 → 打开」这类流程一起打断（见 main.ts 里 onFileOpened），所以修在
+ * 序列化这一层（唯一入口），而不是在每个调用点加 try/catch。
+ */
+export function ensureRootChildren(tree: unknown): void {
+  const node = tree as { children?: unknown } | null
+  if (!node || typeof node !== 'object') return
+  if (!Array.isArray(node.children)) node.children = []
+}
+
 /** 递归修复整棵 mdast 树（就地修改） */
 export function fixMilkdownMarkSplits(tree: unknown): void {
   const walk = (node: any): void => {

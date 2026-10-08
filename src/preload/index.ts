@@ -15,12 +15,58 @@ type CanvasEditorData = { header?: unknown[]; main: unknown[]; footer?: unknown[
 // layout.json → 右侧 JSON，没解析过就没有。渲染端无法自己 fetch file://，只能
 // 由主进程读盘送过来，所以「打开 PDF…」和「切回 PDF 标签页」都是这个形状。
 type PickPdfResult = { path: string; data: Uint8Array; markdownPath?: string; jsonPath?: string }
+/** 文档助手附件（主进程 assistant-attach.ts 的形状，同上面一个理由在本地重声明） */
+export interface AssistantAttachment {
+  path: string
+  name: string
+  kind: 'image' | 'text' | 'unsupported'
+  /** 给模型用的文本（图片=识别结果；文件=转出来的 markdown/文本） */
+  text?: string
+  /** 图片附件的 data URL（缩略图） */
+  dataUrl?: string
+  /** 图片识别出的 LaTeX（不含 $ 定界符） */
+  latex?: string
+  source?: 'simpletex' | 'mineru' | 'file'
+  error?: string
+  bytes?: number
+  truncated?: boolean
+}
+export interface AssistantOcrResult {
+  ok: boolean
+  latex?: string
+  text?: string
+  source?: 'simpletex' | 'mineru'
+  error?: string
+}
 // 「工具箱 → PDF拆分」的结果（主进程 pdf-split.ts 的形状，同上面一个理由在本地重声明）。
 export interface PdfSplitShard {
   name: string
   startPage: number
   endPage: number
   bytes: number
+}
+// 文档助手（LLM）的一轮消息与结果。与主进程 llm.ts 的形状一致，同样在本地重声明
+// （跨工程 import 会让 tsc 报 TS6307，理由同 MineruProgressPayload）。
+/**
+ * OpenAI 兼容的多模态分片。渲染端发图用二进制分片 `image`（几万字符的 base64 在
+ * 提示词 / IPC 里来回搬没意义），主进程发出去之前才转成 image_url 的 data URL。
+ */
+export type AssistantContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'image'; mime: string; data: Uint8Array }
+
+export interface AssistantMessage {
+  role: 'system' | 'user' | 'assistant'
+  /** 纯文本，或分片数组（多模态） */
+  content: string | AssistantContentPart[]
+}
+export interface AssistantResult {
+  ok: boolean
+  /** 成功时的完整回答（Markdown） */
+  text?: string
+  /** 失败原因：NO_API_KEY / BAD_BASE_URL / NO_MODEL / HTTP_<code>: … / TIMEOUT / … */
+  error?: string
 }
 export interface PdfSplitResult {
   ok: boolean
@@ -137,6 +183,21 @@ export interface ElectronAPI {
   setActivePdfPath: (path: string | null) => void
   // 工具箱的 PDF拆分：按「每 N 页一份」切开，写进原文件旁边的 <原名>_拆分_<日期>/。
   splitPdf: (path: string, pagesPerFile: number) => Promise<PdfSplitResult>
+  // 文档助手：把一轮对话发给 OpenAI 兼容端点（Base URL / Key / 模型都在偏好设置里，
+  // 主进程现读）。密钥不出主进程。
+  assistantComplete: (messages: AssistantMessage[]) => Promise<AssistantResult>
+  // 流式：返回整段结果（text = 全文），中途的分片走 onAssistantDelta。
+  assistantStream: (messages: AssistantMessage[]) => Promise<AssistantResult>
+  // 「停止生成」：中止本窗口正在跑的那一个流。
+  assistantCancel: () => void
+  onAssistantDelta: (callback: (payload: { text: string }) => void) => void
+  // 文档助手附件：选文件（可多选）→ 主进程把它转成文本再交给模型
+  // （图片=data URL + 可选公式、pdf=MinerU、docx=本地转换、md/txt=直读）。
+  pickAssistantAttachment: () => Promise<AssistantAttachment[]>
+  // 「识别公式」：一张图片 → LaTeX（先 MinerU，失败退本地 OCR 契约）
+  ocrAssistantImage: (path: string) => Promise<AssistantOcrResult>
+  // 粘贴的图片（截图）：落成临时文件后按普通图片附件处理
+  pasteAssistantImage: (dataUrl: string) => Promise<AssistantAttachment | null>
   // 图片转md 标签页挂着的那张图片：主进程用它给「另存为」起默认文件名。
   setActiveImagePath: (path: string | null) => void
   // 上报前台标签页类型。类 docx 文档（canvas-editor）标签页有自己的打印通道，
@@ -269,6 +330,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setActivePdfPath: (path: string | null) => ipcRenderer.send('set-active-pdf-path', path),
   splitPdf: (path: string, pagesPerFile: number) =>
     ipcRenderer.invoke('split-pdf', { path, pagesPerFile }) as Promise<PdfSplitResult>,
+  assistantComplete: (messages: AssistantMessage[]) =>
+    ipcRenderer.invoke('assistant-complete', { messages }) as Promise<AssistantResult>,
+  assistantStream: (messages: AssistantMessage[]) =>
+    ipcRenderer.invoke('assistant-stream', { messages }) as Promise<AssistantResult>,
+  assistantCancel: () => ipcRenderer.send('assistant-cancel'),
+  onAssistantDelta: (callback: (payload: { text: string }) => void) => {
+    ipcRenderer.on('assistant-delta', (_event, payload: { text: string }) => callback(payload))
+  },
+  pickAssistantAttachment: () => ipcRenderer.invoke('assistant-pick-attachment') as Promise<AssistantAttachment[]>,
+  ocrAssistantImage: (path: string) => ipcRenderer.invoke('assistant-ocr-image', path) as Promise<AssistantOcrResult>,
+  pasteAssistantImage: (dataUrl: string) =>
+    ipcRenderer.invoke('assistant-paste-image', dataUrl) as Promise<AssistantAttachment | null>,
   setActiveImagePath: (path: string | null) => ipcRenderer.send('set-active-image-path', path),
   setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => ipcRenderer.send('set-active-tab-kind', kind),
   parsePdfOnline: (pdfPath: string) => ipcRenderer.invoke('mineru-parse', pdfPath) as Promise<MineruParseResponse>,

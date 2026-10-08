@@ -11,7 +11,7 @@
 import { getPrefs, setPrefsPath } from './preferences-store'
 import { getActiveMathEngineId, listMathEngines, setMathEngine } from './math-engine'
 
-type TabKey = 'general' | 'appearance' | 'image' | 'markdown' | 'export'
+type TabKey = 'general' | 'appearance' | 'image' | 'markdown' | 'export' | 'assistant'
 
 /**
  * 读取导出公式引擎偏好（'Temml' / 'MathJax'），供渲染端发起导出时
@@ -30,6 +30,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'image', label: '图像' },
   { key: 'markdown', label: 'Markdown' },
   { key: 'export', label: '导出' },
+  { key: 'assistant', label: '文档助手' },
 ]
 
 // 从 store 读取偏好值；store 未就绪时返回 undefined（控件工厂做默认处理）
@@ -54,7 +55,7 @@ class PreferencesModal {
   private closeBtn: HTMLButtonElement
   private activeTab: TabKey = 'general'
   private tabNodes: Record<TabKey, HTMLElement | null> = {
-    general: null, appearance: null, image: null, markdown: null, export: null,
+    general: null, appearance: null, image: null, markdown: null, export: null, assistant: null,
   }
 
   constructor() {
@@ -156,6 +157,7 @@ class PreferencesModal {
     this.tabNodes.image = this.buildImagePanel()
     this.tabNodes.markdown = this.buildMarkdownPanel()
     this.tabNodes.export = this.buildExportPanel()
+    this.tabNodes.assistant = this.buildAssistantPanel()
 
     for (const node of Object.values(this.tabNodes)) {
       if (node) {
@@ -300,6 +302,12 @@ class PreferencesModal {
       this.checkRow('显示状态栏', { key: 'appearance.showStatusBar' }),
     ]))
 
+    // 文档助手侧边栏的显隐（连接信息在「文档助手」面板里填）。写偏好 → 主进程广播
+    // → 所有窗口即时同步；侧边栏自己的「收起」按钮写的是同一个字段。
+    root.append(this.group('文档助手', [
+      this.checkRow('显示文档助手侧边栏', { key: 'assistant.sidebarOpen' }),
+    ]))
+
     // 「阅读速度」分组已移除。
 
     root.append(this.group('侧边栏', [
@@ -308,6 +316,115 @@ class PreferencesModal {
 
     // 「主题」分组已移除：主题改由菜单栏「主题」切换，偏好设置不再提供入口。
 
+    return root
+  }
+
+  // 文档助手 ──────────────────────────────────────────────────────────────
+
+  /**
+   * 文档助手（LLM）的连接信息：OpenAI 兼容的 Base URL + API Key + 模型名。
+   *
+   * 密钥的处理与「通用 → MinerU Token」完全一致：明文存 userSetting.json
+   * （桌面端没有更安全的凭据仓），不进日志、只在主进程发请求时作 Authorization
+   * 头，环境变量 ASSISTANT_API_KEY 的优先级高于这里。
+   */
+  private buildAssistantPanel(): HTMLElement {
+    const root = document.createElement('section')
+    root.className = 'prefs-panel'
+
+    // Base URL
+    const urlRow = document.createElement('div')
+    urlRow.className = 'prefs-subrow'
+    const urlLine = this.inline(this.label('Base URL：'))
+    const urlInput = this.input('text', {
+      placeholder: 'https://api.deepseek.com/v1',
+      style: 'flex:0 1 auto; width:62%; min-width:0',
+      value: readPref<string>('assistant.baseUrl') ?? '',
+    })
+    const commitUrl = (): void => {
+      void writePref('assistant.baseUrl', urlInput.value.trim())
+    }
+    urlInput.addEventListener('change', commitUrl)
+    urlInput.addEventListener('blur', commitUrl)
+    urlLine.append(urlInput)
+    urlRow.append(urlLine, this.hint('OpenAI 兼容端点，填到 /v1 为止（默认 DeepSeek：https://api.deepseek.com/v1）；也可以直接填到 …/chat/completions。'))
+
+    // API Key
+    const keyRow = document.createElement('div')
+    keyRow.className = 'prefs-subrow'
+    const keyLine = this.inline(this.label('API Key：'))
+    const keyInput = this.input('password', {
+      placeholder: 'sk-…',
+      style: 'flex:0 1 auto; width:62%; min-width:0',
+      value: readPref<string>('assistant.apiKey') ?? '',
+    })
+    const commitKey = (): void => {
+      void writePref('assistant.apiKey', keyInput.value.trim())
+    }
+    keyInput.addEventListener('change', commitKey)
+    keyInput.addEventListener('blur', commitKey)
+    const keyToggle = this.btn('显示', () => {
+      keyInput.type = keyInput.type === 'password' ? 'text' : 'password'
+      keyToggle.textContent = keyInput.type === 'password' ? '显示' : '隐藏'
+    })
+    keyLine.append(keyInput, keyToggle)
+    keyRow.append(keyLine, this.hint('只存在本机的 userSetting.json 里，随请求发给上面那个地址；设置环境变量 ASSISTANT_API_KEY 时以它为准。'))
+
+    // 模型名
+    const modelRow = document.createElement('div')
+    modelRow.className = 'prefs-subrow'
+    const modelLine = this.inline(this.label('模型：'))
+    const modelInput = this.input('text', {
+      placeholder: 'deepseek-chat',
+      style: 'flex:0 1 auto; width:40%; min-width:0',
+      value: readPref<string>('assistant.model') ?? '',
+    })
+    const commitModel = (): void => {
+      void writePref('assistant.model', modelInput.value.trim())
+    }
+    modelInput.addEventListener('change', commitModel)
+    modelInput.addEventListener('blur', commitModel)
+    modelLine.append(modelInput)
+    modelRow.append(modelLine, this.hint('填服务商的模型 id，例如 deepseek-chat、gpt-4o-mini、qwen-plus。'))
+
+    // 测试连接：把当前填的值先落盘，再真发一次极短的请求 —— 密钥/地址写错时
+    // 不用切到侧边栏去试。返回的是主进程那套错误码，这里翻成人话。
+    const testStatus = document.createElement('span')
+    testStatus.className = 'prefs-hint'
+    const testRow = document.createElement('div')
+    testRow.className = 'prefs-row prefs-btn-row'
+    const testBtn = this.btn('测试连接', () => {
+      void (async () => {
+        commitUrl(); commitKey(); commitModel()
+        testBtn.disabled = true
+        testStatus.textContent = '测试中…'
+        try {
+          const result = await window.electronAPI?.assistantComplete?.([{ role: 'user', content: 'ping' }])
+          if (!result) {
+            testStatus.textContent = '当前环境没有助手接口'
+          } else if (result.ok) {
+            testStatus.textContent = '连接正常'
+          } else {
+            const code = result.error ?? ''
+            if (code === 'NO_API_KEY') testStatus.textContent = '还没填 API Key'
+            else if (code === 'BAD_BASE_URL') testStatus.textContent = 'Base URL 不是合法地址'
+            else if (code === 'NO_MODEL') testStatus.textContent = '还没填模型名'
+            else if (code.startsWith('HTTP_401') || code.startsWith('HTTP_403')) testStatus.textContent = '鉴权失败：API Key 不对或没有权限'
+            else if (code.startsWith('HTTP_404')) testStatus.textContent = '端点不存在（404）：检查 Base URL 要不要带 /v1'
+            else testStatus.textContent = `失败：${code}`
+          }
+        } finally {
+          testBtn.disabled = false
+        }
+      })()
+    })
+    testRow.append(testBtn, testStatus)
+
+    root.append(this.group('连接', [urlRow, keyRow, modelRow, testRow]))
+    root.append(this.group('使用说明', [
+      this.hint('侧边栏的开关在「外观 → 文档助手」里。助手只会在你点「应用到文档」时才改正文，产出先显示为建议卡片。'),
+      this.hint('选中一段文字后提指令最有效；没有选中时光标所在的那一段会作为上下文。'),
+    ]))
     return root
   }
 

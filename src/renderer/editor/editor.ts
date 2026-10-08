@@ -22,7 +22,7 @@ import { htmlView } from './html-view'
 import { mermaidView } from './mermaid-view'
 import { codeBlockExitPlugin } from './code-block-exit'
 import { tabIndentPlugin } from './tab-indent'
-import { fixMilkdownMarkSplits, fixMarkerEscapes } from './serializer-fix'
+import { ensureRootChildren, fixMilkdownMarkSplits, fixMarkerEscapes } from './serializer-fix'
 import { orderedListFixSchema } from './ordered-list-fix'
 import { releaseMermaidRenderer as releaseMermaidRendererBridge } from './mermaid-bridge'
 import { mathModal } from './math-modal'
@@ -45,6 +45,17 @@ import { fixStrikeThroughInputRule } from './strike-through-fix'
 import { disableFormatInputRules } from './format-input-rules-off'
 import { linkFixSchema, linkInputRule } from './link-fix'
 import { tableFloatingToolbarPlugin } from './table-floating-toolbar'
+import {
+  createAssistantProposalPlugin,
+  setProposal,
+  type AssistantProposalPayload
+} from './assistant-proposal'
+import {
+  createAssistantContextMarkPlugin,
+  setContextMark,
+  type ContextRange
+} from './assistant-context-mark'
+import { contentForRange } from './apply-markdown'
 import { blankLinePlugin, remarkBlankLine, blankLineStringifyHandler } from '../../extensions/blank-line'
 import { emphDotPlugin, remarkEmphDot, emphDotStringifyHandler } from '../../extensions/emph-dot'
 import { underlinePlugin, remarkUnderline, underlineStringifyHandler } from '../../extensions/underline'
@@ -1382,20 +1393,127 @@ export function getSelectionMarkdown(target?: string): string {
   return serializeNodeToMarkdown($from.node(1), target)
 }
 
-// 把一段 Markdown 插到光标处（选区非空则替换）。解析走编辑器完整的 remark
-// 管线，与 getSelectionMarkdown 成对：搬运过去还是原来的格式。
-export function insertMarkdownAtCursor(markdown: string, target?: string): void {
-  if (!markdown) return
+/**
+ * 用一段 Markdown **替换光标所在的那个顶层块**（段落/表格/列表…）。
+ *
+ * 与 insertMarkdownAtCursor 的分工：那个在光标折叠时是"插到当前块之后"（插入语
+ * 义），适合插入；改写场景要的是"把这一段换掉"，否则原文还在、又多出一段。
+ * 块的选择与 getSelectionMarkdown 一致（都用 $from.node(1)），两者成对使用。
+ */
+export function replaceCurrentBlockMarkdown(markdown: string, target?: string): boolean {
+  if (!markdown) return false
   const nodes = parseMarkdownToNodes(markdown, target)
-  if (!nodes.length) return
+  if (!nodes.length) return false
+  let written = false
   activeEditor(target)?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const { selection } = view.state
-    // 光标折叠 → 整块插到当前段之后；选区非空 → 替换选区。都不要在段落
-    // 中间劈一刀：那会把一段切成「空段 + 新内容」，文档里凭空多一个 <br />。
     const $from = selection.$from
-    const from = selection.empty ? ($from.depth > 0 ? $from.after(1) : 0) : selection.from
-    const to = selection.empty ? from : selection.to
+    // 顶层（空文档）没有块可换：退回插入
+    if ($from.depth === 0) {
+      const tr = view.state.tr.insert(0, nodes)
+      tr.scrollIntoView()
+      view.dispatch(tr)
+      written = true
+      return
+    }
+    // 整块区间：走同一个判定（这里恒为块级落法），空内容就什么都不做
+    const content = contentForRange(view, { from: $from.before(1), to: $from.after(1) }, nodes)
+    if (!content.nodes.length) return
+    const tr = view.state.tr.replaceWith(content.from, content.to, content.nodes)
+    tr.scrollIntoView()
+    view.dispatch(tr)
+    written = true
+  })
+  return written
+}
+
+/**
+ * 清空助手这次要改的范围：有选区就删选区，否则删光标所在的那个顶层块。
+ *
+ * 为什么单独一个函数：`insertMarkdownAtCursor('')` 里的空串是"什么都不做"（插入语义），
+ * 而助手回空内容时用户要的是**删除** —— "把这段删掉"的正确答案本来就是空
+ * （见 assistant.ts 里的删除路径）。
+ */
+export function clearSelectionOrBlock(target?: string): void {
+  activeEditor(target)?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { selection } = view.state
+    if (!selection.empty) {
+      const tr = view.state.tr.delete(selection.from, selection.to)
+      tr.scrollIntoView()
+      view.dispatch(tr)
+      return
+    }
+    const $from = selection.$from
+    if ($from.depth === 0) return
+    const tr = view.state.tr.delete($from.before(1), $from.after(1))
+    tr.scrollIntoView()
+    view.dispatch(tr)
+  })
+}
+
+/**
+ * 在正文里挂一处「助手建议」：把 [from, to) 这段原文标成待替换，并在其后就地显示
+ * 建议内容与「接受」按钮（见 assistant-proposal.ts）。
+ *
+ * from/to 是**当前文档坐标**，之后用户别处编辑会跟着映射；接受时由插件用一个事务
+ * 完成替换（可 Ctrl+Z）。侧边栏的「应用」是另一条路（按当前选区/当前段落来），
+ * 两者最终都落到同一份 remark 解析上。
+ */
+export function showAssistantProposal(payload: AssistantProposalPayload, target?: string): void {
+  activeEditor(target)?.action((ctx) => {
+    setProposal(ctx.get(editorViewCtx), payload)
+  })
+}
+
+/** 清掉正文里的建议预览（丢弃、已应用、或又发了一次新请求时调用） */
+export function clearAssistantProposal(target?: string): void {
+  activeEditor(target)?.action((ctx) => {
+    setProposal(ctx.get(editorViewCtx), null)
+  })
+}
+
+/**
+ * 把"这一轮会带上的选区"在正文里亮着（range 传 null 即撤）。
+ *
+ * 用途：点进助手输入框写指令时，编辑器的原生选区高亮会消失（焦点进了 textarea，
+ * DOM 选区被清 + PM 的 ProseMirror-hideselection），用户就看不见自己选的是哪一段。
+ * 开关时机由 assistant.ts 按焦点决定，这里只负责画。
+ */
+export function showAssistantContextMark(range: ContextRange | null, target?: string): void {
+  activeEditor(target)?.action((ctx) => {
+    setContextMark(ctx.get(editorViewCtx), range)
+  })
+}
+
+// 把一段 Markdown 插到光标处（选区非空则替换）。解析走编辑器完整的 remark
+// 管线，与 getSelectionMarkdown 成对：搬运过去还是原来的格式。
+export function insertMarkdownAtCursor(markdown: string, target?: string): boolean {
+  if (!markdown) return false
+  const nodes = parseMarkdownToNodes(markdown, target)
+  if (!nodes.length) return false
+  let written = false
+  activeEditor(target)?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { selection } = view.state
+    // 选区非空：替换这段选区。若选区落在**同一个文本块内**（选中一行里的几个字），
+    // 只能塞行内内容 —— 块节点会被 ProseMirror 把段落劈开，用户看到的就是
+    // "本来一整行，替换后变成三段"（判定见 apply-markdown.ts）。
+    if (!selection.empty) {
+      const content = contentForRange(view, { from: selection.from, to: selection.to }, nodes)
+      if (!content.nodes.length) return
+      const replaceTr = view.state.tr.replaceWith(content.from, content.to, content.nodes)
+      replaceTr.scrollIntoView()
+      view.dispatch(replaceTr)
+      written = true
+      return
+    }
+    // 光标折叠 → 整块插到当前段之后。不要在段落中间劈一刀：那会把一段切成
+    // 「空段 + 新内容」，文档里凭空多一个 <br />。
+    const $from = selection.$from
+    const from = $from.depth > 0 ? $from.after(1) : 0
+    const to = from
 
     const tr = view.state.tr.delete(from, to)
     // 删完之后插入点可能正落在一个空段落里（目标本来就空，或整篇被替换掉，
@@ -1418,7 +1536,9 @@ export function insertMarkdownAtCursor(markdown: string, target?: string): void 
     tr.insert(pos, nodes)
     tr.scrollIntoView()
     view.dispatch(tr)
+    written = true
   })
+  return written
 }
 
 // 任务列表 toggle：gfm 的任务列表 = bullet_list 内嵌带 checked 属性的
@@ -2125,6 +2245,11 @@ export async function createEditor(
     .use(colsEditorPlugin)
     .use(tianziEditorPlugin)
     .use(tableFloatingToolbarPlugin)
+    // 文档助手：正文内的建议预览（原文划掉 + 就地显示建议 + 「接受」按钮）。
+    // 解析注入的是本模块的 parseMarkdownToNodes —— 与侧边栏「应用」同一套管线。
+    .use(createAssistantProposalPlugin((markdown) => parseMarkdownToNodes(markdown)))
+    // 文档助手：把"这一轮会带上的选区"一直亮着（点进输入框后原生高亮会消失）
+    .use(createAssistantContextMarkPlugin())
     .use(searchHighlight)
     .use(headingFlashPlugin)
     // PDF 矩形框 ↔ 正文块的双向定位标记（悬停高亮，点击才滚）
@@ -2164,6 +2289,9 @@ export async function createEditor(
       serializerCtx,
       SerializerState.create(ctx.get(schemaCtx), {
         stringify: (tree: StringifyInput) => {
+          // 空文档（一个块都没有）交出来的 root 没有 children，mdast-util-to-markdown
+          // 会直接抛 TypeError —— 序列化空内容必须返回空串，不能崩。见 serializer-fix.ts。
+          ensureRootChildren(tree)
           fixMilkdownMarkSplits(tree)
           // 标记转义还原：mdast-util-to-markdown / remark-gfm 对 phrasing 中的
           // * ~ _ 无条件转义，侧翼规则下永不构成定界符的场景按 CommonMark
@@ -2354,6 +2482,9 @@ export function parseMarkdownToNodes(content: string, target?: string): ProseMir
 // parseMarkdownToNodes — used to populate modal textareas with the existing
 // markdown instead of node.textContent which strips all marks.
 export function serializeNodeToMarkdown(node: ProseMirrorNode, target?: string): string {
+  // 空内容（比如光标停在一个空段落里）：没有东西可序列化，直接给空串 ——
+  // 硬走到序列化器只会拿到空 root，历史上有过把它抛穿整个"打开文件"流程的事故。
+  if (node.content.size === 0) return ''
   const inst = activeEditor(target)
   if (!inst) return ''
   let markdown = ''

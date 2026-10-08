@@ -533,6 +533,33 @@
       </svg>
     </button>
   </div>
+  <!-- 文档助手侧边栏（LLM）：右侧常驻对话面板。开关在「偏好设置 → 外观」，
+       由 main.ts 按 assistant.sidebarOpen 决定 body.assistant-open。
+       默认行为是「先预览再应用」：模型产出先进消息里的建议卡片，
+       用户点「应用到文档」才写进正文（assistant.ts）。 -->
+  <aside id="assistant-panel" aria-label="文档助手" hidden>
+    <div class="assistant-head">
+      <span class="assistant-title">文档助手</span>
+      <!-- 上下文范围：自动（选区 / 当前段落）或整篇文档 -->
+      <select id="assistant-scope" class="assistant-scope"></select>
+      <span id="assistant-context" class="assistant-context"></span>
+      <button id="assistant-close-btn" class="assistant-icon-btn" type="button" title="收起侧边栏">×</button>
+    </div>
+    <div id="assistant-messages" class="assistant-messages"></div>
+    <div class="assistant-composer">
+      <!-- 附件条：图片（缩略图 + 「识别公式」）/ 文件（名字）+ 删除。图片也可以直接
+           粘贴（截图）进来；附件一律先转成文本再随指令发给模型，见 assistant-attach.ts。 -->
+      <div id="assistant-attachments" class="assistant-attachments" hidden></div>
+      <textarea id="assistant-input" class="assistant-input" rows="3"
+        placeholder="例如：把选中的内容改写成简洁的学术表达"></textarea>
+      <div class="assistant-actions">
+        <button id="assistant-attach-btn" class="assistant-attach" type="button"
+          title="添加附件（图片 / PDF / Word / 文本；也可直接粘贴截图）">＋</button>
+        <span id="assistant-status" class="assistant-status" aria-live="polite"></span>
+        <button id="assistant-send-btn" class="assistant-send" type="button">发送</button>
+      </div>
+    </div>
+  </aside>
   <script type="module" src="./main.ts"></script>
 </body>
 </html>
