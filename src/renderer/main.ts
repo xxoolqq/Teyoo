@@ -595,9 +595,19 @@ async function saveTabForLeaving(tab: DocumentTab | null): Promise<boolean> {
 // file seeds the first tab here, and a file that arrives later adopts it.
 function ensureTab(): DocumentTab {
   const existing = activeTab()
-  if (existing && existing.kind === 'document' && !existing.pdfTab && !existing.imageTab) return existing
-  // 提交页 / 类docx文档页 / PDF 对照页 / 图片转md 页是活动标签页时，到来的文档
-  // 不能落在它身上：种一个新的文档标签页接管活动位（它们退回后台，供切回）。
+  if (
+    existing &&
+    existing.kind === 'document' &&
+    !existing.pdfTab &&
+    !existing.imageTab &&
+    !existing.tool &&
+    !existing.solver
+  ) {
+    return existing
+  }
+  // 提交页 / 类docx文档页 / PDF 对照页 / 图片转md / 工具箱 / 可视化解题 页是
+  // 活动标签页时，到来的文档不能落在它身上：种一个新的文档标签页接管活动位
+  //（它们退回后台，供切回）。
   if (existing) {
     const tab: DocumentTab = {
       id: `tab-${nextTabId++}`,
@@ -622,9 +632,12 @@ function ensureTab(): DocumentTab {
     activeTabId = tab.id
     hideSubmitView()
     hideCanvasDocView()
-    // 对照面板跟着标签页走：新文档标签页没有它。
+    // 对照面板跟着标签页走：新文档标签页没有它。工具箱 / 可视化解题 的整页
+    // 界面同理（后者切走时还要停掉仍在跑的那条流）。
     leavePdfTabChrome()
     leaveImageTab()
+    leaveToolTab()
+    leaveSolverTab()
     updatePanelVisibility()
     return tab
   }
