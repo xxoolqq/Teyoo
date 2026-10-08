@@ -20,6 +20,7 @@
     "build": "electron-vite build",
     "prebuild": "npm run typecheck",
     "check:theme-colors": "node scripts/check-theme-colors.mjs",
+    "test:solver-graphics": "node scripts/test-solver-graphics.mjs",
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",
