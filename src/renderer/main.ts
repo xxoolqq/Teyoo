@@ -678,12 +678,14 @@ async function openNewTab(): Promise<void> {
   const previous = activeTab()
   captureActiveTab()
   if (!await saveTabForLeaving(previous)) return
-  // 从提交页 / 类docx文档页 / PDF 对照页 / 图片转md 页新建文档标签页时，先把
-  // 这些视图收起来（编辑面归位）
+  // 从提交页 / 类docx文档页 / PDF 对照页 / 图片转md / 工具箱 / 可视化解题 页
+  // 新建文档标签页时，先把这些视图收起来（编辑面归位）
   hideSubmitView()
   hideCanvasDocView()
   leavePdfTabChrome()
   leaveImageTab()
+  leaveToolTab()
+  leaveSolverTab()
   const tab: DocumentTab = {
     id: `tab-${nextTabId++}`,
     kind: 'document',
@@ -3001,9 +3003,19 @@ function applyAppearanceFontSize(): void {
     const result = await api.importDocx()
     if (!result) return // 用户取消或转换失败
     // 当前 tab 为空/未保存 → 复用它；否则新建 tab 避免覆盖未保存内容
-    //（提交页 / 类docx文档页都是表单/画布视图，不能承载文档内容，一律走新建）
+    //（提交页 / 类docx文档页 / PDF 对照 / 图片转md / 工具箱 / 可视化解题 都是
+    //  表单、画布或整页视图，不能承载文档内容，一律走新建）
     const current = activeTab()
-    if (current && current.kind === 'document' && !current.filePath && !current.dirty) {
+    if (
+      current &&
+      current.kind === 'document' &&
+      !current.filePath &&
+      !current.dirty &&
+      !current.pdfTab &&
+      !current.imageTab &&
+      !current.tool &&
+      !current.solver
+    ) {
       currentFilePath = null
       applyContent(result.content)
       current.filePath = null
