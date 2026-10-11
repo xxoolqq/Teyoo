@@ -80,8 +80,16 @@ export interface DocxImportResult {
 }
 
 export interface DocxImportOptions {
-  /** 行内公式图片 OCR：true 时把行内图片提交识别接口，用返回的 LaTeX 替换图片 */
+  /** 行内公式图片 OCR：true 时把行内图片提交识别，用返回的 LaTeX 替换图片 */
   imageFormulaOcr?: boolean
+  /** 公式 OCR 地址（SimpleTex 契约）；缺省走环境变量 COLAMD_OCR_URL 或默认本地端点 */
+  formulaOcrUrl?: string
+  /**
+   * 本地识别器（图片 data URL → LaTeX）：提供时取代 formulaOcrUrl 的 HTTP 端点，
+   * 即「使用内置大模型」。Electron 主进程注入 Texo 模型；WebView2 宿主没有该模型、
+   * 也不该把 onnxruntime 打进它的 bundle，所以那边留空继续走 HTTP。
+   */
+  recognizeFormula?: (dataUrl: string) => Promise<string | null>
 }
 
 // ─── 占位符 ────────────────────────────────────────────────────────────
@@ -236,7 +244,20 @@ export async function docxToMarkdown(
   // 行内位置的图片提交识别接口，替换为 $latex$；独占一行的图片保留。
   // 识别失败（服务不可达/超时/返回异常）时静默退回保留图片方案，不产生 warning
   if (options?.imageFormulaOcr) {
-    markdown = await ocrInlineFormulaImages(markdown)
+    const url = resolveOcrUrl(options.formulaOcrUrl)
+    const local = options.recognizeFormula
+    markdown = await ocrInlineFormulaImages(
+      markdown,
+      local
+        ? (item) => {
+            const dataUrl = `data:image/${item.ext};base64,${item.b64}`
+            return Promise.resolve().then(() => local(dataUrl)).catch(() => null)
+          }
+        : (item) => recognizeFormulaImage(item, url),
+      local ? '内置大模型' : `OCR 服务 ${url}`,
+      // 内置模型是单个 ONNX 会话，并发只会抢内存不加速，串行跑
+      local ? 1 : OCR_CONCURRENCY,
+    )
   }
 
   // 合并 mammoth 告警和预处理告警
@@ -1707,10 +1728,15 @@ function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   return bytes
 }
 
-const OCR_API_URL = nodeEnv('COLAMD_OCR_URL') || 'http://127.0.0.1:8787/api/latex_ocr'
+const DEFAULT_OCR_URL = 'http://127.0.0.1:8787/api/latex_ocr'
 const OCR_API_TOKEN = nodeEnv('COLAMD_OCR_TOKEN') || 'test-token'
 const OCR_CONCURRENCY = 4
 const OCR_TIMEOUT_MS = 15000
+
+/** 公式 OCR 地址：调用方显式传入 > 环境变量 COLAMD_OCR_URL > 默认本地端点 */
+function resolveOcrUrl(url?: string): string {
+  return url?.trim() || nodeEnv('COLAMD_OCR_URL') || DEFAULT_OCR_URL
+}
 
 // data URI 图片：base64 字符表不含 ')'，可安全用 [^)\s]+ 截断
 const DATA_URI_IMAGE_RE = /!\[[^\]]*\]\(data:image\/([a-zA-Z0-9.+-]+);base64,([^)\s]+)\)/g
@@ -1744,7 +1770,7 @@ async function mapWithConcurrency<T, R>(
 }
 
 /** 单张图片 → OCR 接口 → LaTeX；任何失败返回 null（调用方保留原图） */
-async function recognizeFormulaImage(match: InlineImageMatch): Promise<string | null> {
+async function recognizeFormulaImage(match: InlineImageMatch, url: string): Promise<string | null> {
   const bytes = base64ToBytes(match.b64)
   // image/jpeg → 扩展名 jpg；image/svg+xml → svg
   const ext = match.ext === 'jpeg' ? 'jpg' : match.ext.replace('svg+xml', 'svg')
@@ -1754,7 +1780,7 @@ async function recognizeFormulaImage(match: InlineImageMatch): Promise<string | 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS)
   try {
-    const resp = await fetch(OCR_API_URL, {
+    const resp = await fetch(url, {
       method: 'POST',
       headers: { token: OCR_API_TOKEN },
       body: form,
@@ -1784,11 +1810,19 @@ async function recognizeFormulaImage(match: InlineImageMatch): Promise<string | 
 export async function ocrFormulaImageBytes(bytes: Uint8Array, ext: string): Promise<string | null> {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-  return recognizeFormulaImage({ start: 0, end: 0, ext, b64: btoa(binary) })
+  return recognizeFormulaImage({ start: 0, end: 0, ext, b64: btoa(binary) }, resolveOcrUrl())
 }
 
-/** 扫描行内图片 → OCR → 替换为 $latex$；独占一行的图片保留；失败静默保留原图 */
-async function ocrInlineFormulaImages(markdown: string): Promise<string> {
+/**
+ * 扫描行内图片 → 识别 → 替换为 $latex$；独占一行的图片保留；失败静默保留原图。
+ * recognize 由调用方决定用内置大模型还是 HTTP 端点（见 DocxImportOptions）。
+ */
+async function ocrInlineFormulaImages(
+  markdown: string,
+  recognize: (item: InlineImageMatch) => Promise<string | null>,
+  source: string,
+  concurrency: number = OCR_CONCURRENCY,
+): Promise<string> {
   const matches: InlineImageMatch[] = []
   let m: RegExpExecArray | null
   DATA_URI_IMAGE_RE.lastIndex = 0
@@ -1811,10 +1845,8 @@ async function ocrInlineFormulaImages(markdown: string): Promise<string> {
   }
   if (matches.length === 0) return markdown
 
-  console.log(`[docx-import] ${matches.length} 张行内公式图片提交 OCR：${OCR_API_URL}`)
-  const results = await mapWithConcurrency(matches, OCR_CONCURRENCY, (item) =>
-    recognizeFormulaImage(item),
-  )
+  console.log(`[docx-import] ${matches.length} 张行内公式图片提交识别：${source}`)
+  const results = await mapWithConcurrency(matches, concurrency, recognize)
 
   let failed = 0
   const replacements: { start: number; end: number; text: string }[] = []

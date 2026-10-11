@@ -77,14 +77,21 @@ export interface UserSetting {
     /** 子块与分栏（@box / @@cols） */
     columns: boolean
     latexEngine: 'katex' | 'mathjax'
-    // 行内公式图片处理：ocr=请求 OCR 接口转为 LaTeX；keep=保留原图片
-    imageFormula: 'ocr' | 'keep'
   }
   export: {
     // 'Temml' = KaTeX 生态（Temml 是 KaTeX 的 MathML 输出分支；设置面板下拉里
     //           这一项显示为 KaTeX，存储值仍是 'Temml'）；'MathJax' = mathjax-full。
     // 默认 MathJax：官方宏包最全（physics 等），化学式 \ce 两边都能渲染。
     formulaEngine: 'Temml' | 'MathJax'
+  }
+  // docx 转 md（菜单「文件 → docx转md」）。
+  docx: {
+    /** 图片公式自动转 LaTeX：导入 Word 时把行内公式图片送识别替换为 $latex$ */
+    imageFormulaOcr: boolean
+    /** 是否改用自定义公式 OCR 地址（默认 false = 用内置大模型识别） */
+    useCustomOcrUrl: boolean
+    /** 公式 OCR 地址（SimpleTex 契约：POST multipart file，返回 {code:200,data:{latex}}） */
+    formulaOcrUrl: string
   }
   // 在线 PDF 解析（MinerU）。token 明文存在 userSetting.json 里 —— 桌面端没有
   // 更安全的凭据仓（系统钥匙串要原生模块），所以配套的约定是：不进日志、不进
@@ -114,14 +121,6 @@ export interface UserSetting {
      * 存这里而不是 localStorage：多窗口要同步，也要能随 userSetting.json 走。
      */
     sidebarOpen: boolean
-  }
-  // 可视化解题（「帮助 → 可视化解题」开的整页标签页）。
-  // 三个字段**留空即沿用上面的 assistant 配置** —— 只想给解题换个更会推理的模型
-  // 时，只填 model 就行（密钥/端点跟侧边栏共用）。
-  visualSolve: {
-    baseUrl: string
-    apiKey: string
-    model: string
   }
 }
 
@@ -174,11 +173,19 @@ const DEFAULT_SETTING: UserSetting = {
     fontSpan: true,
     imageSyntax: true,
     columns: true,
-    latexEngine: 'mathjax',
-    imageFormula: 'keep'
+    latexEngine: 'mathjax'
   },
   export: {
     formulaEngine: 'MathJax'
+  },
+  docx: {
+    imageFormulaOcr: false,
+    // 默认不启用自定义地址 → 行内公式图片用内置大模型（Texo）识别；
+    // 勾选「公式 OCR 地址」后才改用下面的自定义端点。
+    useCustomOcrUrl: false,
+    // SimpleTex 契约端点，默认指向本地模拟服务（http/server.mjs）；填自己的
+    // SimpleTex /api/latex_ocr 即可切换。环境变量 COLAMD_OCR_URL 优先。
+    formulaOcrUrl: 'http://127.0.0.1:8787/api/latex_ocr'
   },
   mineru: {
     // 空串 = 未配置。环境变量 MINERU_TOKEN 优先级更高（见 index.ts），方便
@@ -196,14 +203,6 @@ const DEFAULT_SETTING: UserSetting = {
     model: 'deepseek-chat',
     // 默认关：不打扰，用户自己去 外观 里打开。
     sidebarOpen: false,
-  },
-  visualSolve: {
-    // 留空 = 沿用 assistant 的端点
-    baseUrl: '',
-    // 留空 = 沿用 assistant 的密钥
-    apiKey: '',
-    // 留空 = 沿用 assistant 的模型；解题想用更会推理的模型就在这里填
-    model: '',
   },
 }
 
@@ -243,6 +242,11 @@ function loadUserSetting(): UserSetting {
       : undefined
     if (typeof legacyDir === 'string' && legacyDir && merged.image.workDir === DEFAULT_SETTING.image.workDir) {
       merged.image.workDir = legacyDir
+    }
+    // 「markdown.imageFormula」已并入「docx转md」分组：旧值 'ocr' 视同开启自动转 LaTeX。
+    const legacyMd = (parsed as Record<string, unknown> | null)?.markdown
+    if (legacyMd && typeof legacyMd === 'object' && (legacyMd as Record<string, unknown>).imageFormula === 'ocr') {
+      merged.docx.imageFormulaOcr = true
     }
     // 「启动 → 打开指定文件夹」已移除（launchFolder 字段由 pruneToDefaults 丢弃）。
     // 旧配置里选过它的人回落到「打开上次的文件」，否则两个 radio 会都不选中。

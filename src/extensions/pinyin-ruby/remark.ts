@@ -23,9 +23,11 @@ import { trimHanziToSyllables } from './pinyin'
 //   组2 = 完整拼音串（小写字母 + 数字声调，可多音节）
 // 拼音部分 (?:[a-z]+[1-4]?)+ 允许多个 (字母+可选声调) 组合，
 // 单个 [1-4]? 允许轻声（不带数字）。
+// (?: (?:[a-z]+[1-4]?)+)* 允许音节段之间以单个空格分隔，
+// 如 tian1 qi4 / san1 jin4 da4 di4；不允许多空格或首尾空格。
 // 注意：组1 是贪婪匹配，会吃掉紧贴括号之前的整段连续汉字，
 // 命中后须用 trimHanziToSyllables 按音节数裁剪基串（见 pinyin.ts）。
-const RE_PINYIN_RUBY = /([\u4e00-\u9fa5]+)\(((?:[a-z]+[1-4]?)+)\)/g
+const RE_PINYIN_RUBY = /([\u4e00-\u9fa5]+)\(((?:[a-z]+[1-4]?)+(?: (?:[a-z]+[1-4]?)+)*)\)/g
 
 // 把一个 text 节点的 value 切成 [text?, pinyinRuby, text?, ...]
 // 若没有任何匹配，返回 null 表示调用方无需替换原节点。

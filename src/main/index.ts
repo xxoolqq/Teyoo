@@ -12,6 +12,8 @@ import { ocrImageToLatex, readAttachment, savePastedImage } from './assistant-at
 import { splitPdfByPageCount, type SplitResult } from './pdf-split'
 import { completeChat, streamChat, type ChatContentPart, type ChatMessage, type ChatResult } from './llm'
 import { setAsDefaultApp } from './default-app'
+import { recognizeTexoFormula } from './texo-ocr'
+import { saveFormulaRecord } from './formula-db'
 
 const startupStartedAt = performance.now()
 const startupTraceEnabled = process.env.COLAMD_STARTUP_TRACE === '1'
@@ -1421,11 +1423,18 @@ ipcMain.handle('import-docx', async (event) => {
   const filePath = result.filePaths[0]
   try {
     const { docxToMarkdown } = await import('./docx-import')
-    const imageFormulaMode = getUserSettingByPath<string>('markdown.imageFormula')
+    const imageFormulaOcr = getUserSettingByPath<boolean>('docx.imageFormulaOcr') ?? false
+    const formulaOcrUrl = getUserSettingByPath<string>('docx.formulaOcrUrl') ?? ''
+    // 默认用内置大模型识别行内公式图片；勾选了「公式 OCR 地址」才走 HTTP 端点。
+    const useCustomOcrUrl = getUserSettingByPath<boolean>('docx.useCustomOcrUrl') === true
     // docx-import 只吃字节（它同时要在 WebView2 页面里跑，那里没有 fs）
     const fileBytes = await readFile(filePath)
     const { markdown, warnings } = await docxToMarkdown(fileBytes, {
-      imageFormulaOcr: imageFormulaMode === 'ocr',
+      imageFormulaOcr,
+      formulaOcrUrl,
+      recognizeFormula: useCustomOcrUrl
+        ? undefined
+        : (dataUrl) => recognizeTexoFormula(dataUrl).catch(() => null),
     })
     if (warnings.length > 0) {
       console.warn('[docx-import] warnings:', warnings)
@@ -1807,7 +1816,7 @@ ipcMain.handle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruPa
 ipcMain.handle('assistant-complete', async (_event, payload: unknown): Promise<ChatResult> => {
   const clean = readAssistantMessages(payload)
   if (!clean) return { ok: false, error: 'BAD_MESSAGES' }
-  return completeChat({ ...streamConnection(readStreamChannel(payload)), messages: clean })
+  return completeChat({ ...assistantConnection(), messages: clean })
 })
 
 // 文档助手的流式版本：每收到一块就经 assistant-delta 推给发起的那窗口。
@@ -1956,6 +1965,23 @@ ipcMain.handle('assistant-paste-image', async (_event, dataUrl: unknown) => {
   }
 })
 
+// LaTeX公式：图片 data URL → 本地 Texo 模型识别出的 LaTeX（主进程 onnxruntime-node）
+ipcMain.handle('texo-recognize', async (_event, payload: unknown) => {
+  const { dataUrl, source } = (payload ?? {}) as { dataUrl?: unknown; source?: unknown }
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return null
+  try {
+    const latex = await recognizeTexoFormula(dataUrl)
+    // 认出来就存一条历史：这是识别的唯一入口，手写板与上传图片都经这里，
+    // 不必在渲染端各记一次。存失败也不影响这次识别的结果（见 formula-db.ts）。
+    if (typeof latex === 'string' && latex.trim()) {
+      saveFormulaRecord(latex, typeof source === 'string' ? source : null, dataUrl)
+    }
+    return latex
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
 /** 多模态消息的内容分片上限（防手滑塞一堆）与单张图片的体积上限 */
 const ASSISTANT_CONTENT_PARTS_MAX = 16
 const ASSISTANT_IMAGE_URL_MAX = 12 * 1024 * 1024
@@ -2024,17 +2050,6 @@ function readAssistantMessages(payload: unknown): ChatMessage[] | null {
   return clean
 }
 
-/**
- * 可视化解题的连接信息：字段留空就沿用文档助手那套（端点/密钥共用），
- * 所以「只想给解题换个模型」只需要填 visualSolve.model 一项。
- */
-function visualSolveConnection(): { baseUrl: string; apiKey: string; model: string } {
-  const fallback = assistantConnection()
-  const pick = (key: 'baseUrl' | 'apiKey' | 'model'): string =>
-    (getUserSettingByPath<string>(`visualSolve.${key}`) ?? '').trim() || fallback[key]
-  return { baseUrl: pick('baseUrl'), apiKey: pick('apiKey'), model: pick('model') }
-}
-
 /** 连接信息每次现读偏好设置：改完不用重启。密钥约定见 user-setting.ts。 */
 function assistantConnection(): { baseUrl: string; apiKey: string; model: string } {
   return {
@@ -2044,6 +2059,17 @@ function assistantConnection(): { baseUrl: string; apiKey: string; model: string
       (getUserSettingByPath<string>('assistant.apiKey') ?? '').trim(),
     model: getUserSettingByPath<string>('assistant.model') ?? ''
   }
+}
+
+/**
+ * 可视化解题的连接信息：字段留空就沿用文档助手那套（端点/密钥共用），
+ * 所以「只想给解题换个模型」只需要填 visualSolve.model 一项。
+ */
+function visualSolveConnection(): { baseUrl: string; apiKey: string; model: string } {
+  const fallback = assistantConnection()
+  const pick = (key: 'baseUrl' | 'apiKey' | 'model'): string =>
+    (getUserSettingByPath<string>(`visualSolve.${key}`) ?? '').trim() || fallback[key]
+  return { baseUrl: pick('baseUrl'), apiKey: pick('apiKey'), model: pick('model') }
 }
 
 // 图片模态框的「浏览」按钮：打开系统文件对话框选一张本地图片，
@@ -2316,11 +2342,21 @@ ipcMain.handle('export-html', async (event, snapshot: {
   }
 })
 
-// Bundled Markdown documents open in an in-memory window. This keeps Help
-// useful even in a signed/read-only app bundle and avoids starting a watcher.
-async function openBundledDocument(fileName: string): Promise<void> {
+// 随包文档（用法指南 / Markdown 语法）开成前台窗口的一个标签页，而不是另起
+// 一个窗口：它们是只读的参考资料，放在正在编辑的文档旁边才有用，也不该再开
+// 一个窗口去抢焦点。内容随包分发（读不了盘也能用），所以仍然没有文件监听。
+// 没有任何窗口能接收时才退回开窗口。
+function sendBundledDocToWindow(payload: { key: string; title: string; content: string }): boolean {
+  const win = getFocusedWindow() ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+  if (!win) return false
+  win.webContents.send('menu-help-doc', payload)
+  return true
+}
+
+async function openBundledDocument(fileName: string, title: string): Promise<void> {
   try {
     const content = await readFile(join(demoDir, fileName), 'utf-8')
+    if (sendBundledDocToWindow({ key: fileName, title, content })) return
     createWindow(undefined, content, demoDir)
   } catch {
     createWindow(undefined, undefined, demoDir)
@@ -2346,10 +2382,13 @@ async function openChangelogOnceForVersion(): Promise<void> {
   }
 }
 
-async function openCheatsheet(language: 'zh' | 'en' = 'zh'): Promise<void> {
+// 与 openBundledDocument 同一套路（标签页优先，没有窗口才退回开窗口），只是
+// 文件在 templates 目录、且分中英文两份。
+async function openCheatsheet(language: 'zh' | 'en' = 'zh', title = 'Markdown 语法'): Promise<void> {
   try {
     const fileName = language === 'en' ? 'cheatsheet-en.md' : 'cheatsheet.md'
     const content = await readFile(join(cheatsheetDir, fileName), 'utf-8')
+    if (sendBundledDocToWindow({ key: fileName, title, content })) return
     createWindow(undefined, content, demoDir)
   } catch {
     createWindow(undefined, undefined, demoDir)
@@ -2646,9 +2685,9 @@ function buildMenu(): void {
         light: '浅色', dark: '深色', elegant: '雅致',
         sepia: '羊皮纸', notion: '简白', bear: '熊红', writer: '作家',
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
-        importTheme: '导入主题', whatsNew: '新功能演示',
+        importTheme: '导入主题', whatsNew: 'Teyoo用法指南',
         cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
-        preferences: '偏好设置…', toolbox: '工具箱', visualSolve: '可视化解题',
+        preferences: '偏好设置…', toolbox: '工具箱', visualSolve: '可视化解题', latexOcr: 'LaTeX公式',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         newCanvasDoc: '新建类docx文档',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
@@ -2679,9 +2718,9 @@ function buildMenu(): void {
         light: 'Light', dark: 'Dark', elegant: 'Elegant',
         sepia: 'Sepia', notion: 'Notion', bear: 'Bear', writer: 'Writer',
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
-        importTheme: 'Import Theme', whatsNew: "What's New",
+        importTheme: 'Import Theme', whatsNew: 'Teyoo Guide',
         cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
-        preferences: 'Preferences…', toolbox: 'Toolbox', visualSolve: 'Visual Solver',
+        preferences: 'Preferences…', toolbox: 'Toolbox', visualSolve: 'Visual Solver', latexOcr: 'LaTeX OCR',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         newCanvasDoc: 'New DOCX-like Document',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
@@ -3062,16 +3101,21 @@ function buildMenu(): void {
           label: labels.visualSolve,
           click: () => sendToFocused('menu-solver-tab')
         },
+        // LaTeX公式：本地 Texo 模型（Transformers.js）图片 → LaTeX，整页标签页。
+        {
+          label: labels.latexOcr,
+          click: () => sendToFocused('menu-texo-tab')
+        },
         { type: 'separator' },
         {
           label: labels.whatsNew,
           accelerator: 'CmdOrCtrl+Shift+D',
-          click: () => { void openBundledDocument('changelog.md') }
+          click: () => { void openBundledDocument('changelog.md', labels.whatsNew) }
         },
         {
           label: labels.cheatsheet,
           accelerator: 'CmdOrCtrl+Shift+/',
-          click: () => { void openCheatsheet(preferredCheatsheetLanguage) }
+          click: () => { void openCheatsheet(preferredCheatsheetLanguage, labels.cheatsheet) }
         },
         {
           label: labels.checkForUpdates,

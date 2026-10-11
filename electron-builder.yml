@@ -20,15 +20,45 @@ files:
   # (@napi-rs/canvas-win32-x64-msvc / -darwin-arm64 / -linux-x64-gnu …) that
   # @napi-rs/canvas loads internally. ~37 MB unpacked, mostly Skia.
   - 'node_modules/@napi-rs/**/*'
+  # LaTeX公式（本地 Texo 模型）主进程推理：transformers.js 走 onnxruntime-node
+  # 原生后端（electron.vite 里 external），运行时从 node_modules 加载。
+  - 'node_modules/@huggingface/**/*'
+  - 'node_modules/onnxruntime-node/**/*'
+  - 'node_modules/onnxruntime-common/**/*'
+  - 'node_modules/global-agent/**/*'
+  # 公式识别历史（SQLite）：better-sqlite3 是原生模块，主进程 require，
+  # 运行时从 node_modules 加载（原因同 @napi-rs/canvas）。只带运行时真正
+  # 需要的 lib + 预编译 .node：随包的 src/*.cpp 与 build/ 中间产物纯属累赘。
+  - 'node_modules/better-sqlite3/lib/**/*'
+  - 'node_modules/better-sqlite3/prebuilds/**/*.node'
+  - 'node_modules/better-sqlite3/package.json'
+  # transformers.js 的 Node 构建是「顶层静态」import sharp（dist/transformers.node.mjs
+  # 第 18834 行 `import sharp from "sharp"`，不是 try/catch 包着的动态 import），
+  # 所以 sharp 不是可选依赖：模块一加载就要解析它，缺包直接 ERR_MODULE_NOT_FOUND，
+  # 公式识别报 "Cannot find package 'sharp'"。
+  # dev 下不报错只因 node_modules 里有；装到 Program Files 后 Node 向上查找
+  # 够不到任何 node_modules，必炸。故随包带上：sharp 主包 + 它的运行时依赖，
+  # 平台二进制只取当前平台（@img/sharp-win32-x64 单个就 19MB，含 libvips，
+  # 若用 @img/** 会把 8 个平台全塞进安装包）。
+  - 'node_modules/sharp/**/*'
+  - 'node_modules/@img/sharp-${platform}-${arch}/**/*'
+  - 'node_modules/@img/colour/**/*'
+  - 'node_modules/detect-libc/**/*'
+  - 'node_modules/semver/**/*'
 
 # Native .node files cannot be dlopen'd from inside an asar archive, so keep
-# the automatic unpacking heuristics off but unpack the one native module we
-# ship: Electron resolves it from app.asar.unpacked.
+# the automatic unpacking heuristics off but unpack exactly the native modules
+# we ship: Electron resolves them from app.asar.unpacked.
 asar:
   smartUnpack: false
 
 asarUnpack:
   - node_modules/@napi-rs/**/*
+  - node_modules/onnxruntime-node/**/*
+  - node_modules/better-sqlite3/**/*
+  # sharp 的 .node 与它依赖的 libvips-42.dll 必须一起解包：.node 内部按相对
+  # 路径 LoadLibrary 这个 dll，留在 asar 里 Windows 加载不到。
+  - node_modules/@img/sharp-${platform}-${arch}/**/*
 
 # ColaMD provides its own Chinese/English UI and only needs these Chromium
 # locale resources. Keeping every Electron locale adds tens of megabytes.
@@ -44,6 +74,10 @@ extraResources:
     to: templates
   - from: resources/demo
     to: demo
+  # Texo 公式识别模型（2 个 ONNX + tokenizer/config，约 80MB）：主进程用
+  # onnxruntime-node 直接读（见 main/texo-ocr.ts），不参与 asar 打包。
+  - from: resources/texo
+    to: texo
 
 npmArgs:
   - "--loglevel=error"

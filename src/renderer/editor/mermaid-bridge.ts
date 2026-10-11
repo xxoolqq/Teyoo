@@ -2,14 +2,8 @@
 // sandbox document (its own chunk), keeping the main bundle and main thread
 // free of it. The iframe is created lazily on the first Mermaid block.
 
-const DARK_THEME_CLASSES = new Set([
-  'theme-dark',
-  'theme-solarized-dark',
-  'theme-nord',
-  'theme-gruvbox',
-  'theme-dracula',
-  'theme-midnight',
-])
+// 深色主题清单一处一份：与主题管理器共用（MathLive 的键盘也按它切深色）
+import { DARK_THEME_CLASSES } from '../themes/theme-manager'
 
 const RENDER_TIMEOUT_MS = 15_000
 

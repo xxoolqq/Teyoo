@@ -12,13 +12,21 @@
 
 import { convert } from 'pinyin-pro'
 
-// 用数字声调作为音节终止符切分原始串。
-// 每遇到 1-4 数字，结束当前音节（含该数字）并开始下一个。
-// 末尾无数字的字母串单独成为轻声音节。
+// 用数字声调或空格作为音节终止符切分原始串。
+// 每遇到 1-4 数字，结束当前音节（含该数字）并开始下一个；
+// 空格同样结束当前音节（支持 tian1 qi4 / san1 jin4 da4 di4 写法，
+// 多空格/首尾空格容错）。末尾无数字的字母串单独成为轻声音节。
 function splitSyllables(raw: string): string[] {
   const syllables: string[] = []
   let current = ''
   for (const ch of raw) {
+    if (ch === ' ') {
+      if (current) {
+        syllables.push(current)
+        current = ''
+      }
+      continue
+    }
     current += ch
     if (ch >= '1' && ch <= '4') {
       syllables.push(current)

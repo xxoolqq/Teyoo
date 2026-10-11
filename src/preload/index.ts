@@ -7,6 +7,16 @@ export interface SiblingFile {
 }
 
 type FileOpenedData = { path: string | null; content: string }
+// 内置文档（菜单「帮助 → Teyoo用法指南 / Markdown 语法」）：内容随包分发
+// （resources/demo、resources/templates），渲染端读不到盘，由主进程读出来连
+// 同标题送过来，渲染端据此在标签页里开一份没有文件路径的内存文档。
+export interface BundledDocPayload {
+  /** 去重标识（changelog.md / cheatsheet）：同一份文档不重复开标签页 */
+  key: string
+  /** 标签页标题（主进程已按界面语言定好，渲染端不掺和语言判断） */
+  title: string
+  content: string
+}
 // canvas-editor 的 IEditorData 形状（header/main/footer 元素列表）。preload 工程只
 // 收 src/preload，用不了 renderer 侧的模块垫片，这里就地表结构声明；渲染端拿到后
 // 自行按 IEditorData 消费（主进程已保证 main 是数组）。
@@ -61,20 +71,20 @@ export interface AssistantMessage {
   /** 纯文本，或分片数组（多模态） */
   content: string | AssistantContentPart[]
 }
-/** 可视化解题的一条历史：题目 + 模型原文 + 时间（id 由渲染端生成） */
-export interface VisualSolveHistoryEntry {
-  id: string
-  problem: string
-  answer: string
-  at: number
-}
-
 export interface AssistantResult {
   ok: boolean
   /** 成功时的完整回答（Markdown） */
   text?: string
   /** 失败原因：NO_API_KEY / BAD_BASE_URL / NO_MODEL / HTTP_<code>: … / TIMEOUT / … */
   error?: string
+}
+
+/** 可视化解题的一条历史：题目 + 模型原文 + 时间（id 由渲染端生成） */
+export interface VisualSolveHistoryEntry {
+  id: string
+  problem: string
+  answer: string
+  at: number
 }
 export interface PdfSplitResult {
   ok: boolean
@@ -214,6 +224,15 @@ export interface ElectronAPI {
   visualSolveSave: (markdown: string, name?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
   /** 菜单「帮助 → 可视化解题」 */
   onMenuSolverTab: (callback: () => void) => void
+  // 菜单「帮助 → LaTeX公式」：开一个本地公式识别（Texo 模型）标签页。
+  onMenuTexoTab: (callback: () => void) => void
+  // 菜单「帮助 → Teyoo用法指南 / Markdown 语法」：随包文档开成标签页
+  // （内容已由主进程读好，见 BundledDocPayload）。
+  onMenuHelpDoc: (callback: (payload: BundledDocPayload) => void) => void
+  // LaTeX公式：图片 data URL → 本地 Texo 模型识别出的 LaTeX（主进程推理）。
+  // source 只是给历史库标注来源（上传的图片 / 手写板）；认出的结果由主进程
+  // 存进 SQLite 历史（见 main/formula-db.ts），不用渲染端再操心。
+  recognizeTexoFormula: (dataUrl: string, source?: 'image' | 'hand') => Promise<string | null>
   // 文档助手附件：选文件（可多选）→ 主进程把它转成文本再交给模型
   // （图片=data URL + 可选公式、pdf=MinerU、docx=本地转换、md/txt=直读）。
   pickAssistantAttachment: () => Promise<AssistantAttachment[]>
@@ -357,7 +376,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('assistant-complete', { messages }) as Promise<AssistantResult>,
   assistantStream: (messages: AssistantMessage[]) =>
     ipcRenderer.invoke('assistant-stream', { messages }) as Promise<AssistantResult>,
-  assistantCancel: () => ipcRenderer.send('assistant-cancel', { channel: 'assistant' }),
+  assistantCancel: () => ipcRenderer.send('assistant-cancel'),
   onAssistantDelta: (callback: (payload: { text: string }) => void) => {
     ipcRenderer.on('assistant-delta', (_event, payload: { text: string; channel?: string }) => {
       // 可视化解题那条流有自己的监听者（onVisualSolveDelta），别串台
@@ -465,6 +484,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuSolverTab: (callback: () => void) => {
     ipcRenderer.on('menu-solver-tab', () => callback())
   },
+  onMenuTexoTab: (callback: () => void) => {
+    ipcRenderer.on('menu-texo-tab', () => callback())
+  },
+  onMenuHelpDoc: (callback: (payload: BundledDocPayload) => void) => {
+    ipcRenderer.on('menu-help-doc', (_event, payload: BundledDocPayload) => callback(payload))
+  },
+  recognizeTexoFormula: (dataUrl: string, source?: 'image' | 'hand') =>
+    ipcRenderer.invoke('texo-recognize', { dataUrl, source: source ?? null }) as Promise<string | null>,
   onMenuSaveAs: (callback: () => void) => {
     ipcRenderer.on('menu-save-as', () => callback())
   },

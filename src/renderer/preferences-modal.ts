@@ -11,7 +11,7 @@
 import { getPrefs, setPrefsPath } from './preferences-store'
 import { getActiveMathEngineId, listMathEngines, setMathEngine } from './math-engine'
 
-type TabKey = 'general' | 'appearance' | 'image' | 'markdown' | 'export' | 'assistant'
+type TabKey = 'general' | 'appearance' | 'image' | 'markdown' | 'export' | 'assistant' | 'docx' | 'mineru'
 
 /**
  * 读取导出公式引擎偏好（'Temml' / 'MathJax'），供渲染端发起导出时
@@ -31,6 +31,8 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'markdown', label: 'Markdown' },
   { key: 'export', label: '导出' },
   { key: 'assistant', label: '文档助手' },
+  { key: 'docx', label: 'docx转md' },
+  { key: 'mineru', label: '图片/PDF转md' },
 ]
 
 // 从 store 读取偏好值；store 未就绪时返回 undefined（控件工厂做默认处理）
@@ -55,7 +57,8 @@ class PreferencesModal {
   private closeBtn: HTMLButtonElement
   private activeTab: TabKey = 'general'
   private tabNodes: Record<TabKey, HTMLElement | null> = {
-    general: null, appearance: null, image: null, markdown: null, export: null, assistant: null,
+    general: null, appearance: null, image: null, markdown: null, export: null, assistant: null, docx: null,
+    mineru: null,
   }
 
   constructor() {
@@ -158,6 +161,8 @@ class PreferencesModal {
     this.tabNodes.markdown = this.buildMarkdownPanel()
     this.tabNodes.export = this.buildExportPanel()
     this.tabNodes.assistant = this.buildAssistantPanel()
+    this.tabNodes.docx = this.buildDocxPanel()
+    this.tabNodes.mineru = this.buildMineruPanel()
 
     for (const node of Object.values(this.tabNodes)) {
       if (node) {
@@ -388,104 +393,25 @@ class PreferencesModal {
 
     root.append(this.group('连接', [urlRow, keyRow, modelRow, testRow]))
 
-    // 可视化解题（菜单「帮助 → 可视化解题」那个标签页）：三个字段**留空即沿用
-    // 上面文档助手的配置** —— 只想给解题换个更会推理的模型时，只填模型名即可。
-    const solveUrlRow = document.createElement('div')
-    solveUrlRow.className = 'prefs-subrow'
-    const solveUrlLine = this.inline(this.label('Base URL：'))
-    const solveUrlInput = this.input('text', {
-      placeholder: '留空 = 沿用上面的地址',
-      style: 'flex:0 1 auto; width:62%; min-width:0',
-      value: readPref<string>('visualSolve.baseUrl') ?? '',
-    })
-    const commitSolveUrl = (): void => {
-      void writePref('visualSolve.baseUrl', solveUrlInput.value.trim())
-    }
-    solveUrlInput.addEventListener('change', commitSolveUrl)
-    solveUrlInput.addEventListener('blur', commitSolveUrl)
-    solveUrlLine.append(solveUrlInput)
-
-    const solveKeyRow = document.createElement('div')
-    solveKeyRow.className = 'prefs-subrow'
-    const solveKeyLine = this.inline(this.label('API Key：'))
-    const solveKeyInput = this.input('password', {
-      placeholder: '留空 = 沿用上面的密钥',
-      style: 'flex:0 1 auto; width:62%; min-width:0',
-      value: readPref<string>('visualSolve.apiKey') ?? '',
-    })
-    const commitSolveKey = (): void => {
-      void writePref('visualSolve.apiKey', solveKeyInput.value.trim())
-    }
-    solveKeyInput.addEventListener('change', commitSolveKey)
-    solveKeyInput.addEventListener('blur', commitSolveKey)
-    const solveKeyToggle = this.btn('显示', () => {
-      solveKeyInput.type = solveKeyInput.type === 'password' ? 'text' : 'password'
-      solveKeyToggle.textContent = solveKeyInput.type === 'password' ? '显示' : '隐藏'
-    })
-    solveKeyLine.append(solveKeyInput, solveKeyToggle)
-
-    const solveModelRow = document.createElement('div')
-    solveModelRow.className = 'prefs-subrow'
-    const solveModelLine = this.inline(this.label('模型：'))
-    const solveModelInput = this.input('text', {
-      placeholder: '留空 = 沿用上面的模型',
-      style: 'flex:0 1 auto; width:40%; min-width:0',
-      value: readPref<string>('visualSolve.model') ?? '',
-    })
-    const commitSolveModel = (): void => {
-      void writePref('visualSolve.model', solveModelInput.value.trim())
-    }
-    solveModelInput.addEventListener('change', commitSolveModel)
-    solveModelInput.addEventListener('blur', commitSolveModel)
-    solveModelLine.append(solveModelInput)
-
-    // 测试连接：把当前填的值先落盘，再真发一次极短的请求（走 solver 通道，
-    // 留空的那几项按文档助手的值兜底）。
-    const solveTestStatus = document.createElement('span')
-    solveTestStatus.className = 'prefs-hint'
-    const solveTestRow = document.createElement('div')
-    solveTestRow.className = 'prefs-row prefs-btn-row'
-    const solveTestBtn = this.btn('测试连接', () => {
-      void (async () => {
-        commitSolveUrl(); commitSolveKey(); commitSolveModel()
-        solveTestBtn.disabled = true
-        solveTestStatus.textContent = '测试中…'
-        try {
-          const result = await window.electronAPI?.visualSolveComplete?.([{ role: 'user', content: 'ping' }])
-          if (!result) {
-            solveTestStatus.textContent = '当前环境没有解题接口'
-          } else if (result.ok) {
-            solveTestStatus.textContent = '连接正常'
-          } else {
-            const code = result.error ?? ''
-            if (code === 'NO_API_KEY') solveTestStatus.textContent = '没填 API Key（留空时会用文档助手的）'
-            else if (code === 'BAD_BASE_URL') solveTestStatus.textContent = 'Base URL 不是合法地址'
-            else if (code === 'NO_MODEL') solveTestStatus.textContent = '没填模型名'
-            else if (code.startsWith('HTTP_401') || code.startsWith('HTTP_403')) solveTestStatus.textContent = '鉴权失败：API Key 不对或没有权限'
-            else solveTestStatus.textContent = `失败：${code}`
-          }
-        } finally {
-          solveTestBtn.disabled = false
-        }
-      })()
-    })
-    solveTestRow.append(solveTestBtn, solveTestStatus)
-
-    root.append(this.group('可视化解题', [
-      solveUrlRow,
-      solveKeyRow,
-      solveModelRow,
-      solveTestRow,
-      this.hint('「帮助 → 可视化解题」那个标签页用这套配置；三项留空就沿用上面文档助手的地址 / 密钥 / 模型。解题比改写正文更吃推理能力，建议这里单独填一个更强的模型（例如 deepseek-chat、deepseek-reasoner）。')
+    root.append(this.group('使用说明', [
+      this.hint('侧边栏的开关在「外观 → 文档助手」里。助手只会在你点「应用到文档」时才改正文，产出先显示为建议卡片。'),
+      this.hint('选中一段文字后提指令最有效；没有选中时光标所在的那一段会作为上下文。'),
+      this.hint('选中一张图再问「把图片识别成公式」，识别顺序是 MinerU → 本地 OCR → 你填的模型；都没认出来就把原图直接交给模型，并要它别凭记忆猜。'),
     ]))
+    return root
+  }
 
-    // 在线解析（MinerU）：原来在「通用」下面，挪到这里 —— 实际用它的是助手这条线：
-    // 「图片 → 公式」的识别链、以及 PDF/图片附件转 Markdown。
-    // Token 明文存在主进程的 userSetting.json（桌面端没有更安全的凭据仓），
-    // 环境变量 MINERU_TOKEN 优先于这里填的值。
+  // 在线解析（MinerU） ───────────────────────────────────────────────────────
+  //
+  // 「图片 → 公式」的识别链、以及 PDF/图片附件转 Markdown 的在线识别都用它。
+  // Token 明文存在主进程的 userSetting.json（桌面端没有更安全的凭据仓），
+  // 环境变量 MINERU_TOKEN 优先于这里填的值。
+  private buildMineruPanel(): HTMLElement {
+    const root = document.createElement('section')
+    root.className = 'prefs-panel'
+
     const tokenRow = document.createElement('div')
-    tokenRow.className = 'prefs-subrow'
-    const tokenLine = this.inline(this.label('MinerU Token：'))
+    tokenRow.className = 'prefs-row prefs-field'
     const tokenInput = this.input('password', {
       placeholder: 'sk-…',
       style: 'flex:0 1 auto; width:62%; min-width:0',
@@ -494,35 +420,27 @@ class PreferencesModal {
     const commitToken = (): void => {
       void writePref('mineru.token', tokenInput.value.trim())
     }
+    // 光标离开就写回（change 在失焦/回车才触发，blur 也挂上，避免"改完直接关面板"丢值）。
     tokenInput.addEventListener('change', commitToken)
     tokenInput.addEventListener('blur', commitToken)
-    // 光标离开就写回（change 在失焦/回车才触发，blur 也挂上，避免"改完直接关面板"丢值）。
     const tokenToggle = this.btn('显示', () => {
       tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password'
       tokenToggle.textContent = tokenInput.type === 'password' ? '显示' : '隐藏'
     })
-    tokenLine.append(tokenInput, tokenToggle)
-    tokenRow.append(
-      tokenLine,
-      this.hint('「图片 → 公式」与 PDF/图片 转 Markdown 的在线识别都用它。留空则这些在线识别不可用（会退到本地 OCR / 你填的模型）；设置环境变量 MINERU_TOKEN 时以它为准。')
-    )
+    tokenRow.append(this.label('MinerU Token：'), tokenInput, tokenToggle)
 
     // 逃生开关：默认关。MinerU 的结果 CDN（cdn-mineru.openxlab.org.cn）证书一过期，
     // 不勾这一项就一定 ERR_CERT_DATE_INVALID 下载不下来。勾选的范围很窄 —— 只有
     // 结果包下载那一次请求、只有 MinerU 的结果域名（见 http/mineru.ts）。
     const insecureRow = this.checkRow('忽略结果 CDN 的证书错误', { key: 'mineru.insecureDownload' })
 
-    root.append(this.group('在线解析（MinerU）', [
+    root.append(this.group('图片/PDF转md（MinerU）', [
       tokenRow,
       insecureRow,
+      this.hint('「图片 → 公式」与 PDF/图片 转 Markdown 的在线识别都用它。留空则这些在线识别不可用（会退到本地 OCR / 你填的模型）；设置环境变量 MINERU_TOKEN 时以它为准。'),
       this.hint('MinerU 的结果 CDN 证书过期时（表现为「结果下载失败 … CERT_…」）才需要勾：它会跳过那一次下载的证书校验，网络请求仅限 MinerU 结果域名，不影响其它任何连接。对方证书续期后建议再关掉。'),
     ]))
 
-    root.append(this.group('使用说明', [
-      this.hint('侧边栏的开关在「外观 → 文档助手」里。助手只会在你点「应用到文档」时才改正文，产出先显示为建议卡片。'),
-      this.hint('选中一段文字后提指令最有效；没有选中时光标所在的那一段会作为上下文。'),
-      this.hint('选中一张图再问「把图片识别成公式」，识别顺序是 MinerU → 本地 OCR → 你填的模型；都没认出来就把原图直接交给模型，并要它别凭记忆猜。'),
-    ]))
     return root
   }
 
@@ -589,8 +507,8 @@ class PreferencesModal {
     root.append(this.group('Markdown 扩展语法', [
       // 原有条目同样固定（插件常驻启用），保留 store 里的勾选值但不可改
       this.checkRow('LaTeX 公式（例：$LaTeX$ / $$LaTeX$$）', { key: 'markdown.inlineMath', checked: readPref<boolean>('markdown.inlineMath') ?? true, disabled: true }),
-      this.checkRow('下标（例：H~2~O）', { key: 'markdown.subscript', checked: readPref<boolean>('markdown.subscript') ?? true, disabled: true }),
-      this.checkRow('上标（例：X^2^）', { key: 'markdown.superscript', checked: readPref<boolean>('markdown.superscript') ?? true, disabled: true }),
+      this.checkRow('下标（例：H_{2}）', { key: 'markdown.subscript', checked: readPref<boolean>('markdown.subscript') ?? true, disabled: true }),
+      this.checkRow('上标（例：SO_{4}^{2-}）', { key: 'markdown.superscript', checked: readPref<boolean>('markdown.superscript') ?? true, disabled: true }),
       this.checkRow('高亮（例：==key==）', { key: 'markdown.highlight', checked: readPref<boolean>('markdown.highlight') ?? true, disabled: true }),
       this.checkRow('图表（序列图、流程图和 Mermaid 图）', { key: 'markdown.diagrams', checked: readPref<boolean>('markdown.diagrams') ?? true, disabled: true }),
       this.checkRow('首行缩进', { key: 'markdown.firstLineIndent', checked: readPref<boolean>('markdown.firstLineIndent') ?? true, disabled: true }),
@@ -603,11 +521,6 @@ class PreferencesModal {
       this.checkRow('字体大小（例：{= 三号 : 文字}）', { key: 'markdown.fontSpan', checked: true, disabled: true }),
       this.checkRow('图片语法扩展（尺寸 / 对齐 / 边框）', { key: 'markdown.imageSyntax', checked: true, disabled: true }),
       this.checkRow('子块与分栏（@box / @@cols）', { key: 'markdown.columns', checked: true, disabled: true }),
-    ]))
-
-    root.append(this.group('图片公式', [
-      this.imageFormulaRow(),
-      this.hint('OCR 解析：导入 Word 时将行内公式图片提交识别接口，替换为 LaTeX 公式；保留图片：原样保留图片'),
     ]))
 
     root.append(this.group('LaTeX 引擎', [
@@ -627,16 +540,57 @@ class PreferencesModal {
     return root
   }
 
-  // 图片公式：保留图片（默认）/ OCR 解析；store 存 'keep' / 'ocr'
-  private imageFormulaRow(): HTMLElement {
+  // docx转md ──────────────────────────────────────────────────────────────
+
+  private buildDocxPanel(): HTMLElement {
+    const root = document.createElement('section')
+    root.className = 'prefs-panel'
+
+    root.append(this.group('docx转md', [
+      this.checkRow('图片公式自动转 LaTeX（使用内置大模型）', { key: 'docx.imageFormulaOcr' }),
+      this.docxOcrUrlRow(),
+      this.hint('开启后，导入 Word 时由内置大模型识别行内公式图片并替换为 LaTeX 公式（$latex$）；勾选「公式 OCR 地址」则改走自定义识别服务。'),
+    ]))
+
+    return root
+  }
+
+  // docx转md：公式 OCR 地址（SimpleTex 契约：POST multipart file，返回 {code,data:{latex}}）
+  // 这是可选项：默认不勾选（= 用内置大模型识别），此时地址栏灰化不可编辑；
+  // 勾选后才开放填写自定义端点。
+  private docxOcrUrlRow(): HTMLElement {
     const row = document.createElement('div')
     row.className = 'prefs-row prefs-field'
-    const sel = this.select(['保留图片', 'OCR 解析'])
-    sel.value = readPref<string>('markdown.imageFormula') === 'ocr' ? 'OCR 解析' : '保留图片'
-    sel.addEventListener('change', () => {
-      writePref('markdown.imageFormula', sel.value === 'OCR 解析' ? 'ocr' : 'keep')
+
+    const toggle = document.createElement('label')
+    toggle.className = 'prefs-check-inline'
+    const cb = document.createElement('input')
+    cb.type = 'checkbox'
+    cb.checked = readPref<boolean>('docx.useCustomOcrUrl') ?? false
+    const text = document.createElement('span')
+    text.textContent = '公式 OCR 地址'
+    toggle.append(cb, text)
+
+    const input = this.input('text', {
+      placeholder: 'http://127.0.0.1:8787/api/latex_ocr',
+      style: 'flex:0 1 auto; width:62%; min-width:0',
+      value: readPref<string>('docx.formulaOcrUrl') ?? '',
     })
-    row.append(this.label('图片公式'), sel)
+    const syncEnabled = (): void => {
+      input.disabled = !cb.checked
+    }
+    const commit = (): void => {
+      void writePref('docx.formulaOcrUrl', input.value.trim())
+    }
+    cb.addEventListener('change', () => {
+      void writePref('docx.useCustomOcrUrl', cb.checked)
+      syncEnabled()
+    })
+    input.addEventListener('change', commit)
+    input.addEventListener('blur', commit)
+    syncEnabled()
+
+    row.append(toggle, input)
     return row
   }
 

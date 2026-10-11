@@ -223,8 +223,10 @@ export class PinyinModal {
     const pinyin = this.pinyinInput.value.trim()
     const mode = this.modeSelect.value as PinyinMode
 
-    if (!text || !pinyin) {
-      // 任一为空 → 闪红提示
+    // 同行平级（inline）允许汉字为空：只插拼音，之后可再补汉字（或纯拼音标注）。
+    // 上方（ruby）的语义是"汉字上方注音"，没有汉字不成立，仍必填。
+    if (!pinyin || (mode === 'ruby' && !text)) {
+      // 拼音为空（或 ruby 模式汉字为空）→ 闪红提示
       this.hint.classList.add('circled-sup-modal-hint-error')
       setTimeout(() => this.hint.classList.remove('circled-sup-modal-hint-error'), 1500)
       return

@@ -388,6 +388,85 @@
     <!-- 进度 / 结果提示：转换中与失败原因都写在这里。 -->
     <p id="image-status" class="image-status" aria-live="polite" hidden></p>
   </aside>
+  <!-- LaTeX公式标签页（菜单「帮助 → LaTeX公式」）：整页公式识别界面，铺满编辑区
+       （不显示编辑器与工具栏，见 base.css 的 body.texo-view）。默认隐藏，
+       src/texo/view.ts 在切进该标签页时显示。上传/粘贴/拖拽公式图 → 本地 Texo
+       模型 → LaTeX，MathLive 所见即所得预览（可直接改）+ 复制。 -->
+  <aside id="texo-panel" aria-label="LaTeX公式" hidden>
+    <div class="texo-head">
+      <span class="texo-title">LaTeX公式</span>
+      <span class="texo-subtitle">本地 Texo 模型 · 离线识别</span>
+    </div>
+    <div class="texo-body">
+      <!-- 左：识别（两种输入方式：图片识别 = 选图/拖拽/粘贴，手写识别 = 画板） -->
+      <section class="texo-card texo-card-upload">
+        <div class="texo-card-head" id="texo-head-upload">上传</div>
+        <div class="texo-upload-body">
+          <!-- 输入方式切换（原「示例图片 / 选择图片」的位置） -->
+          <div class="texo-mode-switch" role="tablist" aria-label="识别方式">
+            <button id="texo-mode-image" class="texo-mode-btn" type="button" role="tab" aria-selected="true">图片识别</button>
+            <button id="texo-mode-hand" class="texo-mode-btn" type="button" role="tab" aria-selected="false">手写识别</button>
+          </div>
+          <div id="texo-drop" class="texo-drop" title="点击选择图片">
+            <div id="texo-drop-empty" class="texo-drop-empty">
+              <svg class="texo-drop-icon" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+              <p class="texo-drop-strong">粘贴、拖拽或点击上传公式图片</p>
+              <p class="texo-drop-line">分辨率不小于 384×384</p>
+              <p class="texo-drop-line">边缘尽可能少</p>
+              <p class="texo-drop-line">长宽比过于悬殊可能使模型产生幻觉</p>
+            </div>
+            <img id="texo-thumb" class="texo-thumb" alt="已上传的公式图" hidden />
+          </div>
+          <!-- 手写画板：用鼠标 / 触屏 / 数位板书写，走同一条识别链 -->
+          <div id="texo-pad" class="texo-pad" hidden>
+            <canvas id="texo-canvas" class="texo-canvas"></canvas>
+            <span id="texo-pad-hint" class="texo-pad-hint">在框内手写公式，停一下就自动识别</span>
+          </div>
+          <div class="texo-upload-actions">
+            <button id="texo-pad-undo" class="texo-btn" type="button" hidden>撤销</button>
+            <button id="texo-pad-clear" class="texo-btn" type="button" hidden>清空</button>
+            <label id="texo-pad-auto-wrap" class="texo-autocopy" hidden><input id="texo-pad-auto" type="checkbox" checked /> 自动识别</label>
+            <span class="texo-actions-spacer"></span>
+            <!-- 主操作：图片模式 = 选择图片，手写模式 = 识别 -->
+            <button id="texo-mode-action" class="texo-btn texo-btn-primary" type="button">选择图片</button>
+          </div>
+        </div>
+      </section>
+      <!-- 右：预览（上）+ 编辑（下） -->
+      <div class="texo-right">
+        <section class="texo-card texo-card-preview">
+          <!-- 预览卡自己不再放按钮：MathLive 的公式右侧自带键盘 / 菜单两个开关
+               （见预览区里的 <math-field>），位置与参考界面一致。 -->
+          <div class="texo-card-head" id="texo-head-preview">预览</div>
+          <!-- 预览区就是编辑器：<math-field>（MathLive）所见即所得，识别结果落进去
+               可以直接改，改动实时写回下面「编辑」卡里的 LaTeX 文本框。
+               MathLive 有 800KB 上下，由 src/texo/view.ts 进标签页时才动态加载。 -->
+          <div id="texo-preview" class="texo-preview">
+            <math-field id="texo-mathfield" class="texo-mathfield"></math-field>
+            <span id="texo-preview-empty" class="texo-preview-empty" hidden></span>
+          </div>
+        </section>
+        <section class="texo-card texo-card-edit">
+          <div class="texo-card-head" id="texo-head-edit">编辑</div>
+          <textarea id="texo-latex" class="texo-latex" spellcheck="false" placeholder="在此输入 LaTeX 公式"></textarea>
+          <div class="texo-actions">
+            <button id="texo-copy" class="texo-btn" type="button">复制</button>
+            <button id="texo-clear" class="texo-btn" type="button">清除</button>
+            <button id="texo-copy-typst" class="texo-btn" type="button">复制为 Typst</button>
+            <button id="texo-copy-mathml" class="texo-btn" type="button">复制为 MathML</button>
+            <span class="texo-actions-spacer"></span>
+            <label class="texo-autocopy"><input id="texo-autocopy" type="checkbox" /> 自动复制</label>
+            <select id="texo-copy-format" class="texo-select" title="自动复制的格式">
+              <option value="latex">latex</option>
+              <option value="typst">typst</option>
+              <option value="mathml">mathml</option>
+            </select>
+          </div>
+        </section>
+      </div>
+    </div>
+    <p id="texo-status" class="texo-status" aria-live="polite" hidden></p>
+  </aside>
   <!-- 可视化解题标签页（菜单「帮助 → 可视化解题」）：整页解题界面，铺满编辑区
        （不显示编辑器与工具栏，见 base.css 的 body.solver-view）。默认隐藏，
        src/visualSolve/view.ts 在切进该标签页时显示它、切走时收起。

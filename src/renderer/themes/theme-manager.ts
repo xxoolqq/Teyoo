@@ -13,6 +13,20 @@ const themes: Record<string, string> = {
   midnight: 'theme-midnight'
 }
 
+/**
+ * 深色系主题的 body class。浅色系是 light / elegant / sepia / notion / bear /
+ * writer。需要「跟着主题切深色配色」的地方按它判断：Mermaid 图（见
+ * editor/mermaid-bridge.ts），以及 MathLive 的虚拟键盘（见 applyTheme 末段）。
+ */
+export const DARK_THEME_CLASSES = new Set([
+  'theme-dark',
+  'theme-solarized-dark',
+  'theme-nord',
+  'theme-gruvbox',
+  'theme-dracula',
+  'theme-midnight',
+])
+
 let customStyleEl: HTMLStyleElement | null = null
 
 export function applyTheme(name: string, customCSS?: string): void {
@@ -38,6 +52,12 @@ export function applyTheme(name: string, customCSS?: string): void {
   } else if (themes[name]) {
     body.classList.add(themes[name])
   }
+
+  // MathLive 的虚拟键盘（LaTeX公式 标签页）只认 prefers-color-scheme 和
+  // [theme='dark'] 祖先这两条规则，都不认识项目挂在 body 上的 class。把明暗
+  // 同步到这个属性上，否则深色主题里会弹出一整块亮白键盘。自定义主题一律按
+  // 浅色处理（判断不了它的配色）。
+  body.setAttribute('theme', DARK_THEME_CLASSES.has(themes[name] ?? '') ? 'dark' : 'light')
 
   // Persist theme choice
   localStorage.setItem('colamd-theme', name)

@@ -13,9 +13,17 @@ export default defineConfig({
       outDir: 'dist/main',
       rollupOptions: {
         input: resolve(__dirname, 'src/main/index.ts'),
-        // @napi-rs/canvas 是原生模块（.node 二进制），必须运行时从
-        // node_modules 加载，交给 rollup 打包会破坏二进制 require 路径
-        external: ['@napi-rs/canvas'],
+        // @napi-rs/canvas、onnxruntime-node 是原生模块（.node 二进制），必须
+        // 运行时从 node_modules 加载，交给 rollup 打包会破坏二进制 require 路径。
+        // @huggingface/transformers 是 ESM 大包且内部按环境 require onnxruntime-node，
+        // 一并 external（运行时动态 import 原包，见 texo-ocr.ts）。
+        // better-sqlite3 同样是原生模块（prebuilds/*.node），公式识别历史用它。
+        external: [
+          '@napi-rs/canvas',
+          '@huggingface/transformers',
+          'onnxruntime-node',
+          'better-sqlite3'
+        ],
         output: {
           chunkFileNames: 'chunks/[name].js'
         }
@@ -55,9 +63,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
-          'mermaid-sandbox': resolve(__dirname, 'src/renderer/mermaid-sandbox.html'),
-          // 可视化解题的绘图沙箱（function-plot / JSXGraph 只在这一页里加载）
-          'vision-sandbox': resolve(__dirname, 'src/renderer/vision-sandbox.html')
+          'mermaid-sandbox': resolve(__dirname, 'src/renderer/mermaid-sandbox.html')
         }
       }
     }

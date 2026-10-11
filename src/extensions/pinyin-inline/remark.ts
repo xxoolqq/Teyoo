@@ -19,11 +19,15 @@ import { visit, SKIP } from 'unist-util-visit'
 import { trimHanziToSyllables } from '../pinyin-ruby/pinyin'
 
 // 匹配 <汉字>[<拼音>] 的统一正则：
-//   组1 = 汉字串（[\u4e00-\u9fa5] 基本 CJK 区，不含 \n）
+//   组1 = 汉字串（[\u4e00-\u9fa5] 基本 CJK 区，不含 \n）。**允许为空**：
+//         工具栏插入的"纯拼音"节点（text=''）序列化为 `[拼音]`，解析端必须
+//         同样接受空汉字，否则源码往返一次该节点就退化成普通文本。
 //   组2 = 完整拼音串（小写字母 + 数字声调，可多音节）
 // 注意：组1 是贪婪匹配，会吃掉紧贴括号之前的整段连续汉字，
 // 命中后须用 trimHanziToSyllables 按音节数裁剪基串（见 pinyin-ruby/pinyin.ts）。
-const RE_PINYIN_INLINE = /([\u4e00-\u9fa5]+)\[((?:[a-z]+[1-4]?)+)\]/g
+// 组2 允许音节段之间以单个空格分隔，如三晋大地[san1 jin4 da4 di4]；
+// 不允许多空格或首尾空格。
+const RE_PINYIN_INLINE = /([\u4e00-\u9fa5]*)\[((?:[a-z]+[1-4]?)+(?: (?:[a-z]+[1-4]?)+)*)\]/g
 
 // 把一个 text 节点的 value 切成 [text?, pinyinInline, text?, ...]
 // 若没有任何匹配，返回 null 表示调用方无需替换原节点。
