@@ -2685,7 +2685,7 @@ function buildMenu(): void {
         light: '浅色', dark: '深色', elegant: '雅致',
         sepia: '羊皮纸', notion: '简白', bear: '熊红', writer: '作家',
         solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
-        importTheme: '导入主题', whatsNew: 'Teyoo用法指南',
+        importTheme: '导入主题', usageGuide: 'Teyoo用法指南',
         cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
         preferences: '偏好设置…', toolbox: '工具箱', visualSolve: '可视化解题', latexOcr: 'LaTeX公式',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
@@ -2718,7 +2718,7 @@ function buildMenu(): void {
         light: 'Light', dark: 'Dark', elegant: 'Elegant',
         sepia: 'Sepia', notion: 'Notion', bear: 'Bear', writer: 'Writer',
         solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
-        importTheme: 'Import Theme', whatsNew: 'Teyoo Guide',
+        importTheme: 'Import Theme', usageGuide: 'Teyoo Guide',
         cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
         preferences: 'Preferences…', toolbox: 'Toolbox', visualSolve: 'Visual Solver', latexOcr: 'LaTeX OCR',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
@@ -3107,10 +3107,13 @@ function buildMenu(): void {
           click: () => sendToFocused('menu-texo-tab')
         },
         { type: 'separator' },
+        // 用法指南读 resources/demo/usage-guide.md，不再借 changelog.md：那一份由
+        // openChangelogOnceForVersion() 在每次升级后的首次启动自动打开，两者内容
+        // 不同，共用一个文件会互相覆盖。
         {
-          label: labels.whatsNew,
+          label: labels.usageGuide,
           accelerator: 'CmdOrCtrl+Shift+D',
-          click: () => { void openBundledDocument('changelog.md', labels.whatsNew) }
+          click: () => { void openBundledDocument('usage-guide.md', labels.usageGuide) }
         },
         {
           label: labels.cheatsheet,
