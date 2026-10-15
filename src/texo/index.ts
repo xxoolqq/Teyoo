@@ -7,4 +7,7 @@
 // 模型文件随安装包分发（electron-builder extraResources → resources/texo），
 // 运行时由主进程的 texo:// 自定义协议按需读取（见 main/index.ts）。
 
-export { enterTexoTabChrome, leaveTexoTab, initTexoView } from './view'
+// acceptImage 一并导出：菜单「帮助 → 截屏识别公式…」抓完屏要把用户框出来的那一块
+// 直接喂进来，走的就是「上传 / 粘贴 / 拖拽」通往的同一个入口。
+export { enterTexoTabChrome, leaveTexoTab, initTexoView, acceptImage } from './view'
+export type { AcceptImageSource, TexoHooks } from './view'

@@ -473,6 +473,31 @@ body.theme-midnight .menubar-item {
   color: var(--text-color);
 }
 
+/* 标题栏右侧的相机图标（紧挨「提交」左侧）：点它就是「帮助 → 截屏识别公式…」。
+   28×28、6px 圆角，与标题栏里其它图标按钮同一尺寸（#titlebar > button 已经给了
+   flex 居中与 no-drag，这里只补尺寸和底），hover 沿用菜单栏那层浅底。
+   图标本身保持原图的红色，不跟主题走 —— 它是个入口，不是文字标签 */
+#snip-capture-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: default;
+  transition: background 0.12s ease;
+}
+
+#snip-capture-btn img {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+#snip-capture-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
 /* ─── 第二行格式工具栏 ──────────────────────────────────────────────────────
    标题栏之下的一行图标按钮，分组之间用 1px 竖线分隔。按下态用 .is-active，
    由编辑器选区状态驱动。整条不拦截窗口拖拽；按钮 mousedown 在 JS 里
@@ -3365,6 +3390,12 @@ body.texo-view #assistant-panel {
   cursor: default;
 }
 
+/* 「行内」开关跟着「插入正文」一起可用与否：没有公式时这一整组都该是灰的
+   （disabled 状态由 view.ts 的 refreshInsertButton 打在这个 label 上） */
+.texo-autocopy.is-disabled {
+  opacity: 0.5;
+}
+
 .texo-autocopy {
   display: flex;
   align-items: center;
@@ -3731,6 +3762,19 @@ body.pdf-view #assistant-panel,
 body.image-view #assistant-panel,
 body.tool-view #assistant-panel {
   display: none;
+}
+
+/* 面板在上面那些视图里是 display:none，编辑区就不该再为它让位 —— 上面
+   body.assistant-open 那条只管加 margin-right，没人减，于是 PDF对照 / 图片转md
+   的右半边凭空空出 --assistant-width 一块（源码模式下更糟：#source-editor 的
+   width 由本视图自己的算式胜出，再叠加这条 margin-right 就超出 100%、右侧溢出）。
+   这两个视图的编辑区是真实存在的（转换结果就在这里，顶部条也还留着），所以是
+   让位该取消，而不是编辑器该收起。写在上面那条之后才能压过它（同特异性）。 */
+body.pdf-view #editor,
+body.pdf-view #source-editor,
+body.image-view #editor,
+body.image-view #source-editor {
+  margin-right: 0;
 }
 
 .assistant-head {

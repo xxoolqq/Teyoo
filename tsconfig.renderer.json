@@ -9,5 +9,5 @@
     "outDir": "dist/renderer",
     "rootDir": "src"
   },
-  "include": ["src/renderer/**/*", "src/texo/**/*", "src/visualSolve/**/*", "src/extensions/blank-line/**/*", "src/extensions/emph-dot/**/*", "src/extensions/font-style/**/*", "src/extensions/pinyin-ruby/**/*", "src/extensions/pinyin-inline/**/*", "src/extensions/circled-sup/**/*", "src/extensions/sub-sup/**/*", "src/extensions/columns/**/*", "src/extensions/tianzi-grid/**/*", "src/extensions/image-style/**/*", "src/extensions/underline/**/*"]
+  "include": ["src/renderer/**/*", "src/preload/**/*", "src/texo/**/*", "src/visualSolve/**/*", "src/extensions/blank-line/**/*", "src/extensions/emph-dot/**/*", "src/extensions/font-style/**/*", "src/extensions/pinyin-ruby/**/*", "src/extensions/pinyin-inline/**/*", "src/extensions/circled-sup/**/*", "src/extensions/sub-sup/**/*", "src/extensions/columns/**/*", "src/extensions/tianzi-grid/**/*", "src/extensions/image-style/**/*", "src/extensions/underline/**/*"]
 }

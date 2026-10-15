@@ -29,10 +29,56 @@ function el<T extends HTMLElement>(id: string): T | null {
 
 let busy = false
 
+/** 「收一张图」时的附加信息：这张图从哪来、又是哪个标签页发起的 */
+export interface AcceptImageSource {
+  /** 历史库里的来源标注：上传 / 粘贴 / 拖拽 = image，画板 = hand，截屏 = snip */
+  source?: 'image' | 'hand' | 'snip'
+  /** 截屏路径才有值：发起截屏的那个标签页 id，供「插入正文」认回去 */
+  originTabId?: string | null
+}
+
+/** main.ts 注入的两个动作 —— 它才知道怎么切标签页、怎么往文档里写 */
+export interface TexoHooks {
+  /**
+   * 把 LaTeX 插回 originTabId 那个标签页的光标处。返回「有没有受理」而不是「有没
+   * 有写完」：切标签页本身是异步的，这里给不出最终成败，写的结果由 main.ts 那边
+   * 自己处理；返回 false 表示目标标签页已经不在了。
+   */
+  insertLatex: (latex: string, inline: boolean, originTabId: string) => boolean
+  /** 来源标签页还在不在（用户可能在等待识别的那会儿把它关了） */
+  isTabAlive: (tabId: string) => boolean
+}
+
+// 「插入正文」的三份状态：这张公式是从哪个标签页来的、以及 main.ts 给的两个动作
+let insertOriginTabId: string | null = null
+let insertHook: TexoHooks['insertLatex'] | null = null
+let originAliveHook: TexoHooks['isTabAlive'] | null = null
+
+/**
+ * 「插入正文」按钮常显，能不能点是另一种状态：得既有公式、又知道它该插回哪个
+ * 标签页。缺哪一样都在 title 里说清楚 —— 灰着不给理由最让人困惑。
+ */
+function refreshInsertButton(): void {
+  const button = el<HTMLButtonElement>('texo-insert')
+  if (!button) return
+  const hasFormula = currentLatex().trim().length > 0
+  const alive = insertOriginTabId !== null && (originAliveHook?.(insertOriginTabId) ?? false)
+  button.disabled = !hasFormula || !alive
+  button.title = !hasFormula
+    ? zh() ? '先识别出公式' : 'Recognize a formula first'
+    : !alive
+      ? zh() ? '这份公式不是从截屏来的，或来源标签页已关闭' : 'Not from a snip, or its tab is gone'
+      : zh() ? '插回来源标签页的光标处' : 'Insert at the cursor of the source tab'
+  const inlineSwitch = el('texo-insert-inline-wrap')
+  if (inlineSwitch) inlineSwitch.classList.toggle('is-disabled', !hasFormula)
+}
+
 export function enterTexoTabChrome(): void {
   document.body.classList.add('texo-view')
   const panel = el('texo-panel')
   if (panel) panel.hidden = false
+  // 切回来重算一次：等识别的那会儿来源标签页可能已经被关掉了
+  refreshInsertButton()
 }
 
 export function leaveTexoTab(): void {
@@ -144,13 +190,14 @@ async function copyAs(format: string, latex: string): Promise<boolean> {
   }
 }
 
-async function runRecognition(dataUrl: string): Promise<void> {
+async function runRecognition(dataUrl: string, source?: 'image' | 'hand' | 'snip'): Promise<void> {
   if (busy) return
   busy = true
   setStatus(zh() ? '模型加载中…' : 'Loading model…')
   try {
     setStatus(zh() ? '识别中…' : 'Recognizing…')
-    const result = await window.electronAPI.recognizeTexoFormula(dataUrl, texoMode === 'hand' ? 'hand' : 'image')
+    // 来源默认跟着当前输入方式走；只有明确传进来的才覆盖（截屏走这一支）
+    const result = await window.electronAPI.recognizeTexoFormula(dataUrl, source ?? (texoMode === 'hand' ? 'hand' : 'image'))
     if (typeof result === 'object' && result !== null && 'error' in result) {
       setStatus(`${zh() ? '识别失败' : 'Recognition failed'}: ${(result as { error: string }).error}`)
       return
@@ -163,6 +210,7 @@ async function runRecognition(dataUrl: string): Promise<void> {
     if (output) output.value = result
     setPreview(result)
     setStatus('')
+    refreshInsertButton()
     // 「自动复制」开着就按所选格式直接拷
     const auto = el<HTMLInputElement>('texo-autocopy')
     if (auto?.checked) {
@@ -176,8 +224,8 @@ async function runRecognition(dataUrl: string): Promise<void> {
   }
 }
 
-/** 收一张图（data URL）：文件选择 / 拖拽 / 粘贴 / 示例图 四条入口共用 */
-async function acceptImage(dataUrl: string): Promise<void> {
+/** 收一张图（data URL）：文件选择 / 拖拽 / 粘贴 / 示例图 / 截屏 五条入口共用 */
+export async function acceptImage(dataUrl: string, options: AcceptImageSource = {}): Promise<void> {
   // 上传框里预览原图；空态提示让位
   const thumb = el<HTMLImageElement>('texo-thumb')
   const empty = el('texo-drop-empty')
@@ -186,7 +234,11 @@ async function acceptImage(dataUrl: string): Promise<void> {
     thumb.hidden = false
   }
   if (empty) empty.hidden = true
-  await runRecognition(dataUrl)
+  // 记下来：这一张是从哪个标签页交进来的（上传 / 粘贴那些路径没有来源），
+  // 「插入正文」据此决定能不能插、插回哪里
+  insertOriginTabId = options.originTabId ?? null
+  refreshInsertButton()
+  await runRecognition(dataUrl, options.source)
 }
 
 function resetDropzone(): void {
@@ -499,7 +551,11 @@ function bindPad(): void {
   canvas.addEventListener('pointercancel', endStroke)
 }
 
-export function initTexoView(api: import('../preload/index').ElectronAPI): void {
+export function initTexoView(api: import('../preload/index').ElectronAPI, hooks: TexoHooks | null = null): void {
+  // 「插入正文」要切标签页、往文档里写字，那两件事只有 main.ts 办得了（它管标签
+  // 条也管编辑器）。这里只把动作收下来，不把 main.ts / editor 反过来引进依赖。
+  insertHook = hooks?.insertLatex ?? null
+  originAliveHook = hooks?.isTabAlive ?? null
   const drop = el('texo-drop')
   const panel = el('texo-panel')
 
@@ -626,6 +682,8 @@ export function initTexoView(api: import('../preload/index').ElectronAPI): void 
   // 编辑区实时刷新预览
   el<HTMLTextAreaElement>('texo-latex')?.addEventListener('input', () => {
     setPreview(currentLatex())
+    // 手改也算「现在有公式了」：插入按钮跟着可点与否
+    refreshInsertButton()
   })
 
   // 复制 / 清除 / 复制为 Typst / 复制为 MathML
@@ -650,5 +708,26 @@ export function initTexoView(api: import('../preload/index').ElectronAPI): void 
     clearOutput()
     resetDropzone()
     clearPad()
+    // 公式都没了，来源也就作废：按钮回到「没有来源」那种灰
+    insertOriginTabId = null
+    refreshInsertButton()
   })
+
+  // 插入正文：只有从截屏来的公式知道自己该插回哪个标签页（见 acceptImage）
+  el<HTMLButtonElement>('texo-insert')?.addEventListener('click', () => {
+    const latex = currentLatex().trim()
+    const target = insertOriginTabId
+    if (!latex || target === null) return
+    // 默认行内：正文里插公式多数是「一句话里夹一个」，块级留给用户自己勾掉
+    const inline = el<HTMLInputElement>('texo-insert-inline')?.checked !== false
+    const written = insertHook?.(latex, inline, target) ?? false
+    setStatus(
+      written
+        ? zh() ? '已插入正文' : 'Inserted into the document'
+        : zh() ? '插入失败：来源标签页已关闭' : 'Insert failed: the source tab is gone'
+    )
+    refreshInsertButton()
+  })
+
+  refreshInsertButton()
 }

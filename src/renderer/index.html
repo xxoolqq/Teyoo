@@ -40,7 +40,9 @@
          弹出原生二级菜单。macOS 使用系统菜单栏，此条保持隐藏。 -->
     <div id="app-menubar" role="menubar" aria-label="Application menu" hidden>
       <button class="menubar-item" type="button" role="menuitem" data-menu="file">文件</button>
-      <button class="menubar-item" type="button" role="menuitem" data-menu="edit">编辑</button>
+      <!-- 「编辑」暂不显示。只注掉这一行：主进程菜单模板里那份编辑菜单没动（里面的
+           快捷键照旧生效），要恢复就把下面这一行取消注释 -->
+      <!-- <button class="menubar-item" type="button" role="menuitem" data-menu="edit">编辑</button> -->
       <button class="menubar-item" type="button" role="menuitem" data-menu="format">格式</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="insert">插入</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="font">字体</button>
@@ -52,6 +54,12 @@
     </div>
     <div id="tab-bar" hidden></div>
     <span id="save-status" aria-live="polite"></span>
+    <!-- 相机图标：点它就等于「帮助 → 截屏识别公式…」。放在这里是关键 —— 「提交」和
+         「已提交」由 JS 插到 #file-toggle-btn 之前，静态节点排在它们前面，就自然落
+         在提交左侧。hidden 与菜单栏同款：只在 Windows/Linux 由 setupMenubar 去掉 -->
+    <button id="snip-capture-btn" type="button" aria-label="截屏识别公式" title="截屏识别公式" hidden>
+      <img src="./assets/snip-camera.png" alt="" />
+    </button>
     <button id="file-toggle-btn" aria-label="显示 / 隐藏文件列表">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
         <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>
@@ -450,6 +458,13 @@
           <div class="texo-card-head" id="texo-head-edit">编辑</div>
           <textarea id="texo-latex" class="texo-latex" spellcheck="false" placeholder="在此输入 LaTeX 公式"></textarea>
           <div class="texo-actions">
+            <!-- 插入正文：把这一份 LaTex 插回「发起识别的那个标签页」的光标处。按钮
+                 常显，不可点时由 view.ts 的 refreshInsertButton 置灰并在 title 里写
+                 明原因（没有公式 / 这份公式不是从截屏来的 / 来源标签页已关闭）。 -->
+            <button id="texo-insert" class="texo-btn" type="button" disabled>插入正文</button>
+            <label id="texo-insert-inline-wrap" class="texo-autocopy" title="勾选插成行内 $…$，取消则插成块级 $$…$$">
+              <input id="texo-insert-inline" type="checkbox" checked /> 行内
+            </label>
             <button id="texo-copy" class="texo-btn" type="button">复制</button>
             <button id="texo-clear" class="texo-btn" type="button">清除</button>
             <button id="texo-copy-typst" class="texo-btn" type="button">复制为 Typst</button>

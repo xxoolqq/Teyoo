@@ -13,7 +13,7 @@ import { enterImageTabChrome, initImageView, leaveImageTab, loadImageTab } from 
 // 可视化解题（菜单「帮助 → 可视化解题」）：整页解题标签页。模块自己的代码全在
 // src/visualSolve/ 下，这里只做标签页与编辑器两边的接线。
 import { enterSolverTabChrome, initVisualSolve, leaveSolverTab } from '../visualSolve'
-import { enterTexoTabChrome, initTexoView, leaveTexoTab } from '../texo'
+import { acceptImage, enterTexoTabChrome, initTexoView, leaveTexoTab } from '../texo'
 import { enterToolTabChrome, initToolView, leaveToolTab, loadToolTab, toolTabLabel, type ToolId } from './tool-view'
 import { initAssistant, refreshAssistantContext, setAssistantOpen } from './assistant'
 import { initDocBar, type DocFormat } from './doc-bar'
@@ -992,6 +992,24 @@ async function openTexoTab(): Promise<void> {
   await pushTabAndActivate(tab)
 }
 
+// ─── 截屏识别公式（菜单「帮助 → 截屏识别公式…」）────────────────────────
+// 菜单事件只发一个通知，抓屏由这里发起：主进程当然说得清该抓哪块屏，但「用户是
+// 从哪个标签页点的」只有这里知道 —— 结果最后要插回那个标签页，而公式标签页自己
+// 不是文档，接不住这一笔。
+async function runSnipFormula(): Promise<void> {
+  const originTabId = activeTabId
+  let dataUrl: string | null = null
+  try {
+    dataUrl = await window.electronAPI.requestSnip()
+  } catch {
+    dataUrl = null
+  }
+  // Esc、点取消、抓屏失败都汇到这一步：本来就没新标签页需要撤回，直接回去即可
+  if (!dataUrl) return
+  await openTexoTab()
+  await acceptImage(dataUrl, { source: 'snip', originTabId })
+}
+
 // ─── 随包文档标签页（菜单「帮助 → Teyoo用法指南 / Markdown 语法」）──────
 // 内容随包分发（resources/demo、resources/templates），渲染端读不到盘，由主进程
 // 读完连标题一起送过来（BundledDocPayload）。开成标签页而不是另起窗口：它们是
@@ -1516,6 +1534,9 @@ function bindTabBar(api: import('../preload/index').ElectronAPI): void {
   })
   api.onMenuTexoTab(() => {
     void openTexoTab()
+  })
+  api.onMenuSnipFormula(() => {
+    void runSnipFormula()
   })
   // 菜单「帮助 → Teyoo用法指南 / Markdown 语法」：随包文档开成标签页
   //（内容由主进程读好送过来，见 openBundledDocTab）。
@@ -2364,6 +2385,8 @@ async function setupMenubar(): Promise<void> {
   const bar = document.getElementById('app-menubar')
   if (!bar || !/Windows/i.test(navigator.userAgent)) return
   bar.removeAttribute('hidden')
+  // 相机图标和菜单栏同一个平台范围：只在这边露面，macOS 走系统菜单栏里那条菜单项
+  document.getElementById('snip-capture-btn')?.removeAttribute('hidden')
 
   const setActive = (btn: Element | null): void => {
     for (const el of bar.querySelectorAll('.menubar-item')) {
@@ -2424,6 +2447,17 @@ async function setupMenubar(): Promise<void> {
     setActive(btn)
     popupAt(btn)
   })
+
+  // 标题栏右侧的相机图标：点它就是「帮助 → 截屏识别公式…」，省一步展开菜单。
+  // 它不在菜单栏里了，所以按下时自己也要 preventDefault —— 与菜单栏按钮同一手法：
+  // 不抢编辑器焦点，截屏结果最后要按光标位置插回正文
+  const snipBtn = document.getElementById('snip-capture-btn')
+  if (snipBtn) {
+    snipBtn.addEventListener('mousedown', (e) => e.preventDefault())
+    snipBtn.addEventListener('click', () => {
+      void runSnipFormula()
+    })
+  }
 }
 
 // 原生菜单弹出再关闭后，编辑器常常已经失焦（焦点落在菜单栏按钮或窗口上），
@@ -2995,8 +3029,21 @@ function applyAppearanceFontSize(): void {
     }
   })
   // LaTeX公式（帮助 → LaTeX公式）：本地 Texo 模型图片转公式。结果只预览 / 复制，
-  // 不自动落进文档（用户明确不要插入正文）。
-  initTexoView(api)
+  // 不自动落进文档（这条是用户早先明确过的）：能不能插由面板上那个「插入正文」
+  // 按钮说了算，目标是发起识别的那个标签页 —— 公式标签页不是文档，接不住这一笔。
+  // 与 MinerU 的结果落地同一手法：先 activateTab 切回去，再 insertMarkdownAtCursor。
+  initTexoView(api, {
+    insertLatex: (latex, inline, originTabId) => {
+      if (!tabs.some((tab) => tab.id === originTabId)) return false
+      // 行内默认：$…$ 是「一句话里夹一个」，块级那版留给勾掉开关的用户
+      const markdown = inline ? `$${latex}$` : `\n\n$$\n${latex}\n$$\n\n`
+      void activateTab(originTabId).then((moved) => {
+        if (moved) insertMarkdownAtCursor(markdown)
+      })
+      return true
+    },
+    isTabAlive: (tabId) => tabs.some((tab) => tab.id === tabId)
+  })
   // 文档助手侧边栏（LLM）：开关在偏好设置 → 外观，产出先落建议卡片、确认后才写入。
   // 可用性判断放在这里而不是 assistant.ts —— 它要知道当前标签页类型与源码模式。
   initAssistant(api, {

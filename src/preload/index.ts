@@ -226,13 +226,21 @@ export interface ElectronAPI {
   onMenuSolverTab: (callback: () => void) => void
   // 菜单「帮助 → LaTeX公式」：开一个本地公式识别（Texo 模型）标签页。
   onMenuTexoTab: (callback: () => void) => void
+  // 菜单「帮助 → 截屏识别公式…」：菜单事件只负责通知，抓屏由渲染端自己发起
+  // （requestSnip）—— 它才知道这一屏该进哪个窗口、又是从哪个标签页点出来的，
+  // 主进程拿不到「当前在编辑哪个文档」这件事。
+  onMenuSnipFormula: (callback: () => void) => void
   // 菜单「帮助 → Teyoo用法指南 / Markdown 语法」：随包文档开成标签页
   // （内容已由主进程读好，见 BundledDocPayload）。
   onMenuHelpDoc: (callback: (payload: BundledDocPayload) => void) => void
   // LaTeX公式：图片 data URL → 本地 Texo 模型识别出的 LaTeX（主进程推理）。
   // source 只是给历史库标注来源（上传的图片 / 手写板）；认出的结果由主进程
   // 存进 SQLite 历史（见 main/formula-db.ts），不用渲染端再操心。
-  recognizeTexoFormula: (dataUrl: string, source?: 'image' | 'hand') => Promise<string | null>
+  recognizeTexoFormula: (dataUrl: string, source?: 'image' | 'hand' | 'snip') => Promise<string | null>
+  // 菜单「帮助 → 截屏识别公式…」：主进程藏起自己的窗口抓一屏，用户框出一块后
+  // 把那块（data URL）交回来；取消 / 放弃则返回 null。整个流程是一次 invoke，
+  // 不需要再来一条回传通道。
+  requestSnip: () => Promise<string | null>
   // 文档助手附件：选文件（可多选）→ 主进程把它转成文本再交给模型
   // （图片=data URL + 可选公式、pdf=MinerU、docx=本地转换、md/txt=直读）。
   pickAssistantAttachment: () => Promise<AssistantAttachment[]>
@@ -487,11 +495,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuTexoTab: (callback: () => void) => {
     ipcRenderer.on('menu-texo-tab', () => callback())
   },
+  onMenuSnipFormula: (callback: () => void) => {
+    ipcRenderer.on('menu-snip-formula', () => callback())
+  },
   onMenuHelpDoc: (callback: (payload: BundledDocPayload) => void) => {
     ipcRenderer.on('menu-help-doc', (_event, payload: BundledDocPayload) => callback(payload))
   },
-  recognizeTexoFormula: (dataUrl: string, source?: 'image' | 'hand') =>
+  recognizeTexoFormula: (dataUrl: string, source?: 'image' | 'hand' | 'snip') =>
     ipcRenderer.invoke('texo-recognize', { dataUrl, source: source ?? null }) as Promise<string | null>,
+  requestSnip: () => ipcRenderer.invoke('snip-start') as Promise<string | null>,
   onMenuSaveAs: (callback: () => void) => {
     ipcRenderer.on('menu-save-as', () => callback())
   },

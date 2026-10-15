@@ -34,7 +34,14 @@ export default defineConfig({
     build: {
       outDir: 'dist/preload',
       rollupOptions: {
-        input: resolve(__dirname, 'src/preload/index.ts')
+        // 两张门禁卡：主窗口那张（index）与截屏浮层专用的最小那张（snip）。产物
+        // 分别是 dist/preload/index.js 与 dist/preload/snip.js，后者由
+        // main/snip-window.ts 建浮层窗口时单独指定 —— 那个页面要画的是整屏截来的
+        // 内容，没必要让它拿着主窗口的全套权限。
+        input: {
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          snip: resolve(__dirname, 'src/preload/snip.ts')
+        }
       }
     }
   },
@@ -63,7 +70,10 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
-          'mermaid-sandbox': resolve(__dirname, 'src/renderer/mermaid-sandbox.html')
+          'mermaid-sandbox': resolve(__dirname, 'src/renderer/mermaid-sandbox.html'),
+          // 截屏浮层是一个独立的 OS 窗口（不是主窗口里的 iframe），要有自己的入口。
+          // 它不 import base.css：样式全部内联在 html 里（见 P1）。
+          snip: resolve(__dirname, 'src/renderer/snip.html')
         }
       }
     }

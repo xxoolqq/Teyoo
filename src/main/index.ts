@@ -14,6 +14,7 @@ import { completeChat, streamChat, type ChatContentPart, type ChatMessage, type 
 import { setAsDefaultApp } from './default-app'
 import { recognizeTexoFormula } from './texo-ocr'
 import { saveFormulaRecord } from './formula-db'
+import { startSnipCapture } from './snip-window'
 
 const startupStartedAt = performance.now()
 const startupTraceEnabled = process.env.COLAMD_STARTUP_TRACE === '1'
@@ -1982,6 +1983,20 @@ ipcMain.handle('texo-recognize', async (_event, payload: unknown) => {
   }
 })
 
+// 菜单「帮助 → 截屏识别公式…」：藏起自己的窗口抓一屏 → 浮层里框选 → 交回那一块。
+// 整个流程收在一次 invoke 里，取消时返回 null（== 用户什么都没选，渲染端不用管）。
+ipcMain.handle('snip-start', async (event) => {
+  // 发起窗口：浮层关掉之后要把焦点还回去，否则 Windows 上用户会以为程序被自己关掉了
+  const origin = BrowserWindow.fromWebContents(event.sender)
+  try {
+    return await startSnipCapture(origin)
+  } catch (error) {
+    // 抓屏失败与「用户取消」都返回 null，渲染端不区分这两者，这里记一笔日志
+    console.error('[snip] capture failed:', error instanceof Error ? error.message : String(error))
+    return null
+  }
+})
+
 /** 多模态消息的内容分片上限（防手滑塞一堆）与单张图片的体积上限 */
 const ASSISTANT_CONTENT_PARTS_MAX = 16
 const ASSISTANT_IMAGE_URL_MAX = 12 * 1024 * 1024
@@ -2688,6 +2703,7 @@ function buildMenu(): void {
         importTheme: '导入主题', usageGuide: 'Teyoo用法指南',
         cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
         preferences: '偏好设置…', toolbox: '工具箱', visualSolve: '可视化解题', latexOcr: 'LaTeX公式',
+        snipFormula: '截屏识别公式…',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         newCanvasDoc: '新建类docx文档',
         undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
@@ -2721,6 +2737,7 @@ function buildMenu(): void {
         importTheme: 'Import Theme', usageGuide: 'Teyoo Guide',
         cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
         preferences: 'Preferences…', toolbox: 'Toolbox', visualSolve: 'Visual Solver', latexOcr: 'LaTeX OCR',
+        snipFormula: 'Snip Formula…',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         newCanvasDoc: 'New DOCX-like Document',
         undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
@@ -3105,6 +3122,14 @@ function buildMenu(): void {
         {
           label: labels.latexOcr,
           click: () => sendToFocused('menu-texo-tab')
+        },
+        // 截屏识别公式：同一份本地模型，只是配方从「选一张图」换成「屏幕上框一块」。
+        // 菜单事件只发通知，抓屏由渲染端发起（preload 的 requestSnip）：要看是哪个
+        // 标签页点的才插得回去。快捷键用 Alt 组合 —— Shift+X 已经是删除线了。
+        {
+          label: labels.snipFormula,
+          accelerator: 'CmdOrCtrl+Alt+X',
+          click: () => sendToFocused('menu-snip-formula')
         },
         { type: 'separator' },
         // 用法指南读 resources/demo/usage-guide.md，不再借 changelog.md：那一份由

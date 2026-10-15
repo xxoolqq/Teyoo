@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- 比主窗口再收紧一层：这里唯一的外部数据来源就是主进程送来的那张 data URL
+         快照，除了它没有别的来源，也不需要连网。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    />
+    <title>框选公式</title>
+    <style>
+      /* 这一层不跟着 base.css 走：它是盖在整块屏幕上的临时窗口，不是应用里的一个
+         面板，没有也不需要主题变量 */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        /* 窗口本身不是透明的（见 main/snip-window.ts）：底色在这里定，与那边
+           backgroundColor 保持一致，免得快照还没送到时白闪一下 */
+        background: #101014;
+        cursor: crosshair;
+        font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        user-select: none;
+      }
+      #snip-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      .snip-hint {
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 6px 14px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.62);
+        color: #fff;
+        font-size: 13px;
+        letter-spacing: 0.2px;
+        pointer-events: none;
+      }
+      .snip-size {
+        position: fixed;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.72);
+        color: #fff;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        pointer-events: none;
+      }
+      .snip-tools {
+        position: fixed;
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 10px;
+        background: rgba(20, 20, 20, 0.86);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+      }
+      .snip-btn {
+        padding: 6px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .snip-btn:hover {
+        background: rgba(255, 255, 255, 0.18);
+      }
+      .snip-btn-primary {
+        border-color: #2f7ae5;
+        background: #2f7ae5;
+      }
+      .snip-btn-primary:hover {
+        background: #3d87f2;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="snip-canvas"></canvas>
+    <div id="snip-hint" class="snip-hint">拖动鼠标框选公式区域 · Esc 取消</div>
+    <span id="snip-size" class="snip-size" hidden></span>
+    <div id="snip-tools" class="snip-tools" hidden>
+      <button id="snip-confirm" class="snip-btn snip-btn-primary" type="button">识别</button>
+      <button id="snip-cancel" class="snip-btn" type="button">取消</button>
+    </div>
+    <script type="module" src="./snip/snip.ts"></script>
+  </body>
+</html>
