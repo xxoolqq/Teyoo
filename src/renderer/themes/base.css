@@ -1413,13 +1413,16 @@ body.show-file-panel #source-editor {
 #editor .ProseMirror th,
 #editor .ProseMirror td {
   border: 1px solid var(--border-color);
-  padding: 4px 12px;
+  /* Row height compacted ~25%: vertical padding 4px → 2px and the cell's
+     own line-height 1.75 (inherited) → 1.4 (38px → 28.4px per row). */
+  padding: 2px 12px;
+  line-height: 1.4;
   text-align: left;
-}
-
-#editor .ProseMirror th {
-  background: var(--table-header-bg);
-  font-weight: 600;
+  /* The header row is the table's first row, not a band of its own: no fill,
+     and the browser's default weight for `th` is pressed off here. Removing
+     the old font-weight declaration alone would only fall back to that UA
+     `bold`, so the normal weight has to be stated explicitly. */
+  font-weight: normal;
 }
 
 /* Table floating toolbar (P1): 光标进入表格时浮现，提供增删行列/对齐/删表 */
@@ -2381,78 +2384,78 @@ mjx-container[jax='SVG'] > svg a {
   margin: 0;
 }
 
-/* 表格模态框 —— 与田字格/分栏模态框同尺寸（固定大小）。
-   height 固定而非 min-height：预览内容高度介于 [360, 上限] 区间时会把
-   min-height 容器撑高，直到预览滚动条出现才回落稳定——固定 height 后
-   模态框尺寸恒定，预览区被压缩并内部滚动。 */
-.table-modal {
-  width: 480px;
-  height: 360px;
-  gap: 12px;
+/* 表格插入选择器（工具栏「表格」按钮） —— 悬停按区块逐格高亮、单击即插入。
+   规格：6 列 × 6 行、16px 直角方格、4px 间距；网格下方一条细分隔线 + 「行 × 列」
+   尺寸标注（数字套小边框方块，参考用户提供的截图样式）。fixed 定位锚定
+   触发按钮（见经验 100001967），渲染到 body 层避免被工具栏 overflow 裁剪。
+   配色取固定色值（不跟随主题变量）。 */
+.table-picker {
+  position: fixed;
+  z-index: 50;
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px solid #dcdcdc;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
-.table-modal h3 {
-  font-size: 15px;
+.table-picker[hidden] {
+  display: none;
 }
 
-/* 行数 × 列数：横向并排一行 */
-.table-modal-fields {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
+.table-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 16px);
+  gap: 4px;
 }
 
-.table-modal-times {
-  font-size: 14px;
-  color: var(--text-muted);
-  user-select: none;
+/* 未选中：白底 + 极浅描边；选中（悬停区块）：灰色实心填充（描边同色，
+   直角方格、两种状态都是 1px 描边，尺寸不变，网格不抖动）。 */
+.table-picker-cell {
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid #ebebeb;
+  background: #ffffff;
+  cursor: pointer;
 }
 
-.table-modal-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-color);
-  font-size: 13px;
+.table-picker-cell.is-active {
+  border-color: #666666;
+  background: #666666;
 }
 
-.table-modal-input {
-  width: 60px !important;
-  text-align: center;
-}
-
-/* 预览区：flex-grow 占满固定容器内的剩余空间，内容溢出时内部滚动
-   （min-height:0 允许 flex 压缩，配合 overflow:auto 始终不撑大模态框） */
-.table-modal-preview {
-  flex-grow: 1;
-  min-height: 0;
-  overflow: auto;
+/* 尺寸标注：细分隔线下方居中排「行数 × 列数」，数字各自套小边框方块 */
+.table-picker-size {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 12px;
-  border: 1px dashed var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-color);
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #ebebeb;
 }
 
-/* 预览网格：模拟 GFM 表格（首行表头底色） */
-.table-preview-grid {
-  display: grid;
-  border-left: 1px solid var(--border-color);
-  border-top: 1px solid var(--border-color);
+.table-picker-num {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cccccc;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: #444444;
 }
 
-.table-preview-cell {
-  width: 56px;
-  height: 26px;
-  border-right: 1px solid var(--border-color);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.table-preview-cell.header {
-  background: rgba(127, 127, 127, 0.14);
+.table-picker-x {
+  font-size: 12px;
+  line-height: 1;
+  color: #666666;
 }
 
 /* ─── 提交标签页（表单视图） ───────────────────────────────────────────────
@@ -3074,6 +3077,46 @@ body.texo-view #assistant-panel {
 }
 
 #texo-panel[hidden] {
+  display: none;
+}
+
+/* ─── 后台管理系统标签页（菜单「帮助 → 后台管理系统」）─────────────────────
+   一个 Vue 3 应用（src/adminPanel），整页接管编辑区，与 texo-view 同一套规矩：
+   编辑器、工具栏、文件面板全部收起，#admin-panel 铺满剩下的地方。
+   应用内部的样式一律收在 .admin-app 下（见 src/adminPanel/styles/admin.css），
+   不会漏到这一层来。 */
+body.admin-panel-view {
+  --toolbar-height: 0px;
+}
+
+body.admin-panel-view #toolbar,
+body.admin-panel-view #editor,
+body.admin-panel-view #source-editor,
+body.admin-panel-view #doc-bar,
+body.admin-panel-view #doc-json,
+body.admin-panel-view #file-toggle-btn,
+body.admin-panel-view #file-panel,
+body.admin-panel-view #panel-resizer,
+body.admin-panel-view #assistant-panel {
+  display: none;
+}
+
+#admin-panel {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px));
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  /* 滚动交给应用自己（左侧导航与右侧内容各自滚），这里不滚 */
+  overflow: hidden;
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+#admin-panel[hidden] {
   display: none;
 }
 

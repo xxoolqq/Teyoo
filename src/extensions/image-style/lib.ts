@@ -71,6 +71,21 @@ const ALIGN_MAP: Record<string, ImageAlign> = {
 }
 
 /**
+ * 对齐下拉的条目。与 ALIGN_MAP 放在同一处维护：下拉里多一项而解析认不出来（或
+ * 反过来）都是同一份清单的事，不该由两处各写一遍。
+ * 后台面板的「插入图片」也用这一份（那边不能 import image-modal.ts —— 它顶层
+ * new ImageModal()，一 import 就往 document.body 挂 DOM）。
+ */
+export const ALIGN_OPTIONS: { value: ImageAlign | ''; zh: string; en: string }[] = [
+  { value: '', zh: '默认', en: 'Default' },
+  { value: 'left', zh: '左对齐', en: 'Left' },
+  { value: 'center', zh: '居中', en: 'Center' },
+  { value: 'right', zh: '右对齐', en: 'Right' },
+  { value: 'float-left', zh: '浮动左', en: 'Float left' },
+  { value: 'float-right', zh: '浮动右', en: 'Float right' },
+]
+
+/**
  * 从 alt 文本中拆分出纯描述和参数对象。
  * 无 # 时返回原 alt + 默认参数。
  */

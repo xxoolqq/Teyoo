@@ -14,12 +14,17 @@ import { enterImageTabChrome, initImageView, leaveImageTab, loadImageTab } from 
 // src/visualSolve/ 下，这里只做标签页与编辑器两边的接线。
 import { enterSolverTabChrome, initVisualSolve, leaveSolverTab } from '../visualSolve'
 import { acceptImage, enterTexoTabChrome, initTexoView, leaveTexoTab } from '../texo'
+// 后台管理系统（菜单「帮助 → 后台管理系统」）：整页的 Vue 3 应用。应用自己的
+// 代码全在 src/adminPanel/ 下，这里只拿宿主侧的显隐两个动作（与上面几个整页
+// 标签页同一套写法）。
+import { enterAdminPanelTabChrome, leaveAdminPanelTab } from '../adminPanel/host'
 import { enterToolTabChrome, initToolView, leaveToolTab, loadToolTab, toolTabLabel, type ToolId } from './tool-view'
 import { initAssistant, refreshAssistantContext, setAssistantOpen } from './assistant'
 import { initDocBar, type DocFormat } from './doc-bar'
 import { getJsonOrigin, getJsonPath, getJsonText, initJsonView, refreshJsonLayout } from './json-view'
 import { initPrintPreview, showPrintPreview } from './print-preview'
 import { clearPdfBlockAnchors, scheduleBlockLinkRebuild, setBlockLinkView } from './block-link'
+import { hostEditorEl } from './host-editor'
 import { canvasDocTabLabel, canvasDocWindowTitle, hideCanvasDocView, releaseCanvasDocTab, showCanvasDocView } from './canvas-editor'
 // 工具栏里那几个「新建标签页 / 打开文件」的动作用钩子注册进来（避免
 // toolbar → main.ts 的循环依赖），见 canvas-editor/host.ts。
@@ -28,7 +33,9 @@ import './themes/base.css'
 import './themes/premium.css'
 
 let sourceModeActive = false
-const editorEl = () => document.getElementById('editor') as HTMLElement
+// 不能用 getElementById('editor')：后台管理面板那一页里也有块同 id 的壳，且排在更
+// 前面 —— 提交页会把面板的编辑区搬走（见 host-editor.ts 的来龙去脉）。
+const editorEl = (): HTMLElement => hostEditorEl() as HTMLElement
 const sourceEl = () => document.getElementById('source-editor') as HTMLTextAreaElement
 const filePanelEl = () => document.getElementById('file-panel') as HTMLElement
 const fileListEl = () => document.getElementById('file-list') as HTMLElement
@@ -236,6 +243,12 @@ interface DocumentTab {
    */
   solver?: boolean
   /**
+   * 是不是「后台管理系统」标签页（菜单「帮助 → 后台管理系统」）：整页的 Vue 3
+   * 应用（src/adminPanel），与 texo / solver 同一用法 —— 不接管编辑器、不进
+   * 保存 / 脏标记体系。
+   */
+  adminPanel?: boolean
+  /**
    * 类 docx 标签页首次进入时要执行的初始化（导入 docx / markdown 的内容）。
    * 挂在标签页上带进 activateTab，只在真的要新建画布实例时用一次，用完即清 ——
    * 切回这个标签页不该再导入一遍。
@@ -286,6 +299,7 @@ function tabLabel(tab: DocumentTab): string {
   if (tab.kind === 'submit') return isChinese() ? '提交' : 'Submit'
   if (tab.solver) return isChinese() ? '可视化解题' : 'Visual Solver'
   if (tab.texo) return isChinese() ? 'LaTeX公式' : 'LaTeX OCR'
+  if (tab.adminPanel) return isChinese() ? '后台管理系统' : 'Admin'
   // 随包文档没有文件名可显示，标题就是它自己（用法指南 / Markdown 语法）。
   if (tab.bundledDoc) return tab.bundledDoc.title
   if (tab.kind === 'canvas') return canvasDocTabLabel()
@@ -320,7 +334,8 @@ function captureActiveTab(): void {
   // 工具箱标签页与公式页完全同型（body.tool-view 整页视图，同样不接管编辑器）；
   // 之前只挡了公式页，漏掉的后果一模一样：关工具箱标签页时会替上一个文档问保存。
   // 可视化解题标签页（body.solver-view）也是同一类，一并挡掉。
-  if (tab.kind === 'submit' || tab.kind === 'canvas' || tab.texo || tab.tool || tab.solver) return
+  // 后台管理系统（body.admin-panel-view）是同一类整页视图，一并挡掉
+  if (tab.kind === 'submit' || tab.kind === 'canvas' || tab.texo || tab.tool || tab.solver || tab.adminPanel) return
   // The path is the tab's identity and only changes where a document is really
   // opened or saved; deriving it here would let a stray render rename a tab.
   tab.dirty = dirty
@@ -340,7 +355,7 @@ function captureActiveTab(): void {
 // keeps the primary save hint.
 function markActiveTabDirty(): void {
   const tab = activeTab()
-  if (!tab || tab.kind === 'submit' || tab.kind === 'canvas' || tab.texo) return
+  if (!tab || tab.kind === 'submit' || tab.kind === 'canvas' || tab.texo || tab.adminPanel) return
   tab.dirty = dirty
   const entry = tabBarEl().querySelector(`.tab-entry[data-tab-id="${tab.id}"]`)
   entry?.classList.toggle('dirty', dirty)
@@ -696,6 +711,8 @@ function resetPageViews(): void {
   leaveTexoTab()
   // 可视化解题：除了收起面板，还要停掉可能仍在跑的那条流（见 visualSolve）
   leaveSolverTab()
+  // 后台管理系统（Vue 3 应用）：整页接管，同一个规矩，也要收
+  leaveAdminPanelTab()
 }
 
 /**
@@ -992,6 +1009,39 @@ async function openTexoTab(): Promise<void> {
   await pushTabAndActivate(tab)
 }
 
+// ─── 后台管理系统标签页（菜单「帮助 → 后台管理系统」）────────────────────
+// 一个 Vue 3 应用（src/adminPanel），整页接管编辑区。与公式页同一套路，窗口里
+// 最多一个（再点一次聚焦已有的那个）—— 它的登录态、页面状态都在应用内部，
+// 重建一个实例等于让用户重新登录。
+async function openAdminPanelTab(): Promise<void> {
+  const existing = tabs.find((tab) => tab.adminPanel)
+  if (existing) {
+    await activateTab(existing.id)
+    return
+  }
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'document',
+    filePath: null,
+    pdfTab: false,
+    pdfPath: null,
+    imageTab: false,
+    imagePath: null,
+    tool: null,
+    toolPath: null,
+    adminPanel: true,
+    dirty: false,
+    revision: ++documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  await pushTabAndActivate(tab)
+}
+
 // ─── 截屏识别公式（菜单「帮助 → 截屏识别公式…」）────────────────────────
 // 菜单事件只发一个通知，抓屏由这里发起：主进程当然说得清该抓哪块屏，但「用户是
 // 从哪个标签页点的」只有这里知道 —— 结果最后要插回那个标签页，而公式标签页自己
@@ -1174,6 +1224,8 @@ async function activateTab(id: string): Promise<boolean> {
     if (target.tool) enterToolTabChrome()
     if (target.solver) enterSolverTabChrome()
     if (target.texo) enterTexoTabChrome()
+    // 后台管理系统：整页的 Vue 3 应用，同一套路（铺面板 + 挂应用，见 adminPanel/host）
+    if (target.adminPanel) enterAdminPanelTabChrome()
     // 目标不是文档编辑器（提交页 / 类docx / 工具箱 / 公式页 / 解题页）：编辑器
     // 整块被藏起来了，挂在它上面的 mermaid 渲染（沙箱 iframe + 在途请求）也就
     // 没了意义 —— 停掉它，免得一个看不见的 iframe 一直挂着（下次需要时懒重建）。
@@ -1208,6 +1260,17 @@ async function activateTab(id: string): Promise<boolean> {
       activeTabId = target.id
       currentFilePath = null
       document.title = isChinese() ? 'LaTeX公式' : 'LaTeX OCR'
+      finishTabSwitch()
+      return true
+    }
+    // 后台管理系统标签页：整页的 Vue 3 应用，同样不接管编辑器（编辑面由
+    // body.admin-panel-view 收起）。应用自己的状态（登录态、当前页面）在实例里
+    // 活着，切回来不用重建 —— 这里只把外壳换掉。
+    if (target.adminPanel) {
+      await window.electronAPI.activateFile(null)
+      activeTabId = target.id
+      currentFilePath = null
+      document.title = isChinese() ? '后台管理系统' : 'Admin'
       finishTabSwitch()
       return true
     }
@@ -1534,6 +1597,10 @@ function bindTabBar(api: import('../preload/index').ElectronAPI): void {
   })
   api.onMenuTexoTab(() => {
     void openTexoTab()
+  })
+  // 菜单「帮助 → 后台管理系统」：开后台管理标签页（Vue 3 应用）
+  api.onMenuAdminPanel(() => {
+    void openAdminPanelTab()
   })
   api.onMenuSnipFormula(() => {
     void runSnipFormula()
@@ -1886,10 +1953,12 @@ function updatePanelVisibility(): void {
   // 可视化解题标签页整页接管（body.solver-view），顺手把它的外壳收掉 —— 各条
   // "开别的标签页"的路径最后都会走到这里，leaveSolverTab 幂等，不必逐个补。
   if (!activeTab()?.solver) leaveSolverTab()
+  // 后台管理系统同上：只要当前标签页不是它，就把它的外壳收掉
+  if (!activeTab()?.adminPanel) leaveAdminPanelTab()
   // PDF 对照 / 图片转md / 工具箱 / 可视化解题 标签页没有文件面板：左边已经是
   // 源文件，右边就是要编辑的那一个文档（后两者干脆没有文档）。
   const show =
-    !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab && !activeTab()?.tool && !activeTab()?.texo && !activeTab()?.solver
+    !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab && !activeTab()?.tool && !activeTab()?.texo && !activeTab()?.solver && !activeTab()?.adminPanel
   filePanelEl().hidden = !show
   document.body.classList.toggle('show-file-panel', show)
   fileToggleBtnEl().classList.toggle('active', show)
@@ -2469,8 +2538,10 @@ function restoreEditorFocusForMenu(): void {
   const active = document.activeElement as HTMLElement | null
   if (active) {
     const isField = active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable
-    // 正在别处输入（搜索框、弹窗表单）→ 不抢焦点，命令照旧被门控拦下
-    if (isField && !active.closest('#editor')) return
+    // 正在别处输入（搜索框、弹窗表单、后台管理面板的录入框）→ 不抢焦点，命令照旧被
+    // 门控拦下。判据要对准宿主自己那块 #editor：面板的录入框（.md-input）也在面板
+    // 那块同 id 的壳里，写死 closest('#editor') 会把面板当成宿主把焦点抢走。
+    if (isField && !hostEditorEl()?.contains(active)) return
   }
   focusEditor()
 }

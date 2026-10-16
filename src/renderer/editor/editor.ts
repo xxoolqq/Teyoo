@@ -1,7 +1,7 @@
 import { Editor, rootCtx, defaultValueCtx, editorViewCtx, serializerCtx, parserCtx, remarkCtx, schemaCtx, remarkPluginsCtx, remarkStringifyOptionsCtx, inputRulesCtx } from '@milkdown/kit/core'
 import { SerializerState } from '@milkdown/kit/transformer'
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@milkdown/kit/prose/state'
-import type { Node as ProseMirrorNode, MarkType, ResolvedPos } from '@milkdown/kit/prose/model'
+import { Fragment, Slice, type Node as ProseMirrorNode, type MarkType, type ResolvedPos } from '@milkdown/kit/prose/model'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import remarkBreaks from 'remark-breaks'
 import { commonmark } from '@milkdown/kit/preset/commonmark'
@@ -34,7 +34,7 @@ import { pinyinModal } from './pinyin-modal'
 import { subBlockModal } from './subblock-modal'
 import { colsModal } from './cols-modal'
 import { tianziModal } from './tianzi-modal'
-import { tableModal } from './table-modal'
+import { tablePicker } from './table-picker'
 import { remarkMathFalsePositiveGuard } from './math-guard'
 import { pasteMathPlugin } from './paste-math'
 import { remarkResidualEmphasis } from './residual-emphasis'
@@ -70,6 +70,7 @@ import { imageStylePlugin, imageResizeView, setCurrentImageFilePath } from '../.
 import { type MarkdownStyle } from './markdown-style'
 import { isChinese } from '../ui-language'
 import { blockLinkProse } from '../block-link'
+import { hostEditorEl } from '../host-editor'
 
 import 'katex/dist/katex.min.css'
 import '@milkdown/kit/prose/view/style/prosemirror.css'
@@ -170,8 +171,10 @@ export function onEditorJumpPhase(listener: ((phase: EditorJumpPhase) => void) |
 // the flash until the smooth scroll settles (`scrollend`) instead of playing
 // it while the target is still off-screen (#64).
 export function flashHeadingOnArrival(heading: Element): void {
-  // 滚动容器不再是写死的 #editor：一页多个编辑器时，用标题自己所在的那个。
-  const container = heading.closest<HTMLElement>('.editor-root') ?? document.getElementById('editor')
+  // 滚动容器不再是写死的 #editor：一页多个编辑器时，用标题自己所在的那个
+  // （webview2 那页是 .editor-root，桌面版就是 #editor，取最近的那个即可）。
+  // 兜底也不按 id 取：后台管理面板那页也有一块同 id 的壳（见 host-editor.ts）。
+  const container = heading.closest<HTMLElement>('.editor-root, #editor') ?? hostEditorEl()
   if (!container) return
   editorJumpPhaseListener?.('start')
   let startTop = container.scrollTop
@@ -501,9 +504,10 @@ export function showTianziModal(): void {
   tianziModal.show()
 }
 
-// 工具栏「表格」按钮调用 —— 弹出模态框输入行列数
-export function showTableModal(): void {
-  tableModal.show()
+// 工具栏「表格」按钮调用 —— 弹出网格选择器，悬停按区块高亮、单击即插入。
+// anchor 为触发按钮，用于把弹层锚定在按钮下方；无锚点时回落到工具栏表格按钮。
+export function showTablePicker(anchor?: HTMLElement): void {
+  tablePicker.show(anchor)
 }
 
 // 工具栏「链接」按钮调用 —— 弹出模态框输入链接名称与 URL，
@@ -679,7 +683,6 @@ export function setMathModalLanguage(language: 'zh' | 'en'): void {
   subBlockModal.setLanguage(language)
   colsModal.setLanguage(language)
   tianziModal.setLanguage(language)
-  tableModal.setLanguage(language)
 }
 
 export function releaseMermaidRenderer(): void {
@@ -1625,9 +1628,13 @@ export function insertTable(rows = 3, cols = 3): void {
     // 创建空单元格（含一个空段落占位，否则 ProseMirror 不允许光标进入）
     const makeCell = (cellType: typeof tableCellType) =>
       cellType.createAndFill()!
+    // GFM 表格的内容表达式是 "table_header_row table_row+"：首行固定为表头，
+    // 之后至少要有一行表体。选择器允许点到第 1 行，那样会生成只有表头、违反
+    // schema 的非法表格（后续渲染/序列化都会出错），所以行数下限取 2。
+    const totalRows = Math.max(2, rows)
     const headerCells = Array.from({ length: cols }, () => makeCell(tableHeaderType!))
     const bodyCells = Array.from({ length: cols }, () => makeCell(tableCellType))
-    const rows_ = Array.from({ length: rows }, (_, i) =>
+    const rows_ = Array.from({ length: totalRows }, (_, i) =>
       (i === 0 && tableHeaderRowType
         ? tableHeaderRowType.create(null, headerCells)
         : tableRowType.create(null, bodyCells)))
@@ -1635,8 +1642,13 @@ export function insertTable(rows = 3, cols = 3): void {
 
     const { state } = view
     const { from } = state.selection
-    // 替换选区，在表格后补一个空段落供光标落脚
-    const tr = state.tr.replaceSelectionWith(table).insert(from + table.nodeSize, paragraphType.create())
+    // 一次到位：把 [表格, 空段落] 整片 slice 替进选区，表格后的空段落供光标落脚。
+    // 不能写成「先 replaceSelectionWith(table) 再 insert(from + table.nodeSize)」——
+    // 选区若落在文档里仅有的那个空段落中（新建空白文档就是这种形态），
+    // replaceSelectionWith 会把整段连同段落节点一起吞掉，落点 from + nodeSize
+    // 直接越界抛出 "Position out of range"，表现为「空文档插不进表格」。
+    const slice = new Slice(Fragment.fromArray([table, paragraphType.create()]), 0, 0)
+    const tr = state.tr.replaceSelection(slice)
     const sel = Selection.findFrom(tr.doc.resolve(from + 1), 1, true)
     if (sel) tr.setSelection(sel)
     view.dispatch(tr.scrollIntoView())

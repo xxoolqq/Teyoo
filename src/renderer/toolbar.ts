@@ -26,7 +26,7 @@ import {
   showSubBlockModal,
   showColsModal,
   showTianziModal,
-  showTableModal,
+  showTablePicker,
   showLinkModal,
   applyFont,
   getToolbarState,
@@ -58,7 +58,7 @@ const FORMAT_CMDS = new Set<string>([
 // 插入符号面板：按类别收录常用符号（来源：通用序号标注）。
 // 以后扩充时往对应分组加字符即可；多字符条目（如括号对「〔〕」）
 // 会在网格中占两列、整体插入。
-const SYMBOL_GROUPS: { label: string; chars: string[] }[] = [
+export const SYMBOL_GROUPS: { label: string; chars: string[] }[] = [
   {
     label: '带圈数字',
     chars: ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'],
@@ -223,7 +223,8 @@ export function setupToolbar(): void {
     }
     const cmd = btn.dataset.tbCmd
     if (!cmd) return
-    runToolbarCommand(cmd)
+    // 把按钮本身作为锚点传给命令管线：表格选择器等弹层要贴在按钮下方
+    runToolbarCommand(cmd, btn)
   })
 
   // ── 标题下拉弹层 ──────────────────────────────────────────────────────────
@@ -433,7 +434,7 @@ export function setupToolbar(): void {
 
 // 工具栏命令的唯一入口：按钮点击与菜单栏「格式」菜单共用同一条管线，
 // 保证菜单项与工具栏按钮行为完全一致（弹窗类命令也照常弹窗）。
-export function runToolbarCommand(cmd: string): void {
+export function runToolbarCommand(cmd: string, anchor?: HTMLElement): void {
   // 链接走弹窗（Ctrl+K 的静默剪贴板逻辑保留给快捷键，按钮需要可见反馈）
   if (cmd === 'link') {
     showLinkModal()
@@ -468,7 +469,7 @@ export function runToolbarCommand(cmd: string): void {
   } else if (cmd === 'tianzi') {
     showTianziModal()
   } else if (cmd === 'table') {
-    showTableModal()
+    showTablePicker(anchor)
   } else if (cmd === 'clearFont' || cmd === 'clearFontStyle') {
     // 行内选区清除 {=:} mark，跨段选区提升删除 :::font 容器（逻辑在 applyFont 内自适应）。
     // clearFont 是原图标按钮的命令名，工具栏现在只留「清除样式」文字按钮

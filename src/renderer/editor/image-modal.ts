@@ -18,7 +18,7 @@
 
 import { getEditorView } from './editor'
 import { isChinese, type UiLanguage } from '../ui-language'
-import { toFileUrl } from '../../extensions/image-style/lib'
+import { ALIGN_OPTIONS, toFileUrl } from '../../extensions/image-style/lib'
 // 内嵌与压缩：本地文件 → base64（超限时等比压缩），阈值与桌面版共用一份
 import { fileToEmbeddableDataUrl, urlToDataUrl, describeCompression } from './image-embed'
 
@@ -62,15 +62,6 @@ const DEFAULT_IMAGE_ATTRS: ImageAttrs = {
   shadow: false,
   radius: false,
 }
-
-const ALIGN_OPTIONS: { value: string; zh: string; en: string }[] = [
-  { value: '', zh: '默认', en: 'Default' },
-  { value: 'left', zh: '左对齐', en: 'Left' },
-  { value: 'center', zh: '居中', en: 'Center' },
-  { value: 'right', zh: '右对齐', en: 'Right' },
-  { value: 'float-left', zh: '浮动左', en: 'Float left' },
-  { value: 'float-right', zh: '浮动右', en: 'Float right' },
-]
 
 export class ImageModal {
   private container: HTMLDivElement

@@ -1,0 +1,60 @@
+/* adminPanel 的样式根。
+ *
+ * 两条硬规矩：
+ *   1. 所有规则都写在 .admin-app 下面。这套界面要挂进 ColaMD 的标签页，跟宿主
+ *      共用同一个 document，选择器漏出去就会改到宿主身上。
+ *   2. 颜色一律走 --admin-* 变量。宿主想让它跟主题走，改这几个变量就够了，
+ *      不用碰组件。
+ */
+.admin-app {
+  --admin-bg: #f4f6f9;
+  --admin-surface: #ffffff;
+  --admin-text: #1f2d3d;
+  --admin-text-weak: #8492a6;
+  --admin-border: #d8dee6;
+  --admin-primary: #2d8cf0;
+  --admin-nav-bg: #eef1f6;
+  --admin-nav-hover: #e0e6ee;
+  --admin-nav-active: #dce8f7;
+  --admin-input-bg: #ffffff;
+  /* 派生色：编辑区背景、悬停底色、主色浅底。主题里只给"基色"，这三个由基色派生，
+     统一放这里，组件里就不必到处写 color-mix */
+  --admin-bg-soft: #eef1f6;
+  --admin-hover: #e6ebf2;
+  --admin-primary-weak: #e4eefa;
+
+  width: 100%;
+  height: 100%;
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--admin-text);
+  background: var(--admin-bg);
+}
+
+/* 挂进 ColaMD 时自动跟随宿主的深色主题（body.theme-* 是 Teyoo 自己的类名），
+   不需要 JS 参与 */
+body.theme-dark .admin-app,
+body.theme-solarized-dark .admin-app,
+body.theme-nord .admin-app,
+body.theme-gruvbox .admin-app,
+body.theme-dracula .admin-app,
+body.theme-midnight .admin-app {
+  --admin-bg: #1b1e23;
+  --admin-surface: #23272e;
+  --admin-text: #d7dbe0;
+  --admin-text-weak: #8b949e;
+  --admin-border: #363b42;
+  --admin-primary: #4b9bf4;
+  --admin-nav-bg: #20242a;
+  --admin-nav-hover: #2a2f36;
+  --admin-nav-active: #2c3a4b;
+  --admin-input-bg: #1b1e23;
+  --admin-bg-soft: #20242a;
+  --admin-hover: #2c313a;
+  --admin-primary-weak: #26374b;
+}
+
+/* 原本这里还有一段 @media (prefers-color-scheme: dark)：那是给独立 Web 站用的
+   （没有 body.theme-*）。Web 部署砍掉之后它只剩副作用 —— 系统是深色、宿主的主题
+   是浅色时，后台面板会自己变黑。主题只认宿主这一个源头，跟系统走的那份删掉了。 */

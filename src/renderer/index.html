@@ -4,8 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- worker-src：pdf.js 的 worker 走 ?url 资产（同源）；blob: 留给兼容性回退路径。
-       font-src 加 blob:：pdf.js 用 FontFace 注入 PDF 内嵌字体时可能是 blob URL。 -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data: blob:; img-src 'self' data: blob: https: http: file:;">
+       font-src 加 blob:：pdf.js 用 FontFace 注入 PDF 内嵌字体时可能是 blob URL。
+       connect-src：后台管理系统（src/adminPanel）的 axios 要直接连后端，而这里
+       的 default-src 是 'self' —— 不放行的话请求在发出前就被拦掉，页面上只看
+       到「登录请求失败」。默认放行本机 7088/8088（ctbapp 的两个后端）与 https；
+       后端换成别的 http 地址时把那个地址追加到这一项里。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data: blob:; img-src 'self' data: blob: https: http: file:; connect-src 'self' http://localhost:7088 http://localhost:8088 https:;">
   <title>Teyoo</title>
   <!-- Keep the titlebar stable before the renderer CSS bundle loads. -->
   <style>
@@ -396,6 +400,11 @@
     <!-- 进度 / 结果提示：转换中与失败原因都写在这里。 -->
     <p id="image-status" class="image-status" aria-live="polite" hidden></p>
   </aside>
+  <!-- 后台管理系统标签页（菜单「帮助 → 后台管理系统」）：一个 Vue 3 应用，整页
+       接管编辑区（不显示编辑器与工具栏，见 base.css 的 body.admin-panel-view）。
+       默认隐藏，src/adminPanel/host.ts 在切进该标签页时显示它并挂载应用。
+       容器是空的：DOM 全由 Vue 渲染，这里只提供一个挂载点。 -->
+  <aside id="admin-panel" aria-label="后台管理系统" hidden></aside>
   <!-- LaTeX公式标签页（菜单「帮助 → LaTeX公式」）：整页公式识别界面，铺满编辑区
        （不显示编辑器与工具栏，见 base.css 的 body.texo-view）。默认隐藏，
        src/texo/view.ts 在切进该标签页时显示。上传/粘贴/拖拽公式图 → 本地 Texo
@@ -631,7 +640,11 @@
       </svg>
     </button>
   </div>
-  <div id="editor"></div>
+  <!-- 宿主自己的编辑器外壳。#editor 这个 id 是主题排版规则的锚点（base.css /
+       premium.css 里一百多处 `#editor .ProseMirror …`），后台管理系统那一页里也有一块
+       同 id 的壳，而它排在本文档更前面 —— 所以宿主这块用 .host-editor 显式标出来，
+       凡「宿主自己的编辑器」都经 host-editor.ts 取，别用 getElementById('editor')。 -->
+  <div id="editor" class="host-editor"></div>
   <textarea id="source-editor" spellcheck="false"></textarea>
   <!-- JSON 模式：只读展示解析结果（MinerU 的 layout.json 之类）。缩进、着色、
        折叠和「只画可视区」都在 json-view.ts 里做，这里只给两个容器：

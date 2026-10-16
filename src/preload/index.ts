@@ -226,6 +226,8 @@ export interface ElectronAPI {
   onMenuSolverTab: (callback: () => void) => void
   // 菜单「帮助 → LaTeX公式」：开一个本地公式识别（Texo 模型）标签页。
   onMenuTexoTab: (callback: () => void) => void
+  // 菜单「帮助 → 后台管理系统」：开一个整页的后台管理标签页（Vue 3 应用）
+  onMenuAdminPanel: (callback: () => void) => void
   // 菜单「帮助 → 截屏识别公式…」：菜单事件只负责通知，抓屏由渲染端自己发起
   // （requestSnip）—— 它才知道这一屏该进哪个窗口、又是从哪个标签页点出来的，
   // 主进程拿不到「当前在编辑哪个文档」这件事。
@@ -494,6 +496,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMenuTexoTab: (callback: () => void) => {
     ipcRenderer.on('menu-texo-tab', () => callback())
+  },
+  onMenuAdminPanel: (callback: () => void) => {
+    ipcRenderer.on('menu-admin-panel', () => callback())
   },
   onMenuSnipFormula: (callback: () => void) => {
     ipcRenderer.on('menu-snip-formula', () => callback())

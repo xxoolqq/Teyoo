@@ -1,6 +1,7 @@
 import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
 import { getEditorView, searchPluginKey } from './editor'
 import { getUiLanguage, type UiLanguage } from '../ui-language'
+import { hostEditorEl } from '../host-editor'
 
 export class SearchPanel {
   private container: HTMLDivElement
@@ -274,7 +275,10 @@ export class SearchPanel {
     if (this.currentIndex < 0 || this.currentIndex >= this.matches.length) return
     const match = this.matches[this.currentIndex]
     const coords = view.coordsAtPos(match.from)
-    const editorEl = document.getElementById('editor')
+    // 滚动容器是「这个视图自己所在的那块 #editor」：写死 getElementById('editor') 会拿到
+    // 文档里第一个 —— 后台管理面板那页也有一块同 id 的壳（见 host-editor.ts），
+    // 于是查找替换滚的是别人家的元素。
+    const editorEl = view.dom.closest<HTMLElement>('#editor') ?? hostEditorEl()
     if (!editorEl) return
 
     const rect = editorEl.getBoundingClientRect()

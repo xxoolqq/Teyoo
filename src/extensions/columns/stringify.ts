@@ -21,7 +21,12 @@ const RE_LINE_SUB_START = /^[ ]{0,3}@(box)?(#(left|center|right))?[ ]*$/
 const RE_LINE_COLS = /^[ ]{0,3}@@(?:cols(?:[ ]+(?:\d+|\d+:\d+))?)?[ ]*$/
 const RE_LINE_TRAILING_AT = /^(.*?)([ ]{0,3})@([ ]*)$/
 
-function escapeInnerMarkers(src: string): string {
+/**
+ * 转义内部内容里「长得像开始/结束标记」的行（见文件头）。
+ * 导出给后台面板的「插入子块」弹窗用：那边同样是用户自由输入的内容，转义规则
+ * 必须与这里一致，否则同一个子块在两边序列化出的源码不同。
+ */
+export function escapeInnerMarkers(src: string): string {
   return src
     .replace(/\r\n/g, '\n')
     .split('\n')

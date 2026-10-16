@@ -1,4 +1,5 @@
 import { defineConfig } from 'electron-vite'
+import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
 export default defineConfig({
@@ -47,6 +48,10 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
+    // adminPanel 是 Vue 3 单文件组件（src/adminPanel/**/*.vue），渲染端要能编译
+    // 它们。桌面端只用到这一个插件的产物，Web 站那边由 vite.admin.config.ts
+    // 单独构建同一份源码。
+    plugins: [vue()],
     // ── mathjax-full CSP 兼容 ─────────────────────────────────────────────
     // mathjax-full/js/components/version.js 在打包变量缺失时会执行
     //   var load = eval('require'); var dirname = eval('__dirname');

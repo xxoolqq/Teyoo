@@ -64,11 +64,17 @@ interface PageDimensions {
   height: number
 }
 
+// 取宿主自己那块编辑器。注入的这段脚本跑在渲染进程里，import 不到渲染进程的模块，
+// 只能把同一条选择器抄在这儿：后台管理系统那一页里也有一块同 id 的 #editor，且文档
+// 顺序更靠前，getElementById('editor') 会量到面板那块壳上去（来龙去脉见
+// src/renderer/host-editor.ts）。量错元素 = 导出的分页/尺寸跟着错。
+const EDITOR_EL_JS = "document.querySelector('#editor.host-editor')"
+
 // Measure without waiting for anything, for the case where the polite version
 // below runs out of time.
 async function measureLayout(win: BrowserWindow): Promise<PageDimensions> {
   return win.webContents.executeJavaScript(`(() => {
-    const editor = document.getElementById('editor')
+    const editor = ${EDITOR_EL_JS}
     const content = editor?.querySelector('.ProseMirror')
     const editorBounds = editor?.getBoundingClientRect()
     const contentBounds = content?.getBoundingClientRect()
@@ -91,7 +97,7 @@ async function waitForLayout(win: BrowserWindow): Promise<PageDimensions> {
       image.addEventListener('error', resolve, { once: true })
     })))
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-    const editor = document.getElementById('editor')
+    const editor = ${EDITOR_EL_JS}
     const content = editor?.querySelector('.ProseMirror')
     const editorBounds = editor?.getBoundingClientRect()
     const contentBounds = content?.getBoundingClientRect()

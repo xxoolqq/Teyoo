@@ -16,6 +16,7 @@ import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
 import { blockFingerprint, type BlockAnchor } from './layout2md'
+import { hostEditorEl } from './host-editor'
 
 const blockLinkKey = new PluginKey<DecorationSet>('block-link')
 
@@ -284,7 +285,9 @@ function blockIdOf(target: EventTarget | null): string | null {
 
 function bindEditorDom(): void {
   if (domBound) return
-  const host = document.getElementById('editor')
+  // 绑宿主自己那块 #editor：按 id 取会拿到文档里第一个，后台管理面板那一页里也有一块
+  // 同 id 的壳（见 host-editor.ts）—— 绑错了就再也收不到正文的 mouseover，块链接整条失效。
+  const host = hostEditorEl()
   if (!host) return
   domBound = true
   host.addEventListener('mouseover', (event) => {

@@ -18,7 +18,7 @@ import {
 import { isChinese } from '../ui-language'
 
 // 与工具栏字体下拉同一份清单（含开源替代字体）
-const FONT_FAMILIES: { value: string; zh: string; en: string }[] = [
+export const FONT_FAMILIES: { value: string; zh: string; en: string }[] = [
   { value: 'SimSun', zh: '宋体', en: 'SimSun' },
   { value: 'SimHei', zh: '黑体', en: 'SimHei' },
   { value: 'KaiTi', zh: '楷体', en: 'KaiTi' },
@@ -33,7 +33,7 @@ const FONT_FAMILIES: { value: string; zh: string; en: string }[] = [
   { value: 'STIX Two Math', zh: 'STIX Two Math', en: 'STIX Two Math' },
 ]
 
-const FONT_SIZES: { value: string; zh: string; en: string }[] = [
+export const FONT_SIZES: { value: string; zh: string; en: string }[] = [
   { value: '36pt', zh: '小初 36pt', en: '36pt' },
   { value: '26pt', zh: '一号 26pt', en: '26pt' },
   { value: '24pt', zh: '小一 24pt', en: '24pt' },

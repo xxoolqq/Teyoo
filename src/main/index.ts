@@ -2703,6 +2703,7 @@ function buildMenu(): void {
         importTheme: '导入主题', usageGuide: 'Teyoo用法指南',
         cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
         preferences: '偏好设置…', toolbox: '工具箱', visualSolve: '可视化解题', latexOcr: 'LaTeX公式',
+        adminPanel: '后台管理系统',
         snipFormula: '截屏识别公式…',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
         newCanvasDoc: '新建类docx文档',
@@ -2737,6 +2738,7 @@ function buildMenu(): void {
         importTheme: 'Import Theme', usageGuide: 'Teyoo Guide',
         cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
         preferences: 'Preferences…', toolbox: 'Toolbox', visualSolve: 'Visual Solver', latexOcr: 'LaTeX OCR',
+        adminPanel: 'Admin',
         snipFormula: 'Snip Formula…',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
         newCanvasDoc: 'New DOCX-like Document',
@@ -3122,6 +3124,12 @@ function buildMenu(): void {
         {
           label: labels.latexOcr,
           click: () => sendToFocused('menu-texo-tab')
+        },
+        // 后台管理系统：整页的 Vue 3 应用（src/adminPanel），登录后才能用。
+        // 与上面几个同一套路：开在当前窗口的标签页里。
+        {
+          label: labels.adminPanel,
+          click: () => sendToFocused('menu-admin-panel')
         },
         // 截屏识别公式：同一份本地模型，只是配方从「选一张图」换成「屏幕上框一块」。
         // 菜单事件只发通知，抓屏由渲染端发起（preload 的 requestSnip）：要看是哪个
