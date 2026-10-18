@@ -7,6 +7,25 @@ import {
   type RouterHistory
 } from 'vue-router'
 import { isLoggedIn } from '../stores/session'
+import iconTimu from '../assets/timu.png'
+import iconTuchuang from '../assets/tuchuang.png'
+import iconTongji from '../assets/tongji.png'
+import iconBanji from '../assets/banji.png'
+
+// 菜单的单一数据源：路由 meta 即菜单/标签页数据，侧边栏（MainView）从这里推导，
+// 不再手抄一份分组表——加页面只改路由这一处
+declare module 'vue-router' {
+  interface RouteMeta {
+    /** 侧边栏分组标题（带此字段的子路由才进菜单） */
+    group?: string
+    /** 菜单 / 标签页显示名 */
+    label?: string
+    /** 分组图标 */
+    icon?: string
+    /** 需要保活的组件名（KeepAlive include 按组件名匹配；不标记就不缓存） */
+    keepAlive?: string
+  }
+}
 
 // 路由模式目前只有 memory 一种在用 —— 它在这里是必须的：
 //
@@ -31,51 +50,65 @@ const routes: RouteRecordRaw[] = [
     path: '/home',
     component: () => import('../views/MainView.vue'),
     children: [
-      { path: '', name: 'Search', component: () => import('../views/SearchView.vue') },
+      {
+        path: '',
+        name: 'Search',
+        component: () => import('../views/SearchView.vue'),
+        meta: { group: '题目', label: '检索题目', icon: iconTimu, keepAlive: 'SearchView' }
+      },
       {
         path: 'put_topic',
         name: 'PutTopic',
-        component: () => import('../views/PutTopicView.vue')
+        component: () => import('../views/PutTopicView.vue'),
+        meta: { group: '题目', label: '录入题目', icon: iconTimu, keepAlive: 'PutTopicView' }
       },
       {
         path: 'my_topic',
         name: 'MyTopic',
-        component: () => import('../views/MyTopicsView.vue')
+        component: () => import('../views/MyTopicsView.vue'),
+        meta: { group: '题目', label: '我录入的题', icon: iconTimu, keepAlive: 'MyTopicsView' }
       },
       {
         path: 'photo_bed',
         name: 'PhotoBed',
-        component: () => import('../views/PlaceholderView.vue')
+        component: () => import('../views/PlaceholderView.vue'),
+        meta: { group: '图床', label: '图床', icon: iconTuchuang }
       },
       {
         path: 'my_photo_bed',
         name: 'MyPhotoBed',
-        component: () => import('../views/PlaceholderView.vue')
+        component: () => import('../views/PlaceholderView.vue'),
+        meta: { group: '图床', label: '我的图床', icon: iconTuchuang }
       },
       {
         path: 'pick_shell',
         name: 'PickShell',
-        component: () => import('../views/PlaceholderView.vue')
+        component: () => import('../views/PickShellView.vue'),
+        meta: { group: '统计分析', label: '题海拾贝', icon: iconTongji, keepAlive: 'PickShellView' }
       },
       {
         path: 'new_class',
         name: 'NewClass',
-        component: () => import('../views/PlaceholderView.vue')
+        component: () => import('../views/NewClassView.vue'),
+        meta: { group: '班级管理', label: '创建班级', icon: iconBanji, keepAlive: 'NewClassView' }
       },
       {
         path: 'shenhe_class',
         name: 'Auditing',
-        component: () => import('../views/PlaceholderView.vue')
+        component: () => import('../views/AuditingView.vue'),
+        meta: { group: '班级管理', label: '审核加入', icon: iconBanji, keepAlive: 'AuditingView' }
       },
       {
         path: 'put_score',
         name: 'PutScore',
-        component: () => import('../views/PlaceholderView.vue')
+        component: () => import('../views/PutScoreView.vue'),
+        meta: { group: '班级管理', label: '成绩录入', icon: iconBanji, keepAlive: 'PutScoreView' }
       },
       {
         path: 'class_tj',
         name: 'ClassTJ',
-        component: () => import('../views/PlaceholderView.vue')
+        component: () => import('../views/ClassTJView.vue'),
+        meta: { group: '班级管理', label: '错题统计', icon: iconBanji, keepAlive: 'ClassTJView' }
       }
     ]
   }

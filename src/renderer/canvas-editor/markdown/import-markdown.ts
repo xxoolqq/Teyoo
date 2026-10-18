@@ -12,7 +12,8 @@ import remarkBreaks from 'remark-breaks'
 import type { List, PhrasingContent, Root, RootContent, Table } from 'mdast'
 import { ElementType, ListStyle, ListType, TitleLevel } from '@hufe921/canvas-editor'
 import type { IElement } from '@hufe921/canvas-editor'
-import { remarkMathFalsePositiveGuard } from '../../editor/math-guard'
+// math-guard（货币误判守卫）已停用，与下方 processor 的注释保持一致
+// import { remarkMathFalsePositiveGuard } from '../../editor/math-guard'
 import { parseImageAlt, type ImageParams } from '../../../extensions/image-style/lib'
 
 /** 零宽空格：canvas 里用它表示软换行（Shift+Enter） */
@@ -50,8 +51,9 @@ const processor = unified()
   .use(remarkGfm)
   .use(remarkMath)
   .use(remarkBreaks)
-  // 误判守卫：「价格 $5，成本 $6」这类不该被 remark-math 当成公式
-  .use(remarkMathFalsePositiveGuard)
+  // 货币误判守卫（math-guard.ts）已按需求停用：$…$ 一律交给 remark-math 当公式
+  // 解析（与主编辑器 editor.ts 保持一致）。恢复防误判时取消下一行注释即可。
+  // .use(remarkMathFalsePositiveGuard)
 
 export function markdownToElements(markdown: string): IElement[] {
   const tree = processor.runSync(processor.parse(markdown)) as Root

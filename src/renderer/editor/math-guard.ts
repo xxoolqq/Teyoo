@@ -9,8 +9,15 @@ function looksLikeLatex(value: string): boolean {
   if (/[\\^_{}]/.test(value)) return true
   // Bare symbols: $x$, $xy$
   if (/^[a-zA-Z\s]+$/.test(value)) return true
-  // Algebra: letters combined with operators, e.g. a+b, y=2x
-  if (/[a-zA-Z]/.test(value) && /[=+\-*/<>]/.test(value)) return true
+  // Function notation: f(0), g(x), sin(x) — a letter directly followed by a
+  // parenthesised argument. Currency spans ($5.00) never look like this, but
+  // without this rule they fell through every other check and were turned
+  // back into literal text.
+  if (/[a-zA-Z]\s*\(.*\)/.test(value)) return true
+  // Algebra: letters combined with operators, e.g. a+b, y=2x. `:` is the
+  // ratio sign in geometry spans like $AB:AC$, and only counts when a letter
+  // is present — pure-number spans like $9:30$ (a time) stay literal.
+  if (/[a-zA-Z]/.test(value) && /[=+\-*/:<>]/.test(value)) return true
   // Numeric arithmetic: $1+1=2$, $3*4/2$. The guard used to require letters,
   // so $$1+1=2$$ (remark-math parses a same-line $$…$$ as INLINE math) was
   // turned into literal text — the reported "$$ sometimes not recognised".

@@ -35,7 +35,8 @@ import { subBlockModal } from './subblock-modal'
 import { colsModal } from './cols-modal'
 import { tianziModal } from './tianzi-modal'
 import { tablePicker } from './table-picker'
-import { remarkMathFalsePositiveGuard } from './math-guard'
+// math-guard（货币误判守卫）已停用，与下方注册处的注释保持一致
+// import { remarkMathFalsePositiveGuard } from './math-guard'
 import { pasteMathPlugin } from './paste-math'
 import { remarkResidualEmphasis } from './residual-emphasis'
 import { highlight, remarkHighlight, highlightStringifyHandler } from './highlight'
@@ -2165,7 +2166,10 @@ export async function createEditor(
         // 优先消费，本插件只处理剩余形态（`字^{2-}` / `x^{2}`）。
         { plugin: remarkSubSup, options: {} },
         { plugin: remarkTianziGrid, options: {} },
-        { plugin: remarkMathFalsePositiveGuard, options: {} },
+        // 货币误判守卫（math-guard.ts）已按需求停用：$…$ 一律交给 remark-math
+        // 当公式渲染。代价是「价格 $5，成本 $6」这类含两个 $ 的普通文本也会被
+        // 渲染成公式。恢复防误判时取消下一行注释即可。
+        // { plugin: remarkMathFalsePositiveGuard, options: {} },
       ])
       // 公式实际渲染走 math-engine（下面 mathInlineView / mathBlockView 覆盖了
       // plugin-math 的默认 nodeView），这里的 ctx 是兜底：万一某条路径还用
