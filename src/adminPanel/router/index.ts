@@ -116,12 +116,19 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/PickShellView.vue'),
         meta: { group: '统计分析', label: '题海拾贝', icon: iconTongji, keepAlive: 'PickShellView' }
       },
-      // 提交错题任务（原「编码映射」）归在「班级管理」下：任务按班级建
+      // 错题统计归在「统计分析」下
+      {
+        path: 'class_tj',
+        name: 'ClassTJ',
+        component: () => import('../views/ClassTJView.vue'),
+        meta: { group: '统计分析', label: '错题统计', icon: iconTongji, keepAlive: 'ClassTJView' }
+      },
+      // 编码映射归在「班级管理」下：映射按班级建
       {
         path: 'code_mapping',
         name: 'CodeMapping',
         component: () => import('../views/CodeMappingView.vue'),
-        meta: { group: '班级管理', label: '提交错题任务', icon: iconBanji }
+        meta: { group: '班级管理', label: '编码映射', icon: iconBanji }
       },
       {
         path: 'new_class',
@@ -134,12 +141,6 @@ const routes: RouteRecordRaw[] = [
         name: 'PutScore',
         component: () => import('../views/PutScoreView.vue'),
         meta: { group: '班级管理', label: '成绩录入', icon: iconBanji, keepAlive: 'PutScoreView' }
-      },
-      {
-        path: 'class_tj',
-        name: 'ClassTJ',
-        component: () => import('../views/ClassTJView.vue'),
-        meta: { group: '班级管理', label: '错题统计', icon: iconBanji, keepAlive: 'ClassTJView' }
       },
       // 分组「我的」：家长账号下管理自己的孩子。加子项只在这里加一条，
       // 侧边栏与标签页都从 meta 推导（见 MainView 的 groups）

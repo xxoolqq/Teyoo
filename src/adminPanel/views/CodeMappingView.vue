@@ -1,15 +1,15 @@
 <template>
-  <!-- 提交错题任务（原「编码映射」，现挂在「班级管理」分组下，任务按班级建）。
+  <!-- 编码映射（现挂在「班级管理」分组下，映射按班级建）。
        现阶段只有「新建」这一个交互：工具栏按钮 → 弹窗（映射名 + 所属班级）。 -->
   <div class="mapping-page">
     <div class="list-toolbar">
       <span class="count">共 {{ mappings.length }} 条</span>
-      <button class="new-btn" type="button" @click="openCreate">新建错题任务</button>
+      <button class="new-btn" type="button" @click="openCreate">新建编码映射</button>
     </div>
 
     <div class="mapping-body">
       <p v-if="mappings.length === 0" class="state">
-        还没有错题任务，点右上角「新建错题任务」开始
+        还没有编码映射，点右上角「新建编码映射」开始
       </p>
       <ul v-else class="mapping-list">
         <li v-for="item in mappings" :key="item.id" class="mapping-item">
@@ -27,7 +27,7 @@
     <!-- 新建弹窗 -->
     <ModalDialog
       :open="createOpen"
-      title="新建错题任务"
+      title="新建编码映射"
       confirm-text="确定"
       :confirm-disabled="submitting"
       width="540px"
@@ -123,7 +123,7 @@ interface SubMappingItem {
   serial: string
 }
 
-/** 一条错题任务（原编码映射；后端接口还没提供，先把表单收集到的字段存在本页） */
+/** 一条编码映射（后端接口还没提供，先把表单收集到的字段存在本页） */
 interface CodeMappingItem {
   id: number
   name: string
@@ -194,7 +194,7 @@ async function loadClasses(): Promise<void> {
 /**
  * 保存。
  *
- * 后端目前没有错题任务的新增接口（ClassController / SubjectController 里都没有），
+ * 后端目前没有编码映射的新增接口（ClassController / SubjectController 里都没有），
  * 所以这里只做「校验 + 收进本页列表」：字段是真的、交互是真的，但刷新就没了。
  * 等接口给出（例如 /background/code/mapping/add.do）把这里换成一次 client.post 即可，
  * 列表也要改成从接口拉取。
