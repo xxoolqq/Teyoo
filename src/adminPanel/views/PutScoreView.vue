@@ -1,17 +1,11 @@
 <template>
   <div class="ps-page">
-    <h1 class="page-title">成绩录入</h1>
+   
 
     <!-- ── 查询条件：科目 + 班级（照 ctbapp PutScore 的排布）──────────────── -->
     <section class="card">
       <div class="grid">
-        <label class="field">
-          <span class="field-label">科目：</span>
-          <select v-model="course" class="ctl">
-            <option v-for="c in COURSE_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
-          </select>
-        </label>
-        <label class="field">
+         <label class="field">
           <span class="field-label">班级：</span>
           <select v-model="selectedClass" class="ctl">
             <option v-for="item in classOptions" :key="item.classCode" :value="item.classCode">
@@ -19,6 +13,20 @@
             </option>
           </select>
         </label>
+        <label class="field">
+          <span class="field-label">科目：</span>
+          <select v-model="course" class="ctl">
+            <option v-for="c in COURSE_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">满分：</span>
+          <select v-model="fullScore" class="ctl">
+            <option value="" disabled>请选择</option>
+            <option v-for="s in FULL_SCORE_OPTIONS" :key="s" :value="s">{{ s }}</option>
+          </select>
+        </label>
+    
       </div>
       <div class="actions">
         <button class="btn confirm" type="button" :disabled="searching" @click="doSearch">
@@ -27,23 +35,21 @@
       </div>
     </section>
 
-    <!-- ── 学生名单：姓名 / 最近成绩 / 操作 ───────────────────────────────── -->
+    <!-- ── 学生名单：姓名 / 操作 ──────────────────────────────────────────── -->
     <section v-if="searched" class="card">
       <table class="table">
         <thead>
           <tr>
             <th>姓名</th>
-            <th>最近成绩</th>
             <th class="col-op">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="rows.length === 0">
-            <td colspan="3" class="empty">没有符合条件的记录</td>
+            <td colspan="2" class="empty">没有符合条件的记录</td>
           </tr>
-          <tr v-for="row in rows" :key="row.user_code">
-            <td class="name-cell">{{ row.real_name }}</td>
-            <td>{{ row.stu_score }}</td>
+          <tr v-for="row in rows" :key="row.childCode">
+            <td class="name-cell">{{ row.realName }}</td>
             <td class="col-op">
               <button class="btn small" type="button" @click="openScoreModal(row)">录入成绩</button>
               <button class="btn small refuse" type="button" @click="openHistory(row)">查看</button>
@@ -54,7 +60,7 @@
       <Pagination :total="total" :page-num="pageNum" :page-size="PAGE_SIZE" @change="onPage" />
     </section>
 
-    <!-- ── 录入成绩模态框：总分单选 + 得分输入，提交时折算成 150 分制 ───────── -->
+    <!-- ── 录入成绩模态框：科目 / 满分只读展示 + 得分输入，提交时折算成 150 分制 ── -->
     <div v-if="scoreOpen" class="mask" @click.self="scoreOpen = false">
       <div class="dialog">
         <div class="dialog-head">
@@ -64,11 +70,14 @@
           </button>
         </div>
         <div class="dialog-body">
+          <!-- 科目取顶部下拉的选择，进来时是什么科目就显示什么 -->
           <div class="modal-row">
-            <span class="field-label">总分：</span>
-            <label class="radio"><input v-model="fullScore" type="radio" value="100" />100</label>
-            <label class="radio"><input v-model="fullScore" type="radio" value="120" />120</label>
-            <label class="radio"><input v-model="fullScore" type="radio" value="150" />150</label>
+            <span class="field-label">科目：</span>
+            <span class="full-score">{{ courseLabel || '未选择' }}</span>
+          </div>
+          <div class="modal-row">
+            <span class="field-label">满分：</span>
+            <span class="full-score">{{ fullScore || '未选择' }}</span>
           </div>
           <div class="modal-row">
             <span class="field-label">得分：</span>
@@ -80,7 +89,7 @@
               @keyup.enter="submitScore"
             />
           </div>
-          <p class="hint">提交时按所选总分折算成 150 分制（四舍五入）</p>
+          <p class="hint">提交时按满分 {{ fullScore || '（未选择）' }} 折算成 150 分制（四舍五入）</p>
         </div>
         <div class="dialog-foot">
           <button class="btn ghost" type="button" @click="scoreOpen = false">取消</button>
@@ -93,16 +102,19 @@
     <div v-if="historyOpen" class="mask" @click.self="historyOpen = false">
       <div class="dialog">
         <div class="dialog-head">
-          <span>查看历史成绩<span v-if="historyName"> · {{ historyName }}</span></span>
+          <span>查看历史成绩<span v-if="courseLabel"> · {{ courseLabel }}</span></span>
           <button class="dialog-close" type="button" title="关闭" @click="historyOpen = false">
             ×
           </button>
         </div>
         <div class="dialog-body">
-          <p v-if="historyLoading" class="hint">正在加载…</p>
-          <p v-else-if="historyRows.length === 0" class="hint">暂无历史成绩</p>
+          <p v-if="historyLoading" class="history-hint">正在加载…</p>
+          <p v-else-if="historyRows.length === 0" class="history-hint">暂无历史成绩</p>
           <ol v-else class="history-list">
-            <li v-for="item in historyRows" :key="item.id">{{ item.stuScore }}</li>
+            <li v-for="(item, index) in historyRows" :key="item.id">
+              <span class="history-index">第 {{ index + 1 }} 次</span>
+              <span class="history-score">{{ item.stuScore }} 分</span>
+            </li>
           </ol>
         </div>
         <div class="dialog-foot">
@@ -114,7 +126,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Pagination from '../components/Pagination.vue'
 import { fetchClassOptions, type ClassItem } from '../api/classes'
 import {
@@ -132,6 +144,12 @@ import { describeError, showError, showInfo, showSuccess } from '../stores/toast
 const course = ref('')
 const selectedClass = ref('')
 const classOptions = ref<ClassItem[]>([])
+/** 顶部选的科目，录入弹窗里按中文名展示（提交给后端的是课程代码） */
+const courseLabel = computed(
+  () => COURSE_OPTIONS.find((item) => item.value === course.value)?.label ?? ''
+)
+/** 满分下拉的可选值（提交时按它折算成 150 分制） */
+const FULL_SCORE_OPTIONS = ['100', '120', '150'] as const
 
 onMounted(async () => {
   try {
@@ -156,7 +174,8 @@ const searching = ref(false)
 async function loadPage(): Promise<void> {
   searching.value = true
   try {
-    const page = await fetchClassStudents(course.value, selectedClass.value, pageNum.value, PAGE_SIZE)
+    // 名单与科目无关：getClassChildInfo 只按班级查（孩子 + 家长账号的组合行）
+    const page = await fetchClassStudents(selectedClass.value, pageNum.value, PAGE_SIZE)
     rows.value = page.list
     total.value = page.total
   } catch (error) {
@@ -184,14 +203,15 @@ const submitting = ref(false)
 /** 当前行的学生，提交时原样回传后端（与 ctbapp 同一字段） */
 const scoreCode = ref('')
 const scoreName = ref('')
-/** 总分单选（'' / '100' / '120' / '150'），与 ctbapp 的 RadioGroup 同值域 */
+/** 满分（'' / '100' / '120' / '150'）：查询条件里选一次，录分时统一按它折算 */
 const fullScore = ref('')
 const scoreInput = ref('')
 
 function openScoreModal(row: ScoreStudentRow): void {
-  scoreCode.value = row.user_code
-  scoreName.value = row.real_name
-  fullScore.value = ''
+  // 成绩挂在孩子身上，用 childCode（不是家长账号的 userCode）
+  scoreCode.value = row.childCode
+  scoreName.value = row.realName
+  // 满分在顶部查询条件里已经选过，这里不重置
   scoreInput.value = ''
   scoreOpen.value = true
 }
@@ -202,7 +222,7 @@ async function submitScore(): Promise<void> {
     return
   }
   if (!fullScore.value) {
-    showInfo('请选择总分')
+    showInfo('请先在顶部选择满分')
     return
   }
   const raw = Number(scoreInput.value)
@@ -230,16 +250,14 @@ async function submitScore(): Promise<void> {
 
 const historyOpen = ref(false)
 const historyLoading = ref(false)
-const historyName = ref('')
 const historyRows = ref<HistoryScoreItem[]>([])
 
 async function openHistory(row: ScoreStudentRow): Promise<void> {
-  historyName.value = row.real_name
   historyRows.value = []
   historyOpen.value = true
   historyLoading.value = true
   try {
-    historyRows.value = await fetchScoreHistory(row.user_code, course.value)
+    historyRows.value = await fetchScoreHistory(row.childCode, course.value)
   } catch (error) {
     showError(describeError(error))
   } finally {
@@ -458,14 +476,10 @@ async function openHistory(row: ScoreStudentRow): Promise<void> {
   margin-bottom: 0;
 }
 
-.radio {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-right: 10px;
+/* 弹窗里只展示顶部选中的满分，不再单独选 */
+.full-score {
   font-size: 14px;
   color: var(--admin-text, #1f2d3d);
-  cursor: pointer;
 }
 
 .modal-row .ctl {
@@ -478,15 +492,40 @@ async function openHistory(row: ScoreStudentRow): Promise<void> {
   color: var(--admin-text-weak, #8492a6);
 }
 
+/* 历史成绩：提示语与列表左右边距一致，行与行用细线分隔，视觉上对齐成一列 */
+.history-hint {
+  margin: 0;
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--admin-text-weak, #8492a6);
+}
+
 .history-list {
   margin: 0;
-  padding-left: 24px;
+  padding: 0;
+  list-style: none;
   font-size: 14px;
   color: var(--admin-text, #1f2d3d);
 }
 
 .history-list li {
-  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--admin-border, #e8edf3);
+}
+
+.history-list li:last-child {
+  border-bottom: none;
+}
+
+.history-index {
+  color: var(--admin-text-weak, #8492a6);
+}
+
+.history-score {
+  font-weight: 600;
 }
 
 .dialog-foot {

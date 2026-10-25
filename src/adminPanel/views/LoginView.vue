@@ -2,16 +2,19 @@
   <div class="login-wrap">
     <form class="login-form" @submit.prevent="onSubmit">
       <h1 class="login-title">后台管理系统</h1>
-      <p class="login-sub">登录后使用题目、图床、班级管理等功能</p>
+      <p class="login-sub">登录后使用题目、因材施教、班级管理等功能</p>
 
+      <!-- 新登录接口只认 11 位手机号（后端 ArgsTools.checkPhone），
+           原来「手机号或用户 ID」的写法已经不成立 -->
       <label class="field">
-        <span class="field-label">手机号或用户 ID</span>
+        <span class="field-label">手机号</span>
         <input
-          v-model="form.phone"
+          v-model.trim="form.phone"
           class="field-input"
           type="text"
+          maxlength="11"
           autocomplete="username"
-          placeholder="手机号或用户ID"
+          placeholder="请输入手机号"
         />
       </label>
 
@@ -29,7 +32,13 @@
       <label class="field">
         <span class="field-label">验证码</span>
         <div class="code-row">
-          <input v-model="form.codeMa" class="field-input" type="text" placeholder="请输入验证码" />
+          <input
+            v-model.trim="form.codeMa"
+            class="field-input"
+            type="text"
+            maxlength="4"
+            placeholder="请输入验证码"
+          />
           <img class="code-img" :src="codeSrc" alt="验证码" title="点击换一张" @click="refreshCode" />
         </div>
       </label>
@@ -39,6 +48,10 @@
       <button class="submit" type="submit" :disabled="loading">
         {{ loading ? '登录中…' : '登录' }}
       </button>
+
+      <p class="foot">
+        还没有账号？<router-link class="link" to="/register">注册账号</router-link>
+      </p>
 
       <p class="hint">接口地址 {{ API_BASE }}</p>
     </form>
@@ -70,7 +83,15 @@ async function onSubmit(): Promise<void> {
   error.value = ''
 
   if (!form.phone || !form.passwd || !form.codeMa) {
-    error.value = '账号、密码、验证码都要填'
+    error.value = '手机号、密码、验证码都要填'
+    return
+  }
+  if (!/^1\d{10}$/.test(form.phone)) {
+    error.value = '手机号格式不正确'
+    return
+  }
+  if (!/^[A-Za-z0-9]{4}$/.test(form.codeMa)) {
+    error.value = '验证码为 4 位字母或数字'
     return
   }
 
@@ -194,8 +215,24 @@ async function onSubmit(): Promise<void> {
   cursor: default;
 }
 
-.hint {
+.foot {
   margin: 14px 0 0;
+  font-size: 13px;
+  text-align: center;
+  color: var(--admin-text-weak, #8492a6);
+}
+
+.link {
+  color: var(--admin-primary, #2d8cf0);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.hint {
+  margin: 10px 0 0;
   font-size: 12px;
   text-align: center;
   color: var(--admin-text-weak, #8492a6);

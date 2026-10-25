@@ -1,6 +1,9 @@
 <template>
-  <div class="ad-page">
-    <h1 class="page-title">审核加入</h1>
+  <div class="ad-panel">
+    <div class="panel-head">
+      <h1 class="panel-title">审核加入</h1>
+      <button class="btn ghost small" type="button" @click="emit('back')">返回班级列表</button>
+    </div>
 
     <!-- 顶栏：选班级 → 查该班的加入申请（版式照 ctbapp Auditing：下拉 + 绿色确定） -->
     <div class="top-bar">
@@ -37,11 +40,17 @@
             <td>{{ row.userType }}</td>
             <td>{{ statusLabel(row.applyStatus) }}</td>
             <td class="col-op">
-              <button class="btn small pass" type="button" @click="openConfirm(row, 'agree')">
+              <!-- 已经通过的成员，「通过」置灰不可再点；要撤销只能走「剔除」 -->
+              <button
+                class="btn small pass"
+                type="button"
+                :disabled="row.applyStatus === 'agree'"
+                @click="openConfirm(row, 'agree')"
+              >
                 通过
               </button>
               <button class="btn small refuse" type="button" @click="openConfirm(row, 'refused')">
-                拒绝
+                剔除
               </button>
             </td>
           </tr>
@@ -54,13 +63,13 @@
     <div v-if="confirmOpen" class="mask" @click.self="confirmOpen = false">
       <div class="dialog">
         <div class="dialog-head">
-          <span>{{ pendingAction === 'agree' ? '审核通过' : '拒绝' }}</span>
+          <span>{{ pendingAction === 'agree' ? '审核通过' : '剔除' }}</span>
           <button class="dialog-close" type="button" title="关闭" @click="confirmOpen = false">
             ×
           </button>
         </div>
         <div class="dialog-body">
-          <p class="confirm-text">{{ pendingAction === 'agree' ? '确定通过吗？' : '确定拒绝吗？' }}</p>
+          <p class="confirm-text">{{ pendingAction === 'agree' ? '确定通过吗？' : '确定剔除吗？' }}</p>
         </div>
         <div class="dialog-foot">
           <button class="btn ghost" type="button" @click="confirmOpen = false">取消</button>
@@ -81,7 +90,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import Pagination from '../components/Pagination.vue'
+import Pagination from './Pagination.vue'
 import {
   fetchClassOptions,
   fetchJoinApplyList,
@@ -90,6 +99,14 @@ import {
   type ClassItem
 } from '../api/classes'
 import { describeError, showError, showInfo, showSuccess } from '../stores/toast'
+
+/**
+ * 「审核加入」面板。原来是一个独立页面（AuditingView），
+ * 现在挂在「创建班级」页里：点某一行的「审核」就地切换过来，
+ * 进来时用 initialClassCode 直接选中该班。
+ */
+const props = defineProps<{ initialClassCode?: string }>()
+const emit = defineEmits<{ back: [] }>()
 
 const PAGE_SIZE = 10
 
@@ -101,11 +118,15 @@ const selectedClass = ref('')
 onMounted(async () => {
   try {
     classOptions.value = await fetchClassOptions()
-    // 默认选中第一个班，页面打开即可直接看，不用每次都手动点一遍
-    if (classOptions.value.length > 0) {
+    const wanted = props.initialClassCode ?? ''
+    if (wanted && classOptions.value.some((item) => item.classCode === wanted)) {
+      // 从列表某一行点「审核」进来：直接选中那个班
+      selectedClass.value = wanted
+    } else if (classOptions.value.length > 0) {
+      // 没有指定就默认第一个班，页面打开即可直接看，不用每次手动点一遍
       selectedClass.value = classOptions.value[0].classCode
-      await loadPage()
     }
+    if (selectedClass.value) await loadPage()
   } catch (error) {
     showError(describeError(error))
   }
@@ -156,7 +177,7 @@ function onPage(page: number): void {
 
 const STATUS_LABELS: Record<string, string> = {
   agree: '已通过',
-  refused: '已拒绝',
+  refused: '已剔除',
   wait: '待审核'
 }
 
@@ -206,14 +227,20 @@ async function submitConfirm(): Promise<void> {
 </script>
 
 <style scoped>
-.ad-page {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 20px 24px 32px;
+.ad-panel {
+  /* 外层页面（创建班级）已经给了 max-width 和内边距 */
+  width: 100%;
 }
 
-.page-title {
-  margin: 0 0 16px;
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.panel-title {
+  margin: 0;
   font-size: 20px;
   color: var(--admin-text, #1f2d3d);
 }
@@ -343,6 +370,14 @@ async function submitConfirm(): Promise<void> {
 
 .btn.small.pass {
   margin-right: 5px;
+}
+
+/* 已通过的成员：「通过」置灰不可点（要撤销只能点「剔除」） */
+.btn.small.pass:disabled {
+  color: var(--admin-text-weak, #8492a6);
+  background: var(--admin-nav-hover, #eef2f7);
+  opacity: 1;
+  cursor: not-allowed;
 }
 
 /* 拒绝按钮（表格行内与确认框共用红色） */

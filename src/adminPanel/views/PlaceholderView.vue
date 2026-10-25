@@ -11,8 +11,11 @@ import { useRoute } from 'vue-router'
 
 const route = useRoute()
 
-// 路由表里给每个子页面都起了 name，占位页直接拿它当标题，点哪个都看得出是谁
-const title = computed(() => (route.name as string | undefined) ?? '未命名页面')
+// 标题优先取路由 meta.label（中文显示名，与菜单一致）；没配再退回 name。
+// 早先只取 name，占位页标题显示的是 CodeMapping 这种英文标识，对不上菜单。
+const title = computed(
+  () => (route.meta.label as string | undefined) ?? (route.name as string | undefined) ?? '未命名页面'
+)
 </script>
 
 <style scoped>

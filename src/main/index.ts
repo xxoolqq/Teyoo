@@ -15,6 +15,7 @@ import { setAsDefaultApp } from './default-app'
 import { recognizeTexoFormula } from './texo-ocr'
 import { saveFormulaRecord } from './formula-db'
 import { startSnipCapture } from './snip-window'
+import { registerAdminSessionIpc } from './session-store'
 
 const startupStartedAt = performance.now()
 const startupTraceEnabled = process.env.COLAMD_STARTUP_TRACE === '1'
@@ -303,8 +304,14 @@ interface WindowState {
   activeTabKind: ActiveTabKind | null
 }
 
-/** 渲染端上报的活动标签页类型；'canvas' 就是类 docx 文档（canvas-editor）标签页 */
-type ActiveTabKind = 'document' | 'submit' | 'canvas'
+/**
+ * 渲染端上报的活动标签页类型；'canvas' 就是类 docx 文档（canvas-editor）标签页。
+ *
+ * 'admin' 是后台管理系统（body.admin-panel-view 整页接管）：它在渲染端同样挂着
+ * kind='document'，但窗口不绑定文件 —— 不区分出来的话，别的窗口点「打开」会把它
+ * 当成「没有文件的空窗口」复用（见 findEmptyWindow）。
+ */
+type ActiveTabKind = 'document' | 'submit' | 'canvas' | 'admin'
 
 interface DocumentSnapshot {
   dirty: boolean
@@ -962,9 +969,14 @@ function openFile(filePath: string): void {
 
 function findEmptyWindow(): BrowserWindow | null {
   for (const [id, state] of windowStates) {
-    if (!state.filePath) {
-      return BrowserWindow.fromId(id) || null
-    }
+    // 「没有文件」还不足以判定它是空窗口：前台是后台管理系统 / 提交页 / 类 docx
+    // 这些整页视图时，窗口同样没有文件绑定，但它不是那种能把文档直接放进去的
+    // 空窗口。以前只判 filePath，结果是：在一个有文件的窗口里点「文件 → 打开」，
+    // 文件被塞进另一个只开着后台管理的窗口（还会把那窗口顶到前面），用户视角
+    // 就是「点了打开，当前窗口没反应」。
+    if (state.filePath) continue
+    if (state.activeTabKind !== null && state.activeTabKind !== 'document') continue
+    return BrowserWindow.fromId(id) || null
   }
   return null
 }
@@ -1005,6 +1017,10 @@ function saveToPath(win: BrowserWindow, filePath: string, content: string, sourc
 }
 
 // IPC Handlers
+
+// 后台管理系统登录态：token 存 safeStorage、其余字段存 electron-store（见
+// session-store.ts），渲染进程只能经这三条通道读写
+registerAdminSessionIpc()
 
 ipcMain.on('open-external', (_event, url: string) => {
   if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
@@ -1745,7 +1761,9 @@ ipcMain.on('set-active-tab-kind', (event, kind: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   const next: ActiveTabKind =
-    kind === 'canvas' || kind === 'submit' || kind === 'document' ? kind : 'document'
+    kind === 'canvas' || kind === 'submit' || kind === 'admin' || kind === 'document'
+      ? kind
+      : 'document'
   const state = getState(win)
   if (state.activeTabKind === next) return
   state.activeTabKind = next

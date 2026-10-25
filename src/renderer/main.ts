@@ -579,12 +579,31 @@ function renderTabBar(): void {
 }
 
 // 主进程要知道前台是哪种标签页：类 docx 文档（canvas-editor）标签页自成一体的
-// 那套，菜单栏的打印/打印预览对它不生效（见 main 的 isCanvasTabActive）。切标签
-// 页/换视图都会走到 renderTabBar，借它上报；同值不重复发。
-let reportedTabKind: DocumentTab['kind'] | null = null
+// 那套，菜单栏的打印/打印预览对它不生效（见 main 的 isCanvasTabActive）；后台
+// 管理系统（整页 Vue 应用）要让主进程把它从「空窗口」候选里排除（见 findEmptyWindow）。
+// 切标签页/换视图都会走到 renderTabBar，借它上报；同值不重复发。
+
+/** 上报给主进程的标签页类型：文档 / 提交 / 类 docx 之外，再加整页视图 'admin' */
+type ReportedTabKind = DocumentTab['kind'] | 'admin'
+
+/**
+ * 前台标签页对主进程来说是哪一类。
+ *
+ * 整页视图在壳里挂的都是 kind='document'（见 openAdminPanelTab），只看 kind
+ * 分不出来 —— 而后台管理系统这类窗口没有文件绑定，被当成空窗口复用的后果是
+ * 文件被塞进一个不显示编辑器的窗口。
+ */
+function currentTabKind(): ReportedTabKind {
+  const tab = activeTab()
+  if (!tab) return 'document'
+  if (tab.adminPanel) return 'admin'
+  return tab.kind
+}
+
+let reportedTabKind: ReportedTabKind | null = null
 
 function reportActiveTabKind(): void {
-  const kind = activeTab()?.kind ?? 'document'
+  const kind = currentTabKind()
   if (kind === reportedTabKind) return
   reportedTabKind = kind
   window.electronAPI.setActiveTabKind(kind)
@@ -622,6 +641,10 @@ function ensureTab(): DocumentTab {
     !existing.tool &&
     !existing.texo &&
     !existing.solver &&
+    // 后台管理系统（body.admin-panel-view 整页接管）不能被文档复用：它满足
+    // 「kind=document、无 path、不脏」，以前就落进这条分支 —— 文件内容被塞进
+    // 被 CSS 藏掉的 #editor，界面还停在后台管理页，表现就是「打开 md 没反应」。
+    !existing.adminPanel &&
     // 随包文档（用法指南 / Markdown 语法）本身也是一份真文档：到来的文档不能
     // 落在它身上，否则它的内容和 filePath 会被整个改掉。
     !existing.bundledDoc
@@ -1529,6 +1552,9 @@ async function openFileInNewTab(path: string): Promise<void> {
     !current.tool &&
     !current.texo &&
     !current.solver &&
+    // 后台管理系统同样是整页视图：复用等于把内容塞进被藏起来的编辑器
+    //（与下面 openMarkdownPathFromCanvas 对 canvas 的处理同一个道理）
+    !current.adminPanel &&
     !current.bundledDoc &&
     !current.filePath &&
     !current.dirty
@@ -3228,7 +3254,9 @@ function applyAppearanceFontSize(): void {
       !current.imageTab &&
       !current.tool &&
       !current.texo &&
-      !current.solver
+      !current.solver &&
+      // 后台管理系统整页接管，导入的内容不能落在它身上（同 ensureTab 的守卫）
+      !current.adminPanel
     ) {
       currentFilePath = null
       applyContent(result.content)

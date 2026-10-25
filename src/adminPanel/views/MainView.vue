@@ -54,10 +54,10 @@
         <div class="tabs">
           <div
             v-for="(tab, index) in tabs"
-            :key="tab.path"
+            :key="tab.fullPath"
             class="tab"
-            :class="{ 'is-active': route.path === tab.path }"
-            @click="go(tab.path)"
+            :class="{ 'is-active': route.fullPath === tab.fullPath }"
+            @click="go(tab.fullPath)"
           >
             <span>{{ tab.label }}</span>
             <span
@@ -107,8 +107,13 @@ interface Group {
 }
 
 interface Tab {
+  /** 打开时的完整路径（含 query）。单例页换题目时会被就地改写 */
+  fullPath: string
+  /** 路由 path：单例页靠它归并（同 path 只有一个标签） */
   path: string
   label: string
+  /** 单例：同路由再打开只换数据、不新开标签（见路由 meta.singleton） */
+  singleton: boolean
 }
 
 const route = useRoute()
@@ -131,11 +136,13 @@ const groups = computed<Group[]>(() => {
   return [...byTitle.values()]
 })
 
-// path → label：Tab 标题直接从菜单推导，不另抄一份
+// path → label：Tab 标题直接从路由 meta 取（菜单页与详情页都在里面）。
+// 详情页（题目详情 / 纠错）没有 group，不会进菜单，但要有标签页，所以这里
+// 扫的是全部带 meta.label 的路由，不是只扫菜单项。
 const pathLabel = computed(() => {
   const m = new Map<string, string>()
-  for (const g of groups.value) {
-    for (const item of g.items) m.set(item.path, item.label)
+  for (const r of router.getRoutes()) {
+    if (r.meta.label) m.set(r.path, r.meta.label)
   }
   return m
 })
@@ -182,28 +189,39 @@ watch(
 const tabs = ref<Tab[]>([])
 
 watch(
-  () => route.path,
-  (path) => {
-    const label = pathLabel.value.get(path)
+  () => route.fullPath,
+  (fullPath) => {
+    const label = pathLabel.value.get(route.path)
     if (!label) return
-    if (!tabs.value.some((t) => t.path === path)) tabs.value.push({ path, label })
+    const singleton = route.meta.singleton === true
+    if (singleton) {
+      // 单例页（题目详情）：已有同 path 的标签就地换地址，只换数据不新开
+      const existing = tabs.value.find((t) => t.singleton && t.path === route.path)
+      if (existing) {
+        existing.fullPath = fullPath
+        return
+      }
+    } else if (tabs.value.some((t) => t.fullPath === fullPath)) {
+      return
+    }
+    tabs.value.push({ fullPath, path: route.path, label, singleton })
   },
   { immediate: true }
 )
 
-function go(path: string): void {
-  if (route.path !== path) void router.push(path)
+function go(fullPath: string): void {
+  if (route.fullPath !== fullPath) void router.push(fullPath)
 }
 
 function closeTab(tab: Tab): void {
-  const index = tabs.value.findIndex((t) => t.path === tab.path)
+  const index = tabs.value.findIndex((t) => t.fullPath === tab.fullPath)
   // 入口页（第 0 个）固定不关；找不到（-1）不处理
   if (index <= 0) return
   tabs.value.splice(index, 1)
   // 关的是当前活动页：激活右邻（没了就左邻）
-  if (route.path === tab.path) {
+  if (route.fullPath === tab.fullPath) {
     const next = tabs.value[index] ?? tabs.value[index - 1]
-    if (next) void router.push(next.path)
+    if (next) void router.push(next.fullPath)
   }
 }
 

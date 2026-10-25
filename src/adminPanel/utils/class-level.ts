@@ -22,6 +22,21 @@ const CODE_BY_NAME: Record<string, string> = {
 export const CLASS_LEVEL_NAMES = Object.keys(CODE_BY_NAME)
 
 /**
+ * 两位码 → 年级名称，classLevelCode 的反向。
+ *
+ * 「纠错」页要把已有题目回显到元信息表单上，而后端给的是码（Exercise.classLevel），
+ * 表单用的是 name —— 得先翻回 name，否则提交时又会掉到 '201' 兜底值上。
+ */
+const NAME_BY_CODE: Record<string, string> = Object.fromEntries(
+  Object.entries(CODE_BY_NAME).map(([name, code]) => [code, name])
+)
+
+/** 认不出来的一律返回空串（调用方按「没选」处理），不猜 */
+export function classLevelName(code: string): string {
+  return NAME_BY_CODE[String(code ?? '').trim()] ?? ''
+}
+
+/**
  * 年级下拉的统一数据源（题海拾贝、创建班级等页面的 <select> 都用它，
  * 不在各页里各抄一份）。value 是两位码，label 是界面写法「七年级（初一）」，
  * 与 ctbapp 页面下拉一字不差。

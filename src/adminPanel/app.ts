@@ -7,6 +7,7 @@
 import { createApp, type App as VueApp } from 'vue'
 import App from './App.vue'
 import { createAdminRouter } from './router'
+import { initSession } from './stores/session'
 import './styles/admin.css'
 
 let mountedApp: VueApp<Element> | null = null
@@ -14,6 +15,9 @@ let mountedApp: VueApp<Element> | null = null
 /** 首次切到该标签页时才真正挂载；之后再切回来直接复用，不重复建 */
 export async function mountAdminPanel(el: HTMLElement): Promise<void> {
   if (mountedApp) return
+  // 登录态要先于路由准备好：桌面端 token 在主进程 safeStorage 里，读它是一次
+  // 异步 IPC —— 不等它，beforeEach 会把已登录用户踢去 /login。
+  await initSession()
   const app = createApp(App)
   app.use(createAdminRouter('memory'))
   app.mount(el)

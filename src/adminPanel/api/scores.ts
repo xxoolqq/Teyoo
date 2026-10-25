@@ -3,16 +3,24 @@ import { endpoints } from './endpoints'
 import { session } from '../stores/session'
 import type { ApiEnvelope } from './common'
 
-// 成绩录入：按科目 + 班级拉学生名单（带最近成绩）、录入一次成绩、查历史成绩。
-// 请求体字段名与 ctbapp 的 PutScore.vue 一字不差（user_code / stu_score 这类
-// 下划线老字段不改名，后端认的就是它们）。
+// 成绩录入：按班级拉学生名单、录入一次成绩、查历史成绩。
+// 名单走 getClassChildInfo（只认班级），录分 / 历史都按 childCode（孩子）走。
 
-/** 学生名单的一行（getClsStuCourse 表格的列） */
+/**
+ * 成绩录入页面的学生行：后端 getClassChildInfo 返回的 PageInfo<UserClass>。
+ * 注意这里是「家长账号 + 孩子」的组合行：
+ *   userCode   → 家长账号
+ *   childCode  → 真正入班的孩子（录成绩、查历史都要用这个）
+ *   realName   → 联表 child.student_name 得到的孩子姓名
+ */
 export interface ScoreStudentRow {
-  user_code: string
-  real_name: string
-  /** 最近一次成绩（150 分制），可能还没有 */
-  stu_score: number | string
+  id: number
+  classCode: string
+  userCode: string
+  realName: string
+  childCode: string
+  userType: string
+  applyStatus: string
   [key: string]: unknown
 }
 
@@ -21,18 +29,19 @@ export interface ScoreStudentPage {
   total: number
 }
 
-/** 按科目 + 班级查学生名单和最近成绩。后端查无数据时回 data: null，按空列表处理 */
+/**
+ * 按班级查学生名单（成绩录入页「确定」调用 getClassChildInfo）。
+ * 后端查不到学生时回 2001「班级内没有学生」，由拦截器抛 ApiError。
+ */
 export async function fetchClassStudents(
-  course: string,
   classCode: string,
   pageNum: number,
   pageSize = 10
 ): Promise<ScoreStudentPage> {
   const { data } = await client.post<ApiEnvelope<ScoreStudentPage | null>>(
-    endpoints.classScores,
+    endpoints.classChildInfo,
     {
       classCode,
-      course,
       pageNum,
       pageSize
     }
@@ -42,13 +51,13 @@ export async function fetchClassStudents(
 
 /** 录入一次成绩。score 是已折算成 150 分制并四舍五入的整数（ctbapp 的算法） */
 export async function addStudentScore(
-  studentCode: string,
+  childCode: string,
   course: string,
   score: number
 ): Promise<string> {
   const { data } = await client.post<ApiEnvelope<unknown>>(endpoints.addScore, {
-    studentCode,
-    teacherCode: session.userCode,
+    childCode,
+    userCode: session.userCode,
     schoolCode: session.schoolCode,
     course,
     stu_score: score
@@ -65,12 +74,12 @@ export interface HistoryScoreItem {
 
 /** 某学生在某科目的历史成绩列表 */
 export async function fetchScoreHistory(
-  studentCode: string,
+  childCode: string,
   course: string
 ): Promise<HistoryScoreItem[]> {
   const { data } = await client.post<ApiEnvelope<HistoryScoreItem[] | null>>(endpoints.scanScore, {
-    studentCode,
-    teacherCode: session.userCode,
+    childCode,
+    userCode: session.userCode,
     course
   })
   return data.data ?? []

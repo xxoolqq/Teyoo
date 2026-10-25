@@ -253,8 +253,9 @@ export interface ElectronAPI {
   // 图片转md 标签页挂着的那张图片：主进程用它给「另存为」起默认文件名。
   setActiveImagePath: (path: string | null) => void
   // 上报前台标签页类型。类 docx 文档（canvas-editor）标签页有自己的打印通道，
-  // 菜单栏的打印/打印预览对它不生效（见 main 的 isCanvasTabActive）。
-  setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => void
+  // 菜单栏的打印/打印预览对它不生效（见 main 的 isCanvasTabActive）；
+  // 'admin' 是后台管理系统整页视图，主进程靠它判断该窗口能不能被当作空窗口复用。
+  setActiveTabKind: (kind: 'document' | 'submit' | 'canvas' | 'admin') => void
   // 在线解析（MinerU）：请求全在主进程发起（渲染端 CSP 拦外部请求、上传链接是
   // 签名 URL 不能外泄）。progress 由主进程逐条推回来。
   parsePdfOnline: (pdfPath: string) => Promise<MineruParseResponse>
@@ -268,6 +269,11 @@ export interface ElectronAPI {
   setPreferencesBatch: (changes: Record<string, unknown>) => Promise<boolean>
   onPreferencesChanged: (callback: (payload: { key: string; value: unknown }) => void) => void
   onPreferencesBatchChanged: (callback: (payload: { changes: Record<string, unknown> }) => void) => void
+  // 后台管理系统登录态（主进程 session-store.ts：token 走 safeStorage，其余存
+  // electron-store）。save 收整份登录返回 data（含 token），load 还原成同形状。
+  saveAdminSession: (data: Record<string, unknown>) => Promise<boolean>
+  loadAdminSession: () => Promise<Record<string, unknown> | null>
+  clearAdminSession: () => Promise<boolean>
   exportImage: (snapshot: ImageExportSnapshot, preset: ImageExportPreset) => Promise<boolean>
   getLanguage: () => Promise<'zh' | 'en'>
   onLanguageChanged: (callback: (language: 'zh' | 'en') => void) => void
@@ -416,7 +422,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pasteAssistantImage: (dataUrl: string) =>
     ipcRenderer.invoke('assistant-paste-image', dataUrl) as Promise<AssistantAttachment | null>,
   setActiveImagePath: (path: string | null) => ipcRenderer.send('set-active-image-path', path),
-  setActiveTabKind: (kind: 'document' | 'submit' | 'canvas') => ipcRenderer.send('set-active-tab-kind', kind),
+  setActiveTabKind: (kind: 'document' | 'submit' | 'canvas' | 'admin') => ipcRenderer.send('set-active-tab-kind', kind),
   parsePdfOnline: (pdfPath: string) => ipcRenderer.invoke('mineru-parse', pdfPath) as Promise<MineruParseResponse>,
   parseImageOnline: (imagePath: string) => ipcRenderer.invoke('mineru-parse', imagePath) as Promise<MineruParseResponse>,
   onMineruProgress: (callback: (payload: MineruProgressPayload) => void) => {
@@ -425,6 +431,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPreferences: () => ipcRenderer.invoke('get-preferences'),
   setPreference: (key: string, value: unknown) => ipcRenderer.invoke('set-preference', key, value),
   setPreferencesBatch: (changes: Record<string, unknown>) => ipcRenderer.invoke('set-preferences-batch', changes),
+  saveAdminSession: (data: Record<string, unknown>) => ipcRenderer.invoke('admin-session:save', data) as Promise<boolean>,
+  loadAdminSession: () => ipcRenderer.invoke('admin-session:load') as Promise<Record<string, unknown> | null>,
+  clearAdminSession: () => ipcRenderer.invoke('admin-session:clear') as Promise<boolean>,
   onPreferencesChanged: (callback: (payload: { key: string; value: unknown }) => void) => {
     ipcRenderer.on('preferences-changed', (_event, payload: { key: string; value: unknown }) => callback(payload))
   },

@@ -92,16 +92,18 @@ import {
   type Ref
 } from 'vue'
 import {
-  createEditor,
   hasEditor,
   setMarkdown
 } from '../../renderer/editor/editor'
+import { hasLivePreview, mountReadonlyPreview } from '../utils/readonly-preview'
 import EditorToolbar from '../components/EditorToolbar.vue'
 import TopicMetaForm from '../components/TopicMetaForm.vue'
-import { submitSubject } from '../api/topics'
+import { submitSubject, submitSubjectWithImages } from '../api/topics'
 import { session } from '../stores/session'
 import { describeError, showError, showInfo, showSuccess } from '../stores/toast'
+import { bumpTopicsVersion } from '../stores/topic-events'
 import { classLevelCode } from '../utils/class-level'
+import { checkPhotoLimits, extractEmbeddedImages, type ExtractResult } from '../utils/topic-images'
 import {
   applyHeading,
   applyInlineFont,
@@ -247,33 +249,20 @@ function onToolbarPointerDown(entry: Entry, event: PointerEvent): void {
  * contenteditable 是 ProseMirror 自己维护的属性，下一次 setMarkdown 就会按 editable
  * 重写回去，手动改留不住；tabIndex 不在它管辖内。
  */
-function lockPreview(root: string): void {
-  const el = document.getElementById(root)?.querySelector('.ProseMirror')
-  if (el instanceof HTMLElement) el.tabIndex = -1
-}
-
 /**
- * 这个挂载点里是否已经有一个活着的实例。
- *
- * 不能只看 hasEditor() —— 那问的是「内核记不记得这个 id」，不是「这份 DOM 里有没有
- * 东西」。内核没有 destroy：旧实例会一直留在 editorRecords 里，但它那份 DOM 一旦被
- * 换掉（开发时改这个文件、Vite HMR 重渲这一刻就是），注册表里那条就成了死记录。
- * 只按 id 判断的话这里会直接 continue，右侧从此空白，且刷新前不会自愈。
- * createEditor 收尾是 set(rootId, …)：同 id 再建一次会顶掉那条死记录，所以能重建。
- * （MainView 的 KeepAlive 保住了路由切换这条路，但保不住组件被重渲。）
+ * 这个挂载点里是否已经有一个活着的实例 —— 判定挪去了 utils/readonly-preview
+ * （hasLivePreview），判定理由（为什么不能只看内核注册表）的说明也在那边。
  */
-function hasLivePreview(root: string): boolean {
-  return document.getElementById(root)?.querySelector('.milkdown') != null
-}
-
 async function bootEditors(): Promise<void> {
   for (const entry of ENTRY_LIST) {
     // 已经有活的实例就跳过：重复创建会叠加监听器，注册表也只增不减。
     if (hasLivePreview(entry.root)) continue
     try {
-      // 串行 await：内核里每个实例的插件是逐个注册的，并发会交错（Webview2 同款注释）
-      await createEditor(entry.root)
-      lockPreview(entry.root)
+      // 经 utils/readonly-preview 的全局串行队列挂载（内部 createEditor +
+      // lockPreview + setMarkdown 一条龙）：内核里每个实例的插件是逐个注册的，
+      // 并发会交错；现在「我录入的题 / 检索 / 详情 / 纠错」几处的只读预览都
+      // 排同一条队，跨页面也不会撞。
+      await mountReadonlyPreview(entry.root, entry.text.value)
     } catch (error) {
       // 预览挂了不等于这页废了：左边是纯 textarea，照样能录入、能提交
       showError(`预览初始化失败：${describeError(error)}（题目仍可录入提交）`)
@@ -446,33 +435,68 @@ function onInputScroll(entry: Entry, event: Event): void {
 async function onSubmit(): Promise<void> {
   if (submitting.value) return
 
-  const topic = topicEntry.text.value
-  const answer = answerEntry.text.value
+  const topicText = topicEntry.text.value
+  const answerText = answerEntry.text.value
 
   // 校验顺序与文案照 ctbapp 的 submit()：习题 → 答案 → 科目 → 难易程度 →
   // 适用年级 → 知识点，一次只报一条
   const problem =
-    blankProblem(topic, '习题') ?? blankProblem(answer, '答案') ?? firstMetaProblem(meta.value)
+    blankProblem(topicText, '习题') ?? blankProblem(answerText, '答案') ?? firstMetaProblem(meta.value)
   if (problem) {
     showError(problem)
     return
   }
 
+  // 提交前把内嵌的 base64 图片拆成「ctbimg:// 占位符 + 文件」（后端
+  // addSubjectWithImages 的约定）；题目和答案共用一个 usedIds，保证 id 不重复。
+  // 拆完文本变短、alt 保留样式参数，预览不受影响 —— 预览渲染的还是编辑中的原文。
+  let topic: ExtractResult
+  let answer: ExtractResult
+  try {
+    const usedIds = new Set<string>()
+    topic = extractEmbeddedImages(topicText, usedIds)
+    answer = extractEmbeddedImages(answerText, usedIds)
+  } catch (error) {
+    showError(describeError(error))
+    return
+  }
+  const photos = [...topic.files, ...answer.files]
+
+  // 张数 / 大小的前置校验（后端同样的规则，先拦下来省一次上传）
+  const limitProblem = checkPhotoLimits(photos)
+  if (limitProblem) {
+    showError(limitProblem)
+    return
+  }
+
   submitting.value = true
   try {
-    const msg = await submitSubject({
-      subjectSelf: topic,
-      subjectAnswer: answer,
+    const base = {
       course: meta.value.course,
-      teacherCode: session.userCode,
+      userCode: session.userCode,
       schoolCode: session.schoolCode,
       classLevel: classLevelCode(meta.value.classLevelName),
       easy: meta.value.easy,
       knowledgePoints: meta.value.knowledgePoints.trim(),
       token: session.token,
       subjectID: ''
-    })
+    }
+    // 有图走 multipart 新接口（图片上传 OSS + 占位符替换后落库），
+    // 无图仍走老 JSON 接口 —— 两个接口互不影响（对接说明第一节）
+    const msg =
+      photos.length > 0
+        ? await submitSubjectWithImages(
+            { ...base, subjectSelf: topic.markdown, subjectAnswer: answer.markdown },
+            photos
+          )
+        : await submitSubject({
+            ...base,
+            subjectSelf: topicText,
+            subjectAnswer: answerText
+          })
     showSuccess(msg || '提交成功')
+    // 通知「我录入的题」：数据变了，它自己重拉（人此刻可能在别的标签页）
+    bumpTopicsVersion()
     // 只清题目与答案：元信息留着，接着录同一章节的下一题时不用重选一遍
     for (const entry of ENTRY_LIST) entry.text.value = ''
     renderPreviews()
