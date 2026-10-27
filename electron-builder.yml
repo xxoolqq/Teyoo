@@ -78,6 +78,15 @@ extraResources:
   # onnxruntime-node 直接读（见 main/texo-ocr.ts），不参与 asar 打包。
   - from: resources/texo
     to: texo
+  # docx转md 的 PDF 预览：doc2pdf.exe 用 COM 调本机 Word 把 .docx 转成 PDF。
+  # 打包后运行时从 process.resourcesPath/bin 取（见 main/docx-convert.ts）；
+  # 开发期直接读仓库里的 resources/bin。
+  - from: resources/bin
+    to: bin
+  # 转换器作者给的 Electron 集成参考（converter-service.js / example-main.js）。
+  # 运行时不加载，随包只为排查问题时能对照原始实现。
+  - from: resources/word2pdf2image
+    to: word2pdf2image
 
 npmArgs:
   - "--loglevel=error"

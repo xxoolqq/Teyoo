@@ -3025,6 +3025,341 @@ body.image-view #source-editor {
   width: calc(100% - var(--image-panel-width, 50%));
 }
 
+/* ─── docx转md 视图（菜单「文件 → docx转md」）────────────────────────────────
+   左 Word 文档信息 + 右编辑器，与图片转md 同一骨架（body class 收起文件面板、
+   编辑器让出左半边）。左栏比图片栏窄：里面只有文件信息卡与一个转换按钮，没有
+   可预览的画面。 */
+body.docx-view #file-toggle-btn,
+body.docx-view #file-panel,
+body.docx-view #panel-resizer {
+  display: none;
+}
+
+/* 左栏宽度不在这里写死：拖动分隔条时 docx-view.ts 把 --docx-panel-width 写到
+   :root（像素值），没拖过就用各处 var() 的 fallback（50%，与 PDF 对照一致）。
+   若这里再声明一次同名变量，:root 上的值会被 body 覆盖，拖动就失效了。 */
+body.docx-view {
+  --doc-bar-height: 40px;
+}
+
+#docx-panel {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
+  bottom: 0;
+  left: 0;
+  width: var(--docx-panel-width, 50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-color);
+  border-right: 1px solid var(--shell-line);
+}
+
+#docx-panel[hidden] {
+  display: none;
+}
+
+/* 中间的分隔条：与 PDF 对照那条同一套做法（7px 命中区、1px 视觉线只在悬停/拖动
+   时显形）。left 跟着 --docx-panel-width 走，`-4px` 让视觉线正好压在栏边上。 */
+#docx-resizer {
+  position: fixed;
+  top: calc(40px + var(--tab-bar-height, 0px) + var(--toolbar-height, 0px));
+  bottom: 0;
+  left: calc(var(--docx-panel-width, 50%) - 4px);
+  width: 7px;
+  cursor: col-resize;
+  z-index: 6;
+  background: transparent;
+}
+
+#docx-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+#docx-resizer:hover::after,
+#docx-resizer.dragging::after {
+  background: color-mix(in srgb, var(--text-color) 24%, transparent);
+}
+
+body.docx-resizing {
+  cursor: col-resize;
+}
+
+/* 拖入文档时整栏给个反馈：背景提亮 + 内容区内框，松手即移除。 */
+#docx-panel.docx-drop-over {
+  background: color-mix(in srgb, var(--text-color) 6%, var(--bg-color));
+}
+
+#docx-panel.docx-drop-over .docx-file,
+#docx-panel.docx-drop-over .docx-empty {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--text-color) 28%, transparent);
+}
+
+.docx-panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--doc-bar-height, 40px);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--shell-line);
+}
+
+.docx-panel-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.docx-source-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docx-panel-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.docx-panel-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+.docx-panel-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 图标按钮（在文件夹中显示）：与文字按钮同高，只是不要左右留白 */
+.docx-panel-btn.docx-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+}
+
+/* 转换中的加载态：盖住 head 以下的内容区（面板自身是定位上下文）。转 PDF 那几秒
+   里左栏本来是空的，摆个转圈比空白好；canvas 画出来就撤掉，不挡预览。 */
+.docx-loading {
+  position: absolute;
+  inset: var(--doc-bar-height, 40px) 0 0 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 0 24px;
+  background: color-mix(in srgb, var(--text-color) 4%, var(--bg-color));
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.docx-loading[hidden] {
+  display: none;
+}
+
+.docx-spinner {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--text-color) 16%, transparent);
+  border-top-color: var(--link-color, var(--text-color));
+  animation: docx-spin 0.9s linear infinite;
+}
+
+@keyframes docx-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 尊重「减少动态效果」：还在转，但慢下来 */
+@media (prefers-reduced-motion: reduce) {
+  .docx-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+.docx-loading-text {
+  white-space: pre-line;
+}
+
+/* 预览区：按栏宽等比缩放的一叠 canvas，页与页之间留缝（与 PDF 对照栏同一观感）。
+   内容由 pdf-canvas.ts 在每次转换后重画。 */
+.docx-pdf {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  background: color-mix(in srgb, var(--text-color) 4%, var(--bg-color));
+}
+
+.docx-pdf[hidden] {
+  display: none;
+}
+
+/* 每页一个占位槽（懒渲染，见 pdf-canvas.ts）：高度一上来就按显示尺寸定好，
+   滚动条长度是完整的，不会随逐页渲染慢慢变长。画好的 canvas 塞进槽里。 */
+.docx-pdf .pdf-slot {
+  position: relative;
+  margin: 0 auto 12px;
+  background: #fff;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--text-color) 22%, transparent);
+}
+
+.docx-pdf .pdf-slot:last-child {
+  margin-bottom: 0;
+}
+
+.docx-pdf .pdf-canvas {
+  display: block;
+  background: #fff;
+}
+
+/* 还没生成预览时（以及预览失败时）：一张信息卡 + 一段说明。转换结果落在右边
+   编辑器，这里不重复展示正文。 */
+.docx-file {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 14px;
+}
+
+.docx-file[hidden],
+.docx-empty[hidden],
+.docx-status[hidden] {
+  display: none;
+}
+
+.docx-file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-color) 3%, var(--bg-color));
+}
+
+.docx-file-icon {
+  flex: none;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #2b579a 14%, var(--bg-color));
+  color: #2b579a;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.docx-file-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.docx-file-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docx-file-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.docx-file-tip {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* 空态：还没选文档。 */
+.docx-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 28px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.docx-empty-text {
+  margin: 0;
+  text-align: center;
+  line-height: 1.7;
+  white-space: pre-line;
+}
+
+.docx-open-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.docx-open-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 8%, transparent);
+}
+
+/* 进度 / 报错：贴在栏底，不挤占内容区。 */
+.docx-status {
+  flex: none;
+  margin: 0;
+  padding: 6px 12px;
+  border-top: 1px solid var(--shell-line);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-line;
+}
+
+body.docx-view #editor,
+body.docx-view #source-editor {
+  margin-left: var(--docx-panel-width, 50%);
+  height: calc(100vh - 40px - var(--tab-bar-height, 0px) - var(--toolbar-height, 0px) - var(--doc-bar-height, 40px));
+}
+
+body.docx-view #source-editor {
+  width: calc(100% - var(--docx-panel-width, 50%));
+}
+
 /* ─── 工具箱标签页（帮助 → 工具箱） ────────────────────────────────────────
    与提交页同一手法：body class 收起工具栏与编辑面，工具面板铺满编辑区。
    区别是这里不用搬 DOM —— 编辑器整块藏起来就够了（工具页自成一体，没有
@@ -3803,6 +4138,7 @@ body.submit-view #assistant-panel,
 body.canvas-doc-view #assistant-panel,
 body.pdf-view #assistant-panel,
 body.image-view #assistant-panel,
+body.docx-view #assistant-panel,
 body.tool-view #assistant-panel {
   display: none;
 }
@@ -3816,7 +4152,9 @@ body.tool-view #assistant-panel {
 body.pdf-view #editor,
 body.pdf-view #source-editor,
 body.image-view #editor,
-body.image-view #source-editor {
+body.image-view #source-editor,
+body.docx-view #editor,
+body.docx-view #source-editor {
   margin-right: 0;
 }
 
@@ -4374,6 +4712,16 @@ body.image-view #doc-bar {
 }
 
 body.image-view .doc-mode-switch {
+  display: none;
+}
+
+/* docx转md 同一条顶部条，只是左边让位给更窄的文档栏；同样没有 JSON 视图。 */
+body.docx-view #doc-bar {
+  display: flex;
+  margin-left: var(--docx-panel-width, 50%);
+}
+
+body.docx-view .doc-mode-switch {
   display: none;
 }
 

@@ -13,6 +13,7 @@ import { splitPdfByPageCount, type SplitResult } from './pdf-split'
 import { completeChat, streamChat, type ChatContentPart, type ChatMessage, type ChatResult } from './llm'
 import { setAsDefaultApp } from './default-app'
 import { recognizeTexoFormula } from './texo-ocr'
+import { docxCacheRoot, docxToPdf, pruneDocxPdfCache } from './docx-convert'
 import { saveFormulaRecord } from './formula-db'
 import { startSnipCapture } from './snip-window'
 import { registerAdminSessionIpc } from './session-store'
@@ -294,9 +295,13 @@ interface WindowState {
   pendingPdfTab: boolean
   // 菜单「图片转md」同上（同一套时机，见 importImageDocument）。
   pendingImageTab: boolean
+  // 菜单「docx转md」同上（同一套时机，见 importDocxDocument）。
+  pendingDocxTab: boolean
   // 图片转md 标签页挂着的那张图片（渲染端在切标签页、选图时上报）：与 pdfPath
   // 同一个用途 —— 「另存为」的默认文件名按它取（见 suggestFileName）。
   imagePath: string | null
+  // docx转md 标签页挂着的源文档（同上，见 set-active-docx-path）。
+  docxPath: string | null
   // 前台标签页的类型（渲染端在切标签页时上报，见 set-active-tab-kind）。目前只
   // 服务于一件事：类 docx 文档（canvas-editor）标签页自成一套，菜单栏的
   // 打印/打印预览不该对它生效 —— 打印只走它自己工具栏里那一个（canvas 把内容
@@ -336,7 +341,7 @@ const pendingDocumentStateRequests = new Map<string, PendingDocumentStateRequest
 function getState(win: BrowserWindow): WindowState {
   let state = windowStates.get(win.id)
   if (!state) {
-    state = { filePath: null, browsePath: null, watcher: null, isInternalSave: false, internalSaveCount: 0, lastKnownMtime: 0, lastInternalSaveContent: null, debounceTimer: null, siblingsTimer: null, dirty: false, closePromise: null, rendererReady: false, writeQueue: Promise.resolve(), closeAuthorized: false, tabFiles: [], pendingTabFiles: [], initialDocDelivered: false, reveal: null, pdfPath: null, pendingPdfTab: false, pendingImageTab: false, imagePath: null, activeTabKind: null }
+    state = { filePath: null, browsePath: null, watcher: null, isInternalSave: false, internalSaveCount: 0, lastKnownMtime: 0, lastInternalSaveContent: null, debounceTimer: null, siblingsTimer: null, dirty: false, closePromise: null, rendererReady: false, writeQueue: Promise.resolve(), closeAuthorized: false, tabFiles: [], pendingTabFiles: [], initialDocDelivered: false, reveal: null, pdfPath: null, pendingPdfTab: false, pendingImageTab: false, pendingDocxTab: false, imagePath: null, docxPath: null, activeTabKind: null }
     windowStates.set(win.id, state)
   }
   return state
@@ -562,6 +567,23 @@ function importImageDocument(): void {
   win.webContents.send('menu-image-tab')
 }
 
+// 「文件 → docx转md」：与图片转md 完全同一套 —— 先开标签页，用户再在标签页里
+// 选 Word 文档、点「转为 Markdown」。以前是菜单直接弹文件对话框、转完才建标签页，
+// 用户在对话框里点取消就什么都看不到（也没有地方重选）。
+function importDocxDocument(): void {
+  const win = getFocusedWindow() ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+  if (!win) {
+    getState(createWindow()).pendingDocxTab = true
+    return
+  }
+  const state = getState(win)
+  if (!state.rendererReady || !state.initialDocDelivered) {
+    state.pendingDocxTab = true
+    return
+  }
+  win.webContents.send('menu-docx-tab')
+}
+
 // 「文件 → 新建md文件」：在当前窗口开一个空的 Markdown 标签页（不是新窗口）。
 // 窗口一个都没有时就先建一个 —— 新窗口首屏本来就带一个空文档标签页，正好就是
 // 用户要的东西，所以这条分支不需要再补发 IPC；窗口还没就绪时同理，直接返回。
@@ -589,6 +611,8 @@ function suggestFileName(win: BrowserWindow, content?: string): string | undefin
   if (state.pdfPath) return basename(state.pdfPath, extname(state.pdfPath))
   // 图片转md 同一条规则：存出来的 md 与源图同名（xxx.png → xxx.md）。
   if (state.imagePath) return basename(state.imagePath, extname(state.imagePath))
+  // docx转md 同理：xxx.docx → xxx.md。
+  if (state.docxPath) return basename(state.docxPath, extname(state.docxPath))
   if (!content) return undefined
   // Extract first heading or first non-empty line
   const match = content.match(/^#\s+(.+)/m) || content.match(/^(.+)/m)
@@ -936,6 +960,11 @@ function flushPendingTabFiles(win: BrowserWindow): void {
     state.pendingImageTab = false
     win.webContents.send('menu-image-tab')
   }
+  // 「docx转md」同上。
+  if (state.pendingDocxTab) {
+    state.pendingDocxTab = false
+    win.webContents.send('menu-docx-tab')
+  }
 }
 
 // Open file: reuse existing window, else land as a tab in the current window
@@ -1018,22 +1047,65 @@ function saveToPath(win: BrowserWindow, filePath: string, content: string, sourc
 
 // IPC Handlers
 
+/**
+ * dev 下主进程入口有可能被求值两次。
+ *
+ * 导出 Word 走的是动态 `import('./docx-export')`，vite 为它拆出的 chunk
+ * （dist/main/chunks/docx-export.js）需要 rollup 塞进入口的 CJS 互操作代码，
+ * 于是 chunk 里有一句 `require("../index.js")`，而入口本身不在 require 缓存里 ——
+ * 整个 index.ts 又执行一遍。实测那一遍里 `requestSingleInstanceLock()` 仍返回
+ * true：whenReady 的守卫能通过，于是又建出一个空白窗口；顶层注册也全部重跑一遍，
+ * 先撞「Attempted to register a second handler」，覆盖成功后又把 handler 换成了
+ * 第二次求值那份闭包（窗口状态表是空的，文件绑定会丢）。
+ *
+ * 所以这里在模块顶层放一个进程级标记：第一次求值照常初始化，第二次求值让所有
+ * 注册函数空转，通道、启动流程、窗口状态表都只属于第一次求值那份闭包。
+ */
+const mainGlobal = globalThis as typeof globalThis & { __teyooMainBootstrapped?: boolean }
+const alreadyBootstrapped = mainGlobal.__teyooMainBootstrapped === true
+mainGlobal.__teyooMainBootstrapped = true
+
+/**
+ * 注册 ipcMain.handle。
+ *
+ * 先摘同名旧 handler 再装新的：万一还有别的路径把同一个 channel 注册两遍，
+ * 退化成无害覆盖而不是抛「Attempted to register a second handler」。生产构建里
+ * 每个 channel 本来就只注册一次，这层守卫没有副作用。
+ */
+type IpcInvokeHandler = (event: Electron.IpcMainInvokeEvent, ...args: never[]) => unknown
+
+function ipcHandle(channel: string, listener: IpcInvokeHandler): void {
+  if (alreadyBootstrapped) return
+  ipcMain.removeHandler(channel)
+  // 写成下标形式：这段本身不能被文件里那次 ipcMain.handle → ipcHandle 的批量替换改到
+  ipcMain['handle'](channel, listener as never)
+}
+
+// 同上，给 ipcMain.on 那几条通道（open-external、set-tab-files…）也留一道同样的门。
+type IpcEventListener = (event: Electron.IpcMainEvent, ...args: never[]) => void
+
+function ipcOn(channel: string, listener: IpcEventListener): void {
+  if (alreadyBootstrapped) return
+  ipcMain.removeAllListeners(channel)
+  ipcMain['on'](channel, listener as never)
+}
+
 // 后台管理系统登录态：token 存 safeStorage、其余字段存 electron-store（见
 // session-store.ts），渲染进程只能经这三条通道读写
-registerAdminSessionIpc()
+if (!alreadyBootstrapped) registerAdminSessionIpc()
 
-ipcMain.on('open-external', (_event, url: string) => {
+ipcOn('open-external', (_event, url: string) => {
   if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
     shell.openExternal(url)
   }
 })
 
-ipcMain.handle('get-file-manager-name', () => fileManagerName())
+ipcHandle('get-file-manager-name', () => fileManagerName())
 
 // Renderer clipboard reads have no transient user activation when the request
 // comes from a menu accelerator, so the link command reads it in the main
 // process (review on #87).
-ipcMain.handle('read-clipboard-text', () => clipboard.readText())
+ipcHandle('read-clipboard-text', () => clipboard.readText())
 
 // Electron 44 rebuilt the clipboard on the W3C API, so writes return a promise
 // at runtime, while the shipped types still declare void. A rejected write must
@@ -1057,7 +1129,7 @@ function revealLabel(zh: boolean): string {
 
 // Right-click menu for a tab: the closing actions, plus the path actions that
 // make sense for the document in it. Same native menu as the file list.
-ipcMain.handle('tab-context-menu', (event, payload: unknown) => {
+ipcHandle('tab-context-menu', (event, payload: unknown) => {
   const win = getWinFromEvent(event)
   if (!win || typeof payload !== 'object' || payload === null) return
   const { tabId, filePath, canCloseOthers, canCloseRight } = payload as Record<string, unknown>
@@ -1092,7 +1164,7 @@ ipcMain.handle('tab-context-menu', (event, payload: unknown) => {
 
 // Right-click menu for a file panel entry. Native menu on purpose: no custom
 // popup to theme, keep it accessible and platform familiar.
-ipcMain.handle('entry-context-menu', (event, targetPath: unknown, kind: unknown) => {
+ipcHandle('entry-context-menu', (event, targetPath: unknown, kind: unknown) => {
   const win = getWinFromEvent(event)
   if (!win || typeof targetPath !== 'string' || targetPath.length === 0) return
   const zh = getPreferredLanguage() === 'zh'
@@ -1126,7 +1198,7 @@ ipcMain.handle('entry-context-menu', (event, targetPath: unknown, kind: unknown)
 // Electron 不提供默认上下文菜单，编辑区此前完全没有复制/粘贴入口；这里用
 // 原生菜单补齐，编辑类命令一律走 role（作用于当前聚焦窗口的 webContents），
 // 与标签栏/文件面板的右键菜单同一套原生外观。
-ipcMain.handle('editor-context-menu', (event, payload: unknown) => {
+ipcHandle('editor-context-menu', (event, payload: unknown) => {
   const win = getWinFromEvent(event)
   if (!win || typeof payload !== 'object' || payload === null) return
   const { editable, hasSelection } = payload as Record<string, unknown>
@@ -1147,7 +1219,7 @@ ipcMain.handle('editor-context-menu', (event, payload: unknown) => {
   Menu.buildFromTemplate(items).popup({ window: win })
 })
 
-ipcMain.handle('reveal-file', (event) => {
+ipcHandle('reveal-file', (event) => {
   const win = getWinFromEvent(event)
   if (!win) return false
   const filePath = getState(win).filePath
@@ -1160,7 +1232,7 @@ ipcMain.handle('reveal-file', (event) => {
   }
 })
 
-ipcMain.handle('open-file', async (event) => {
+ipcHandle('open-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const result = await dialog.showOpenDialog(win, {
@@ -1206,7 +1278,7 @@ ipcMain.handle('open-file', async (event) => {
   }
 })
 
-ipcMain.handle('open-file-path', async (event, filePath: string) => {
+ipcHandle('open-file-path', async (event, filePath: string) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const state = getState(win)
@@ -1243,7 +1315,7 @@ ipcMain.handle('open-file-path', async (event, filePath: string) => {
 // was in the background. Passing null (or an empty string) means the active
 // document is untitled, which must clear the window's file binding: otherwise a
 // save of that untitled document would be written into the previous file.
-ipcMain.handle('activate-file', async (event, filePath: unknown) => {
+ipcHandle('activate-file', async (event, filePath: unknown) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   if (filePath !== null && filePath !== '' && typeof filePath !== 'string') return null
@@ -1279,7 +1351,7 @@ ipcMain.handle('activate-file', async (event, filePath: unknown) => {
 })
 
 // Same-directory file panel: list markdown files next to the open file
-ipcMain.handle('list-siblings', async (event) => {
+ipcHandle('list-siblings', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const state = getState(win)
@@ -1287,13 +1359,13 @@ ipcMain.handle('list-siblings', async (event) => {
 })
 
 // Expanding a directory in the file panel reads that one directory.
-ipcMain.handle('list-directory', async (_event, dirPath: unknown) => {
+ipcHandle('list-directory', async (_event, dirPath: unknown) => {
   if (typeof dirPath !== 'string' || !dirPath) return null
   return listDirectoryChildren(dirPath)
 })
 
 // Open a Markdown file, or walk the panel's root back up, from the file panel.
-ipcMain.handle('open-sibling', async (event, filePath: string) => {
+ipcHandle('open-sibling', async (event, filePath: string) => {
   const win = getWinFromEvent(event)
   if (!win || typeof filePath !== 'string') return false
   try {
@@ -1318,14 +1390,14 @@ ipcMain.handle('open-sibling', async (event, filePath: string) => {
   return true
 })
 
-ipcMain.on('set-tab-files', (event, paths: unknown) => {
+ipcOn('set-tab-files', (event, paths: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   const state = getState(win)
   state.tabFiles = Array.isArray(paths) ? paths.filter((path): path is string => typeof path === 'string') : []
 })
 
-ipcMain.handle('save-file', async (event, content: string, expectedPath?: string, rebuildMenu?: boolean, autosave?: boolean) => {
+ipcHandle('save-file', async (event, content: string, expectedPath?: string, rebuildMenu?: boolean, autosave?: boolean) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const state = getState(win)
@@ -1361,7 +1433,7 @@ ipcMain.handle('save-file', async (event, content: string, expectedPath?: string
   return ok ? filePath : null
 })
 
-ipcMain.handle('save-file-as', async (event, content: string, expectedPath?: string) => {
+ipcHandle('save-file-as', async (event, content: string, expectedPath?: string) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const sourcePath = getState(win).filePath
@@ -1381,7 +1453,7 @@ ipcMain.handle('save-file-as', async (event, content: string, expectedPath?: str
   return ok ? result.filePath : null
 })
 
-ipcMain.handle('export-docx', async (event, content: unknown, formulaEngine?: unknown) => {
+ipcHandle('export-docx', async (event, content: unknown, formulaEngine?: unknown) => {
   const win = getWinFromEvent(event)
   if (!win || typeof content !== 'string') return false
   win.show()
@@ -1422,22 +1494,29 @@ ipcMain.handle('export-docx', async (event, content: unknown, formulaEngine?: un
 
 // 导入 .docx 文档 → Markdown。主进程负责弹文件对话框 + 调用 mammoth 转换，
 // 转换结果通过 file-opened 事件发给 renderer，与普通 .md 打开走同一条渲染链。
-ipcMain.handle('import-docx', async (event) => {
+// ─── docx转md 标签页（菜单「文件 → docx转md」）的两个通道 ────────────────────
+// 与图片转md 同一节奏：先开标签页 → 页面里「选择 Word 文档…」走 pick-docx-file，
+// 再「转为 Markdown」走 convert-docx。以前是一个 import-docx 把「弹框 + 转换」
+// 绑死，用户在对话框里点取消就什么都得不到，也没有地方重选。
+ipcHandle('pick-docx-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
-  win.show()
-  win.focus()
   const result = await dialog.showOpenDialog(win, {
-    title: uiText('导入 Word 文档', 'Import Word document'),
-    buttonLabel: uiText('导入', 'Import'),
-    filters: [
-      { name: 'Word Document', extensions: ['docx'] },
-    ],
+    title: uiText('选择 Word 文档', 'Choose Word document'),
+    buttonLabel: uiText('选择', 'Choose'),
+    filters: [{ name: 'Word Document', extensions: ['docx'] }],
     properties: ['openFile'],
     defaultPath: defaultDialogDir('read')
   })
   if (result.canceled || result.filePaths.length === 0) return null
-  const filePath = result.filePaths[0]
+  return result.filePaths[0]
+})
+
+// 解析参数与转换都在主进程：密钥/偏好都在这一侧，渲染端只负责显示。
+ipcHandle('convert-docx', async (event, sourcePath: unknown) => {
+  const win = getWinFromEvent(event)
+  if (!win) return { ok: false, error: 'NO_WINDOW' }
+  if (typeof sourcePath !== 'string' || !sourcePath) return { ok: false, error: 'BAD_PATH' }
   try {
     const { docxToMarkdown } = await import('./docx-import')
     const imageFormulaOcr = getUserSettingByPath<boolean>('docx.imageFormulaOcr') ?? false
@@ -1445,28 +1524,81 @@ ipcMain.handle('import-docx', async (event) => {
     // 默认用内置大模型识别行内公式图片；勾选了「公式 OCR 地址」才走 HTTP 端点。
     const useCustomOcrUrl = getUserSettingByPath<boolean>('docx.useCustomOcrUrl') === true
     // docx-import 只吃字节（它同时要在 WebView2 页面里跑，那里没有 fs）
-    const fileBytes = await readFile(filePath)
+    const fileBytes = await readFile(sourcePath)
     const { markdown, warnings } = await docxToMarkdown(fileBytes, {
       imageFormulaOcr,
       formulaOcrUrl,
       recognizeFormula: useCustomOcrUrl
         ? undefined
-        : (dataUrl) => recognizeTexoFormula(dataUrl).catch(() => null),
+        : (dataUrl) => recognizeTexoFormula(dataUrl).catch(() => null)
     })
     if (warnings.length > 0) {
       console.warn('[docx-import] warnings:', warnings)
     }
-    return { path: filePath, content: markdown }
+    return { ok: true, markdown, warnings }
   } catch (error) {
     console.error('Word import failed', error)
-    await dialog.showMessageBox(win, {
-      type: 'error',
-      buttons: [uiText('好', 'OK')],
-      message: uiText('无法导入 Word 文档', 'Could not import the Word document'),
-      detail: error instanceof Error ? error.message : String(error),
-    })
-    return null
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
+})
+
+// 左栏的版式预览：docx 由本机 Word 另存为 PDF（doc2pdf.exe，见 docx-convert），
+// 渲染端拿到路径后走已有的 readPdfFile + pdf.js 画出来。两者互不依赖 ——
+// 机器上没装 Word 时预览失败，但右侧的 Markdown 仍照常解析。
+ipcHandle('docx-to-pdf', async (event, sourcePath: unknown) => {
+  const win = getWinFromEvent(event)
+  if (!win) return { ok: false, error: 'NO_WINDOW' }
+  if (typeof sourcePath !== 'string' || !sourcePath) return { ok: false, error: 'BAD_PATH' }
+  return await docxToPdf(sourcePath)
+})
+
+// 预览 PDF 现在躺在 userData 的缓存目录里（见 docx-convert），不在用户眼皮底下。
+// 这两个通道补上「看得见 / 拿得走」，但都不改变预览本身不写用户目录的原则。
+//
+// 在文件夹中显示：只认缓存目录内的路径，别让这条通道变成任意路径的「打开所在目录」。
+ipcHandle('docx-reveal-preview', async (event, pdfPath: unknown) => {
+  const win = getWinFromEvent(event)
+  if (!win) return false
+  if (typeof pdfPath !== 'string' || !pdfPath) return false
+  const rel = relative(resolve(docxCacheRoot()), resolve(pdfPath))
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return false
+  if (!existsSync(pdfPath)) return false
+  shell.showItemInFolder(pdfPath)
+  return true
+})
+
+// 导出 PDF：把缓存里的预览复制到 docx 同目录（<name>.pdf）。用户显式点的动作，
+// 所以可以写用户目录；同名文件已存在时先问一句，绝不静默覆盖。
+ipcHandle('docx-export-pdf', async (event, sourcePath: unknown, pdfPath: unknown) => {
+  const win = getWinFromEvent(event)
+  if (!win) return { ok: false, error: 'NO_WINDOW' }
+  if (typeof sourcePath !== 'string' || !sourcePath) return { ok: false, error: 'BAD_PATH' }
+  if (typeof pdfPath !== 'string' || !pdfPath) return { ok: false, error: 'NO_PDF' }
+  if (!existsSync(pdfPath)) {
+    return { ok: false, error: uiText('预览已失效，请重新转换', 'The preview is gone — convert again') }
+  }
+
+  const target = join(dirname(sourcePath), `${basename(sourcePath, extname(sourcePath))}.pdf`)
+  if (resolve(target) === resolve(sourcePath)) return { ok: false, error: 'SAME_FILE' }
+  if (existsSync(target)) {
+    const answer = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: [uiText('覆盖', 'Overwrite'), uiText('取消', 'Cancel')],
+      defaultId: 1,
+      cancelId: 1,
+      message: uiText('同目录已有同名 PDF', 'A PDF with the same name already exists'),
+      detail: target
+    })
+    if (answer.response !== 0) return { ok: false, canceled: true }
+  }
+
+  try {
+    await copyFile(pdfPath, target)
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+  shell.showItemInFolder(target)
+  return { ok: true, path: target }
 })
 
 // ─── 类 docx 文档标签页（canvas-editor）的读写通道 ─────────────────────────
@@ -1475,7 +1607,7 @@ ipcMain.handle('import-docx', async (event) => {
 // 统对话框 + 读写文本。
 
 // 选一个 .md，把文本交给渲染端（渲染端解析成画布元素）
-ipcMain.handle('canvas-pick-md', async (event) => {
+ipcHandle('canvas-pick-md', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   win.show()
@@ -1509,7 +1641,7 @@ ipcMain.handle('canvas-pick-md', async (event) => {
 // 选一个画布导出的 .json（「导出 JSON」= getValue() 的 IEditorResult），校验出
 // IEditorData 后交给渲染端（渲染端 setValue 整体替换）。JSON.parse / 形状校验
 // 放在这一层：出错能弹系统对话框，渲染端拿到的必然可用。
-ipcMain.handle('canvas-pick-json', async (event) => {
+ipcHandle('canvas-pick-json', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   win.show()
@@ -1562,7 +1694,7 @@ ipcMain.handle('canvas-pick-json', async (event) => {
 })
 
 // 画布导出的 Markdown 文本落地；返回落盘路径（渲染端拿它开新标签页对照）
-ipcMain.handle('canvas-save-md', async (event, content: unknown, fileName?: unknown) => {
+ipcHandle('canvas-save-md', async (event, content: unknown, fileName?: unknown) => {
   const win = getWinFromEvent(event)
   if (!win || typeof content !== 'string') return null
   const baseName = typeof fileName === 'string' && fileName ? fileName : undefined
@@ -1594,7 +1726,7 @@ ipcMain.handle('canvas-save-md', async (event, content: unknown, fileName?: unkn
 })
 
 // 偏好设置「打开指定文件夹」的「浏览」：选一个目录，返回绝对路径。
-ipcMain.handle('pick-directory', async (event, current?: unknown) => {
+ipcHandle('pick-directory', async (event, current?: unknown) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const start = typeof current === 'string' && current.length > 0 ? current : undefined
@@ -1611,7 +1743,7 @@ ipcMain.handle('pick-directory', async (event, current?: unknown) => {
 
 // JSON 视图：只读一个文本文件，不碰窗口的文档绑定（既不动标题/最近列表，
 // 也不注册监听）。渲染端拿它读 PDF 旁边的同名 .json（sidecar）。
-ipcMain.handle('read-text-file', async (_event, filePath: unknown) => {
+ipcHandle('read-text-file', async (_event, filePath: unknown) => {
   if (typeof filePath !== 'string' || !filePath) return null
   try {
     const content = await readFile(filePath, 'utf-8')
@@ -1648,7 +1780,7 @@ function sniffImageMime(buffer: Buffer): string | null {
   return null
 }
 
-ipcMain.handle('read-image-as-data-url', async (_event, filePath: unknown) => {
+ipcHandle('read-image-as-data-url', async (_event, filePath: unknown) => {
   if (typeof filePath !== 'string' || !filePath) return null
   try {
     const buffer = await readFile(filePath)
@@ -1662,7 +1794,7 @@ ipcMain.handle('read-image-as-data-url', async (_event, filePath: unknown) => {
 })
 
 // JSON 视图的「打开 JSON…」：选一个 .json，连内容一起带回来。
-ipcMain.handle('pick-json-file', async (event) => {
+ipcHandle('pick-json-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const result = await dialog.showOpenDialog(win, {
@@ -1686,7 +1818,7 @@ ipcMain.handle('pick-json-file', async (event) => {
 
 // PDF 对照标签页里的「打开 PDF…」：选一份 PDF，读成字节一起带回去（渲染端
 // fetch 不了 file://）。顺带把上一次解析留下的那两份文件路径一起给出。
-ipcMain.handle('pick-pdf-file', async (event) => {
+ipcHandle('pick-pdf-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const result = await dialog.showOpenDialog(win, {
@@ -1713,7 +1845,7 @@ ipcMain.handle('pick-pdf-file', async (event) => {
 
 // 切回一个已经挂着源文件的 PDF 标签页：按路径再读一次字节。切走时渲染端把文档
 // 与 worker 都放了，不留常驻内存，所以回来要重新读（文件被挪走/删掉就是 null）。
-ipcMain.handle('read-pdf-file', async (_event, pdfPath: unknown): Promise<{ path: string; data: Uint8Array; markdownPath?: string; jsonPath?: string } | null> => {
+ipcHandle('read-pdf-file', async (_event, pdfPath: unknown): Promise<{ path: string; data: Uint8Array; markdownPath?: string; jsonPath?: string } | null> => {
   if (typeof pdfPath !== 'string' || !pdfPath) return null
   try {
     return { path: pdfPath, data: new Uint8Array(await readFile(pdfPath)), ...findExtractedResult(pdfPath) }
@@ -1725,7 +1857,7 @@ ipcMain.handle('read-pdf-file', async (_event, pdfPath: unknown): Promise<{ path
 // 「工具箱 → PDF拆分」：按「每 N 页一份」把 PDF 切开，结果写进原文件旁边的
 // <原名>_拆分_<日期>/ 目录。真正的活在主进程做（pdf-lib 跑在 Node 侧），渲染端
 // 只管把路径与页数递进来、把结果画出来。
-ipcMain.handle('split-pdf', async (_event, payload: unknown): Promise<SplitResult> => {
+ipcHandle('split-pdf', async (_event, payload: unknown): Promise<SplitResult> => {
   const { path: sourcePath, pagesPerFile } = (payload ?? {}) as { path?: unknown; pagesPerFile?: unknown }
   if (typeof sourcePath !== 'string' || !sourcePath) return { ok: false, error: 'BAD_PATH' }
   if (typeof pagesPerFile !== 'number') return { ok: false, error: 'INVALID_PAGES' }
@@ -1740,24 +1872,31 @@ ipcMain.handle('split-pdf', async (_event, payload: unknown): Promise<SplitResul
 
 // 渲染端上报当前活动标签页挂着的那份 PDF（切到别的标签页就是 null）：只有它
 // 知道哪个标签页在前台。「另存为」的默认文件名按它取（见 suggestFileName）。
-ipcMain.on('set-active-pdf-path', (event, pdfPath: unknown) => {
+ipcOn('set-active-pdf-path', (event, pdfPath: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   getState(win).pdfPath = typeof pdfPath === 'string' && pdfPath ? pdfPath : null
 })
 
 // 图片转md 标签页挂着的那张图片：同一套上报方式、同一个用途（另存为的默认名）。
-ipcMain.on('set-active-image-path', (event, imagePath: unknown) => {
+ipcOn('set-active-image-path', (event, imagePath: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   getState(win).imagePath = typeof imagePath === 'string' && imagePath ? imagePath : null
+})
+
+// docx转md 标签页挂着的源文档（同上）。
+ipcOn('set-active-docx-path', (event, docxPath: unknown) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  getState(win).docxPath = typeof docxPath === 'string' && docxPath ? docxPath : null
 })
 
 // 渲染端上报前台标签页的类型（切标签页时发）。类 docx 文档标签页（canvas-editor）
 // 自成一体的那套：打印只走它自己工具栏里那一个（executePrint 把页面渲成图再
 // 交给打印），窗口级的 print/printToPDF 对它没有意义 —— 所以菜单栏的打印相关
 // 项在这个标签页上前台时一律不生效，并且显示成不可用（见 syncPrintMenuState）。
-ipcMain.on('set-active-tab-kind', (event, kind: unknown) => {
+ipcOn('set-active-tab-kind', (event, kind: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   const next: ActiveTabKind =
@@ -1790,7 +1929,7 @@ interface MineruParseResponse {
   batchId?: string
 }
 
-ipcMain.handle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruParseResponse> => {
+ipcHandle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruParseResponse> => {
   const win = getWinFromEvent(event)
   if (!win) return { ok: false, error: uiText('窗口已关闭', 'Window is closed') }
   // 同一个接口也服务「图片转md」：服务端认 PDF 也认图片，所以这里不再说 PDF。
@@ -1832,7 +1971,7 @@ ipcMain.handle('mineru-parse', async (event, pdfPath: unknown): Promise<MineruPa
 // 文档助手：把一轮对话发给 OpenAI 兼容端点，拿回完整回答（P0 非流式）。
 // 连接信息每次现读偏好设置 —— 改完不用重启。密钥与 mineru.token 同一约定：
 // 环境变量 ASSISTANT_API_KEY 优先，只作 Authorization 头，不进日志。
-ipcMain.handle('assistant-complete', async (_event, payload: unknown): Promise<ChatResult> => {
+ipcHandle('assistant-complete', async (_event, payload: unknown): Promise<ChatResult> => {
   const clean = readAssistantMessages(payload)
   if (!clean) return { ok: false, error: 'BAD_MESSAGES' }
   return completeChat({ ...assistantConnection(), messages: clean })
@@ -1852,7 +1991,7 @@ function streamConnection(channel: StreamChannel): { baseUrl: string; apiKey: st
   return channel === 'solver' ? visualSolveConnection() : assistantConnection()
 }
 
-ipcMain.handle('assistant-stream', async (event, payload: unknown): Promise<ChatResult> => {
+ipcHandle('assistant-stream', async (event, payload: unknown): Promise<ChatResult> => {
   const win = getWinFromEvent(event)
   if (!win) return { ok: false, error: 'NO_WINDOW' }
   const clean = readAssistantMessages(payload)
@@ -1877,7 +2016,7 @@ ipcMain.handle('assistant-stream', async (event, payload: unknown): Promise<Chat
 })
 
 // 「停止生成」：中止发起窗口那一条流（按通道；其余窗口不受影响）
-ipcMain.on('assistant-cancel', (event, payload?: unknown) => {
+ipcOn('assistant-cancel', (event, payload?: unknown) => {
   assistantStreams.get(`${event.sender.id}:${readStreamChannel(payload)}`)?.abort()
 })
 
@@ -1893,7 +2032,7 @@ function attachmentOptions(): { mineruToken: string; insecureDownload: boolean }
 
 // 「添加附件」：选文件（可多选）→ 转文本。与编辑器插图那个选择器分开：这里 pdf/docx/md
 // 都要能选，而且不做"插入正文"的动作。
-ipcMain.handle('assistant-pick-attachment', async (event) => {
+ipcHandle('assistant-pick-attachment', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return []
   const result = await dialog.showOpenDialog(win, {
@@ -1913,7 +2052,7 @@ ipcMain.handle('assistant-pick-attachment', async (event) => {
 })
 
 // 「识别公式」：一张图片 → LaTeX（先 MinerU，失败退本地 OCR 契约）
-ipcMain.handle('assistant-ocr-image', async (_event, filePath: unknown) => {
+ipcHandle('assistant-ocr-image', async (_event, filePath: unknown) => {
   if (typeof filePath !== 'string' || !filePath) return { ok: false, error: 'BAD_PATH' }
   return ocrImageToLatex(filePath, attachmentOptions())
 })
@@ -1942,9 +2081,9 @@ function writeVisualSolveHistory(items: unknown[]): void {
   }
 }
 
-ipcMain.handle('visual-solve-history', () => readVisualSolveHistory())
+ipcHandle('visual-solve-history', () => readVisualSolveHistory())
 
-ipcMain.handle('visual-solve-history-add', (_event, entry: unknown) => {
+ipcHandle('visual-solve-history-add', (_event, entry: unknown) => {
   const item = entry as { id?: unknown; problem?: unknown; answer?: unknown; at?: unknown }
   if (typeof item?.id !== 'string' || typeof item?.problem !== 'string' || typeof item?.answer !== 'string') return false
   const clean = { id: item.id, problem: item.problem.slice(0, 4000), answer: item.answer.slice(0, 200_000), at: Number(item.at) || Date.now() }
@@ -1952,13 +2091,13 @@ ipcMain.handle('visual-solve-history-add', (_event, entry: unknown) => {
   return true
 })
 
-ipcMain.handle('visual-solve-history-clear', () => {
+ipcHandle('visual-solve-history-clear', () => {
   writeVisualSolveHistory([])
   return true
 })
 
 // 「保存为 .md」：解题过程存成文件（弹保存对话框；文件名由渲染端给个建议）
-ipcMain.handle('visual-solve-save', async (event, payload: unknown) => {
+ipcHandle('visual-solve-save', async (event, payload: unknown) => {
   const { markdown, name } = (payload ?? {}) as { markdown?: unknown; name?: unknown }
   if (typeof markdown !== 'string' || !markdown.trim()) return { ok: false, error: 'EMPTY' }
   const suggested = typeof name === 'string' && name.trim() ? name.trim() : '可视化解题.md'
@@ -1975,7 +2114,7 @@ ipcMain.handle('visual-solve-save', async (event, payload: unknown) => {
 })
 
 // 「粘贴的图片」：剪切板里的图先落成临时文件，再按普通图片附件走
-ipcMain.handle('assistant-paste-image', async (_event, dataUrl: unknown) => {
+ipcHandle('assistant-paste-image', async (_event, dataUrl: unknown) => {
   if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return null
   try {
     return await savePastedImage(dataUrl)
@@ -1985,7 +2124,7 @@ ipcMain.handle('assistant-paste-image', async (_event, dataUrl: unknown) => {
 })
 
 // LaTeX公式：图片 data URL → 本地 Texo 模型识别出的 LaTeX（主进程 onnxruntime-node）
-ipcMain.handle('texo-recognize', async (_event, payload: unknown) => {
+ipcHandle('texo-recognize', async (_event, payload: unknown) => {
   const { dataUrl, source } = (payload ?? {}) as { dataUrl?: unknown; source?: unknown }
   if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return null
   try {
@@ -2003,7 +2142,7 @@ ipcMain.handle('texo-recognize', async (_event, payload: unknown) => {
 
 // 菜单「帮助 → 截屏识别公式…」：藏起自己的窗口抓一屏 → 浮层里框选 → 交回那一块。
 // 整个流程收在一次 invoke 里，取消时返回 null（== 用户什么都没选，渲染端不用管）。
-ipcMain.handle('snip-start', async (event) => {
+ipcHandle('snip-start', async (event) => {
   // 发起窗口：浮层关掉之后要把焦点还回去，否则 Windows 上用户会以为程序被自己关掉了
   const origin = BrowserWindow.fromWebContents(event.sender)
   try {
@@ -2107,7 +2246,7 @@ function visualSolveConnection(): { baseUrl: string; apiKey: string; model: stri
 
 // 图片模态框的「浏览」按钮：打开系统文件对话框选一张本地图片，
 // 返回绝对路径（渲染端填入 src，插入模式下随即插入）。
-ipcMain.handle('pick-image-file', async (event) => {
+ipcHandle('pick-image-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const result = await dialog.showOpenDialog(win, {
@@ -2127,7 +2266,7 @@ ipcMain.handle('pick-image-file', async (event) => {
 // 「图片转md」的选图：只列 MinerU 认的图片格式（官方「文件限制」表）。
 // 与上面共用的 pick-image-file 分开是故意的 —— 那个也服务编辑器插图，要支持
 // svg / avif 这类只用来显示的格式，而 MinerU 收到它们只会回 -60002。
-ipcMain.handle('pick-mineru-image-file', async (event) => {
+ipcHandle('pick-mineru-image-file', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const result = await dialog.showOpenDialog(win, {
@@ -2143,7 +2282,7 @@ ipcMain.handle('pick-mineru-image-file', async (event) => {
   return result.filePaths[0]
 })
 
-ipcMain.handle('export-image', async (event, snapshot: unknown, preset: unknown) => {
+ipcHandle('export-image', async (event, snapshot: unknown, preset: unknown) => {
   const win = getWinFromEvent(event)
   if (!win || (preset !== 'desktop' && preset !== 'mobile') || !snapshot || typeof snapshot !== 'object') return false
   win.show()
@@ -2218,7 +2357,7 @@ async function insertPrintCss(win: BrowserWindow): Promise<string> {
 
 const PRINT_PDF_OPTIONS = { margins: { top: 0, bottom: 0, left: 0, right: 0 }, printBackground: true, pageSize: 'A4' } as const
 
-ipcMain.handle('export-pdf', async (event) => {
+ipcHandle('export-pdf', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return false
   const result = await dialog.showSaveDialog(win, {
@@ -2303,13 +2442,13 @@ function syncPrintMenuState(): void {
   buildMenu()
 }
 
-ipcMain.handle('print', (event) => {
+ipcHandle('print', (event) => {
   const win = getWinFromEvent(event)
   if (!win || isCanvasTabActive(win)) return false
   return printWindow(win)
 })
 
-ipcMain.handle('print-preview', async (event) => {
+ipcHandle('print-preview', async (event) => {
   const win = getWinFromEvent(event)
   if (!win || isCanvasTabActive(win)) return null
   return await printPreviewBytes(win)
@@ -2325,7 +2464,7 @@ function escapeHTML(value: string): string {
   })[char] ?? char)
 }
 
-ipcMain.handle('export-html', async (event, snapshot: {
+ipcHandle('export-html', async (event, snapshot: {
   content: string
   html: string
   styles: string
@@ -2428,7 +2567,7 @@ async function openCheatsheet(language: 'zh' | 'en' = 'zh', title = 'Markdown �
   }
 }
 
-ipcMain.handle('load-custom-theme', async (event) => {
+ipcHandle('load-custom-theme', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return null
   const result = await dialog.showOpenDialog(win, {
@@ -2450,7 +2589,7 @@ ipcMain.handle('load-custom-theme', async (event) => {
   }
 })
 
-ipcMain.handle('load-theme-css', async (_event, fileName: string) => {
+ipcHandle('load-theme-css', async (_event, fileName: string) => {
   try {
     return await readFile(join(themesDir, fileName), 'utf-8')
   } catch {
@@ -2503,10 +2642,10 @@ function loadSystemFontFamilies(): Promise<string[]> {
   return systemFontFamiliesPromise
 }
 
-ipcMain.handle('list-system-fonts', () => loadSystemFontFamilies())
+ipcHandle('list-system-fonts', () => loadSystemFontFamilies())
 
 // Broadcast editor font changes from one window to the others (#7752855)
-ipcMain.handle('set-editor-font', (_event, prefs: unknown) => {
+ipcHandle('set-editor-font', (_event, prefs: unknown) => {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.webContents === _event.sender) continue
     if (!win.webContents.isDestroyed()) win.webContents.send('editor-font-changed', prefs)
@@ -2515,7 +2654,7 @@ ipcMain.handle('set-editor-font', (_event, prefs: unknown) => {
 
 // External edit collided with unsaved local changes. Pause the editor's
 // autosave (renderer side) and ask the user which version survives.
-ipcMain.handle('report-external-conflict', async (event) => {
+ipcHandle('report-external-conflict', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) {
     event.sender.send('external-conflict-result', { action: 'keep' })
@@ -2551,7 +2690,7 @@ ipcMain.handle('report-external-conflict', async (event) => {
   event.sender.send('external-conflict-result', { action: 'keep' })
 })
 
-ipcMain.handle('report-theme', (_event, theme: unknown) => {
+ipcHandle('report-theme', (_event, theme: unknown) => {
   const next = typeof theme === 'string' && theme ? theme : 'elegant'
   if (next === currentTheme) return
   currentTheme = next
@@ -2562,7 +2701,7 @@ ipcMain.handle('report-theme', (_event, theme: unknown) => {
 // strip has to carry the theme's chrome colour. The renderer resolves the live
 // computed colours and reports them on every theme change; the overlay only
 // exists on Windows, and older runtimes without the API simply keep the default.
-ipcMain.handle('report-titlebar-colors', (event, colors: unknown) => {
+ipcHandle('report-titlebar-colors', (event, colors: unknown) => {
   if (process.platform !== 'win32') return
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || win.isDestroyed()) return
@@ -2587,7 +2726,7 @@ ipcMain.handle('report-titlebar-colors', (event, colors: unknown) => {
 
 // The row's own menu button (Windows, where the menu bar is hidden). It pops the
 // application menu in place, so the menu stays the same native menu everywhere.
-ipcMain.handle('popup-app-menu', (event) => {
+ipcHandle('popup-app-menu', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || win.isDestroyed()) return
   Menu.getApplicationMenu()?.popup({ window: win })
@@ -2601,7 +2740,7 @@ type MenubarKey = 'file' | 'edit' | 'format' | 'insert' | 'font' | 'fontSize' | 
 let menubarItems: Partial<Record<MenubarKey, Electron.MenuItem>> = {}
 
 // renderer 拉取当前界面语言下的五个标签文本
-ipcMain.handle('menubar-get-labels', () => {
+ipcHandle('menubar-get-labels', () => {
   const result: Record<string, string> = {}
   for (const [key, item] of Object.entries(menubarItems)) {
     if (item) result[key] = item.label
@@ -2616,7 +2755,7 @@ ipcMain.handle('menubar-get-labels', () => {
 // 非最大化窗口时菜单会整体偏左上（最大化时外框溢出屏幕恰好抵消，所以只在
 // 还原窗口时错位）。getContentBounds 精确对应网页视口，与边框/标题栏/
 // DPI/窗口位置无关。
-ipcMain.handle('menubar-popup', (event, key: unknown, x: unknown, y: unknown) => {
+ipcHandle('menubar-popup', (event, key: unknown, x: unknown, y: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || win.isDestroyed()) return
   if (typeof key !== 'string') return
@@ -2639,18 +2778,18 @@ ipcMain.handle('menubar-popup', (event, key: unknown, x: unknown, y: unknown) =>
   item.submenu.popup({ window: win, x: popX, y: popY })
 })
 
-ipcMain.handle('get-language', () => getPreferredLanguage())
+ipcHandle('get-language', () => getPreferredLanguage())
 
 // ─── 用户偏好设置 IPC ────────────────────────────────────────────────────
 
-ipcMain.handle('get-preferences', () => getUserSetting())
+ipcHandle('get-preferences', () => getUserSetting())
 
-ipcMain.handle('set-preference', (_event, key: unknown, value: unknown) => {
+ipcHandle('set-preference', (_event, key: unknown, value: unknown) => {
   if (typeof key !== 'string') return false
   return setUserSetting(key, value)
 })
 
-ipcMain.handle('set-preferences-batch', (_event, changes: unknown) => {
+ipcHandle('set-preferences-batch', (_event, changes: unknown) => {
   if (!changes || typeof changes !== 'object') return false
   setUserSettingBatch(changes as Record<string, unknown>)
   return true
@@ -2845,8 +2984,9 @@ function buildMenu(): void {
           click: () => sendToFocused('menu-open')
         },
         {
+          // 与下面两条同一套：先开一个标签页，文档在页面里选（见 importDocxDocument）。
           label: labels.importDocx,
-          click: () => sendToFocused('menu-import-docx')
+          click: () => importDocxDocument()
         },
         {
           // 在当前窗口开一个标签页；窗口都没有时才建一个（见 importPdfDocument）。
@@ -3334,12 +3474,12 @@ function setupAutoUpdater(): void {
   }, 8000)
 }
 
-ipcMain.handle('download-update', async () => {
+ipcHandle('download-update', async () => {
   updateDownloadRequested = true
   await autoUpdater.downloadUpdate()
 })
 
-ipcMain.handle('install-update', () => {
+ipcHandle('install-update', () => {
   autoUpdater.quitAndInstall(false, true)
 })
 
@@ -3351,10 +3491,12 @@ ipcMain.handle('install-update', () => {
 // the first instance's LevelDB lock for Local Storage before giving up on
 // writing theme/state preferences. The second launch's files arrive in
 // 'second-instance' and open as tabs of the existing window instead.
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
-if (!hasSingleInstanceLock) {
+// 二次求值时（见 ipcHandle 上面的说明）锁已经由第一次求值拿到了：这里既不能再问
+// 一次，也不能再挂一份 second-instance 监听，更不能让第二份 app.quit() 生效。
+const hasSingleInstanceLock = alreadyBootstrapped || app.requestSingleInstanceLock()
+if (!alreadyBootstrapped && !hasSingleInstanceLock) {
   app.quit()
-} else {
+} else if (!alreadyBootstrapped) {
   app.on('second-instance', (_event, argv) => {
     // Keep files only: the app-path argument (".") and stray directories are
     // not documents.
@@ -3380,7 +3522,8 @@ if (!hasSingleInstanceLock) {
 }
 
 app.whenReady().then(() => {
-  if (!hasSingleInstanceLock) return
+  // 二次求值时整套启动流程已经跑过了，再跑一遍就是多开一个空白窗口。
+  if (alreadyBootstrapped || !hasSingleInstanceLock) return
   markStartup('app-ready')
   ensureThemesDir()
   buildMenu()
@@ -3414,6 +3557,10 @@ app.whenReady().then(() => {
   setupAutoUpdater()
   void openChangelogOnceForVersion()
 
+  // docx 预览 PDF 的缓存维护：延迟 10 秒，别跟首屏抢 IO。删过期的 / 超量的 /
+  // 上次转换中途退出留下的残渣，并把旧版本堆在 %TEMP% 里的预览目录整棵清掉。
+  setTimeout(() => { void pruneDocxPdfCache() }, 10_000)
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -3437,7 +3584,7 @@ function requestDocumentState(win: BrowserWindow): Promise<DocumentSnapshot | nu
   })
 }
 
-ipcMain.on('document-state-response', (event, requestId: unknown, snapshot: unknown) => {
+ipcOn('document-state-response', (event, requestId: unknown, snapshot: unknown) => {
   if (typeof requestId !== 'string' || !snapshot || typeof snapshot !== 'object') return
   const { dirty, content, tabs } = snapshot as DocumentSnapshot
   if (typeof dirty !== 'boolean' || typeof content !== 'string') return
@@ -3454,7 +3601,7 @@ ipcMain.on('document-state-response', (event, requestId: unknown, snapshot: unkn
   })
 })
 
-ipcMain.on('renderer-ready', (event) => {
+ipcOn('renderer-ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win) {
     const state = getState(win)
@@ -3475,7 +3622,7 @@ ipcMain.on('renderer-ready', (event) => {
 })
 
 // Renderer reports its unsaved state as a fast path for quit coordination.
-ipcMain.on('set-dirty', (event, isDirty: boolean) => {
+ipcOn('set-dirty', (event, isDirty: boolean) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win) getState(win).dirty = !!isDirty
 })
@@ -3604,29 +3751,32 @@ async function handleWindowClose(win: BrowserWindow, state: WindowState): Promis
   return true
 }
 
-app.on('before-quit', (e) => {
-  if (isQuitting) return
-  e.preventDefault()
-  void (async () => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue
-      const ok = await confirmWindowClose(win, getState(win))
-      if (!ok) return // user cancelled or saving failed; abort the quit entirely
+// 这三条监听同样只让第一次求值挂上：二次求值再挂一份，退出确认会问两遍。
+if (!alreadyBootstrapped) {
+  app.on('before-quit', (e) => {
+    if (isQuitting) return
+    e.preventDefault()
+    void (async () => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue
+        const ok = await confirmWindowClose(win, getState(win))
+        if (!ok) return // user cancelled or saving failed; abort the quit entirely
+      }
+      isQuitting = true
+      app.quit()
+    })()
+  })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault()
+    if (app.isReady()) {
+      openFile(filePath)
+    } else {
+      pendingFilePaths.push(filePath)
     }
-    isQuitting = true
-    app.quit()
-  })()
-})
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
-
-app.on('open-file', (event, filePath) => {
-  event.preventDefault()
-  if (app.isReady()) {
-    openFile(filePath)
-  } else {
-    pendingFilePaths.push(filePath)
-  }
-})
+  })
+}

@@ -106,7 +106,17 @@ function clearAdminSession(): boolean {
   }
 }
 
+/**
+ * 注册这三条通道。
+ *
+ * 与 main/index.ts 里 ipcHandle 同一个理由：dev 下主进程入口可能被求值两次
+ * （动态 import 出的 chunk 会 require 入口去拿共享模块），本函数就会被调两遍，
+ * 第二次撞上 ipcMain.handle 的重复注册检查。先摘旧的再装，重复调用变成无害覆盖。
+ */
 export function registerAdminSessionIpc(): void {
+  for (const channel of ['admin-session:save', 'admin-session:load', 'admin-session:clear']) {
+    ipcMain.removeHandler(channel)
+  }
   ipcMain.handle('admin-session:save', (_event, data: unknown) => saveAdminSession(data))
   ipcMain.handle('admin-session:load', () => loadAdminSession())
   ipcMain.handle('admin-session:clear', () => clearAdminSession())

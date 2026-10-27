@@ -10,6 +10,7 @@ import { setUiLanguage, isChinese, type UiLanguage } from './ui-language'
 import { applyEditorFont, loadSavedEditorFont, showFontSettingsModal } from './editor/font-settings'
 import { enterPdfTabChrome, getOpenedPdfPath, initPdfView, leavePdfTab, loadPdfTab } from './pdf-view'
 import { enterImageTabChrome, initImageView, leaveImageTab, loadImageTab } from './image-view'
+import { enterDocxTabChrome, initDocxView, leaveDocxTab, loadDocxTab } from './docx-view'
 // 可视化解题（菜单「帮助 → 可视化解题」）：整页解题标签页。模块自己的代码全在
 // src/visualSolve/ 下，这里只做标签页与编辑器两边的接线。
 import { enterSolverTabChrome, initVisualSolve, leaveSolverTab } from '../visualSolve'
@@ -223,6 +224,16 @@ interface DocumentTab {
   /** 源图片路径；还没选就是 null，面板显示空态。 */
   imagePath: string | null
   /**
+   * 这个标签页是不是「docx转md」标签页（左 Word 文档信息 / 右文档）。与 imageTab
+   * 同一套路：仍是普通文档标签页（转换结果填进来后照样能改能存），只是挂着一份
+   * 源文档，窗口里最多一个（再点「docx转md」就聚焦已有的那个）。
+   *
+   * 可选字段：其余标签页的字面量不必逐个补（与 solver / adminPanel 同一做法）。
+   */
+  docxTab?: boolean
+  /** 源 Word 文档路径；还没选就是 null，面板显示空态。 */
+  docxPath?: string | null
+  /**
    * 工具箱标签页（菜单「帮助 → 工具箱」）：整页工具界面，不是文档编辑器。这里写
    * 的是当前打开的工具（见 tool-view.ts），非 null 即表示这个标签页是工具页 ——
    * 与 pdfTab / imageTab 那套布尔标志位同一个用法，只是工具箱以后会有多个工具，
@@ -295,6 +306,8 @@ const DOCUMENT_SUFFIX = /\.(md|markdown|mdown|mkd)$/i
 
 const PDF_SUFFIX = /\.pdf$/i
 
+const DOCX_SUFFIX = /\.docx$/i
+
 function tabLabel(tab: DocumentTab): string {
   if (tab.kind === 'submit') return isChinese() ? '提交' : 'Submit'
   if (tab.solver) return isChinese() ? '可视化解题' : 'Visual Solver'
@@ -316,6 +329,11 @@ function tabLabel(tab: DocumentTab): string {
   if (tab.imageTab) {
     if (!tab.imagePath) return isChinese() ? '图片' : 'Image'
     return tab.imagePath.split(/[\\/]/).pop() || tab.imagePath
+  }
+  // docx转md 同一条规则：挂了文档就写文档名（去掉 .docx），没选时写「Word」。
+  if (tab.docxTab) {
+    if (!tab.docxPath) return 'Word'
+    return (tab.docxPath.split(/[\\/]/).pop() || tab.docxPath).replace(DOCX_SUFFIX, '')
   }
   // 工具箱标签页：标题就是工具名（目前只有「PDF拆分」），不带文件名。
   if (tab.tool) return toolTabLabel(tab.tool)
@@ -610,13 +628,14 @@ function reportActiveTabKind(): void {
 }
 
 /**
- * 主进程要知道前台这份标签页挂着哪个源文件（PDF 对照 / 图片转md）：「另存为」的
- * 默认文件名按它取（见 main 的 suggestFileName）。两个上报绑在一起，免得只清一个、
- * 留下上一份文件的名字。
+ * 主进程要知道前台这份标签页挂着哪个源文件（PDF 对照 / 图片转md / docx转md）：
+ * 「另存为」的默认文件名按它取（见 main 的 suggestFileName）。三个上报绑在一起，
+ * 免得只清一个、留下上一份文件的名字。
  */
 function reportActiveSource(tab: DocumentTab | null): void {
   window.electronAPI.setActivePdfPath(tab?.pdfTab ? tab.pdfPath : null)
   window.electronAPI.setActiveImagePath(tab?.imageTab ? tab.imagePath : null)
+  window.electronAPI.setActiveDocxPath(tab?.docxTab ? tab.docxPath ?? null : null)
 }
 
 // Switching away must not lose work. A tab with a path is flushed through the
@@ -638,6 +657,7 @@ function ensureTab(): DocumentTab {
     existing.kind === 'document' &&
     !existing.pdfTab &&
     !existing.imageTab &&
+    !existing.docxTab &&
     !existing.tool &&
     !existing.texo &&
     !existing.solver &&
@@ -730,6 +750,7 @@ function resetPageViews(): void {
   hideCanvasDocView()
   leavePdfTabChrome()
   leaveImageTab()
+  leaveDocxTab()
   leaveToolTab()
   leaveTexoTab()
   // 可视化解题：除了收起面板，还要停掉可能仍在跑的那条流（见 visualSolve）
@@ -926,6 +947,43 @@ async function openImageTab(): Promise<void> {
   }
   // 同上：面板与格式归位都在 activateTab 里（这个视图没有 JSON 面，一律 Markdown）；
   // 还没选图片时它末尾的 loadImageTab(null) 把面板摆成空态。
+  if (!await pushTabAndActivate(tab)) return
+  focusEditor()
+}
+
+// ─── docx转md 标签页 ────────────────────────────────────────────────────
+// 菜单「文件 → docx转md」：与图片转md 完全同一套路 —— 左 Word 文档信息 / 右编辑器，
+// 窗口里最多一个（已存在就聚焦），文档由标签页里的「选择 Word 文档…」按钮选。
+// 选完即转换：左边出 PDF 版式预览、右边出 Markdown（见 docx-view 的 runConvert）。
+async function openDocxTab(): Promise<void> {
+  const existing = tabs.find((tab) => tab.docxTab)
+  if (existing) {
+    await activateTab(existing.id)
+    return
+  }
+  const tab: DocumentTab = {
+    id: `tab-${nextTabId++}`,
+    kind: 'document',
+    filePath: null,
+    pdfTab: false,
+    pdfPath: null,
+    imageTab: false,
+    imagePath: null,
+    docxTab: true,
+    docxPath: null,
+    tool: null,
+    toolPath: null,
+    dirty: false,
+    revision: ++documentRevision,
+    sourceMode: false,
+    sourceText: '',
+    content: '',
+    editorState: null,
+    diskContent: null,
+    scrollTop: 0
+  }
+  // 面板与格式归位都在 activateTab 里（这个视图没有 JSON 面，一律 Markdown）；
+  // 还没选文档时它末尾的 loadDocxTab(null) 把面板摆成空态。
   if (!await pushTabAndActivate(tab)) return
   focusEditor()
 }
@@ -1243,6 +1301,11 @@ async function activateTab(id: string): Promise<boolean> {
       // 那会让右边变成只读的 layout.json。
       setDocFormat('markdown')
     }
+    // docx转md 同一套路：左 Word 文档信息 / 右文档，也没有 JSON 视图。
+    if (target.docxTab) {
+      enterDocxTabChrome()
+      setDocFormat('markdown')
+    }
     // 工具箱 / 可视化解题 / LaTeX公式 同理：只有对应标签页才把整页界面铺出来。
     if (target.tool) enterToolTabChrome()
     if (target.solver) enterSolverTabChrome()
@@ -1344,6 +1407,11 @@ async function activateTab(id: string): Promise<boolean> {
       setContent(disk!.content, true)
       clearDirty()
       clearSaveStatus()
+    } else if (target.sourceMode && target.docxTab) {
+      // docx 标签页不恢复源码视图：它的右侧是给用户看转换结果（公式、表格）的，
+      // 一旦被记成源码模式，切走再切回来就是一屏 LaTeX 源码 —— 用户只能自己去
+      // 点模式开关才能回到渲染态。这里拿源码文本重建，内容不丢且重新渲染。
+      setContent(target.sourceText, true)
     } else if (target.sourceMode) {
       enterSourceMode(target.sourceText, 0)
     } else if (target.editorState) {
@@ -1379,7 +1447,8 @@ async function activateTab(id: string): Promise<boolean> {
     void refreshSiblings()
     scheduleOutlineUpdate()
     const restoreScroll = (): void => {
-      if (target.sourceMode) sourceEl().scrollTop = target.scrollTop
+      // 用当前真实模式而不是 target.sourceMode：docx 标签页会被强制回到渲染态
+      if (sourceModeActive) sourceEl().scrollTop = target.scrollTop
       else editorEl().scrollTop = target.scrollTop
     }
     restoreScroll()
@@ -1388,6 +1457,9 @@ async function activateTab(id: string): Promise<boolean> {
     if (target.pdfTab) void loadPdfTab(target.pdfPath)
     // 图片转md 面板：切回来按标签页记下的那张图片重新显示（主进程读盘给 data URL）。
     if (target.imageTab) void loadImageTab(target.imagePath)
+    // docx转md 面板：切回来按标签页记下的文档路径重新显示（上次生成过 PDF 就直接
+    // 重画左栏，没选过就回空态）。
+    if (target.docxTab) void loadDocxTab(target.docxPath ?? null)
     finishTabSwitch()
     if (changedOnDisk && target.dirty) raiseExternalConflict()
     return true
@@ -1549,6 +1621,7 @@ async function openFileInNewTab(path: string): Promise<void> {
     current.kind === 'document' &&
     !current.pdfTab &&
     !current.imageTab &&
+    !current.docxTab &&
     !current.tool &&
     !current.texo &&
     !current.solver &&
@@ -1613,6 +1686,8 @@ function bindTabBar(api: import('../preload/index').ElectronAPI): void {
   api.onMenuPdfTab(() => { void openPdfTab() })
   // 菜单「文件 → 图片转md」：开图片转md 标签页（已存在就聚焦它）。
   api.onMenuImageTab(() => { void openImageTab() })
+  // 菜单「文件 → docx转md」：开 docx转md 标签页（已存在就聚焦它）。
+  api.onMenuDocxTab(() => { void openDocxTab() })
   // 菜单「帮助 → 工具箱」：开工具标签页（目前只有 PDF拆分，已存在就聚焦它）。
   api.onMenuToolboxTab(() => {
     void openToolTab('pdf-split')
@@ -1984,7 +2059,7 @@ function updatePanelVisibility(): void {
   // PDF 对照 / 图片转md / 工具箱 / 可视化解题 标签页没有文件面板：左边已经是
   // 源文件，右边就是要编辑的那一个文档（后两者干脆没有文档）。
   const show =
-    !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab && !activeTab()?.tool && !activeTab()?.texo && !activeTab()?.solver && !activeTab()?.adminPanel
+    !manualHidden && !activeTab()?.pdfTab && !activeTab()?.imageTab && !activeTab()?.docxTab && !activeTab()?.tool && !activeTab()?.texo && !activeTab()?.solver && !activeTab()?.adminPanel
   filePanelEl().hidden = !show
   document.body.classList.toggle('show-file-panel', show)
   fileToggleBtnEl().classList.toggle('active', show)
@@ -2784,6 +2859,21 @@ function setToolbarEnabled(enabled: boolean): void {
 
 const LARGE_DOCUMENT_SOURCE_THRESHOLD = 512 * 1024
 
+/**
+ * 是否该为了性能退回源码视图。
+ *
+ * 只看「真正要交给 ProseMirror 排版的文本量」，所以先折叠 base64 图片再比。
+ * docx 转出来的 Markdown 里插图是 base64 data URI，几张图就能把字符串顶到几 MB：
+ * 按原始长度判断，整篇会退化成源码视图 —— 用户在 docx 转 md 标签页里看到的
+ * 就是一屏 LaTeX 源码（$…$ 不渲染、$F\left({\frac{3}{2},0}\right)$ 被当普通文本折行）。
+ *
+ * 折叠有缓存（见 foldBase64），且只有超过阈值才真的跑一次扫描。
+ */
+function isLargeDocument(content: string): boolean {
+  if (content.length < LARGE_DOCUMENT_SOURCE_THRESHOLD) return false
+  return foldBase64(content).length >= LARGE_DOCUMENT_SOURCE_THRESHOLD
+}
+
 function setContent(content: string, flushHistory = false): void {
   // 同步当前文件路径，供图片路径转换使用
   setCurrentImageFilePath(currentFilePath)
@@ -2797,7 +2887,7 @@ function setContent(content: string, flushHistory = false): void {
   // save writes the same markers the file already used.
   const detectedStyle = detectMarkdownStyle(content)
   applyMarkdownStyle(detectedStyle)
-  if (content.length >= LARGE_DOCUMENT_SOURCE_THRESHOLD) {
+  if (isLargeDocument(content)) {
     // ProseMirror renders the whole document eagerly. Keep very large files in
     // the existing source editor so opening them stays responsive on Windows.
     enterSourceMode(content)
@@ -3085,6 +3175,23 @@ function applyAppearanceFontSize(): void {
       renderTabBar()
     }
   })
+  // docx转md：转换出的 Markdown 直接进右侧编辑器（不像 PDF/图片那样有 full.md
+  // 文件这一层，全文一次返回），标脏后用户接着校对 / 保存。
+  initDocxView(api, {
+    onMarkdownText: (markdown) => {
+      setContent(markdown, true)
+      setDirty()
+    },
+    // 用户在面板里选了文档：记回标签页（标签条上的名字跟着变），并告诉主进程 ——
+    // 「另存为」会用文档名当默认文件名。
+    onDocxSourceChange: (path) => {
+      const tab = activeTab()
+      if (!tab || !tab.docxTab) return
+      tab.docxPath = path
+      reportActiveSource(tab)
+      renderTabBar()
+    }
+  })
   // 工具箱（帮助 → 工具箱）：整页工具界面。选中的源文件记回标签页。
   initToolView(api, {
     onToolSourceChange: (path) => {
@@ -3102,7 +3209,7 @@ function applyAppearanceFontSize(): void {
       // 插进虚空。先切回（或新建）一个可编辑的文档标签页，再插。
       const current = activeTab()
       const editable = (tab: DocumentTab): boolean =>
-        tab.kind === 'document' && !tab.solver && !tab.tool && !tab.pdfTab && !tab.imageTab
+        tab.kind === 'document' && !tab.solver && !tab.tool && !tab.pdfTab && !tab.imageTab && !tab.docxTab
       if (current && !editable(current)) {
         const target = [...tabs].reverse().find(editable)
         if (target) {
@@ -3146,7 +3253,7 @@ function applyAppearanceFontSize(): void {
   initAssistant(api, {
     isAvailable: () => {
       const tab = activeTab()
-      if (!tab || tab.kind !== 'document' || tab.pdfTab || tab.imageTab || tab.tool) return false
+      if (!tab || tab.kind !== 'document' || tab.pdfTab || tab.imageTab || tab.docxTab || tab.tool) return false
       // 源码模式（含大文件被强制切进去的那种）下没有 ProseMirror 文档可改。
       return !sourceModeActive
     },
@@ -3155,7 +3262,7 @@ function applyAppearanceFontSize(): void {
       if (sourceModeActive) {
         return isChinese() ? '源码模式下不可用（切回所见即所得）' : 'Not available in source mode'
       }
-      if (!tab || tab.kind !== 'document' || tab.pdfTab || tab.imageTab || tab.tool) {
+      if (!tab || tab.kind !== 'document' || tab.pdfTab || tab.imageTab || tab.docxTab || tab.tool) {
         return isChinese() ? '当前标签页没有可编辑的 Markdown' : 'This tab has no editable Markdown'
       }
       return ''
@@ -3237,52 +3344,9 @@ function applyAppearanceFontSize(): void {
   api.onMenuExportHTML(() => { void exportCurrentHTML() })
   api.onMenuExportDOCX(() => { void api.exportDOCX(getContent(), getExportFormulaEnginePreference()) })
   api.onMenuExportImage((preset) => { void exportCurrentImage(preset) })
-  api.onMenuImportDocx(async () => {
-    releaseMermaidRenderer()
-    const result = await api.importDocx()
-    if (!result) return // 用户取消或转换失败
-    // 当前 tab 为空/未保存 → 复用它；否则新建 tab 避免覆盖未保存内容
-    //（提交页 / 类docx文档页 / PDF 对照 / 图片转md / 工具箱 都是表单、画布或
-    //  整页视图，不能承载文档内容，一律走新建）
-    const current = activeTab()
-    if (
-      current &&
-      current.kind === 'document' &&
-      !current.filePath &&
-      !current.dirty &&
-      !current.pdfTab &&
-      !current.imageTab &&
-      !current.tool &&
-      !current.texo &&
-      !current.solver &&
-      // 后台管理系统整页接管，导入的内容不能落在它身上（同 ensureTab 的守卫）
-      !current.adminPanel
-    ) {
-      currentFilePath = null
-      applyContent(result.content)
-      current.filePath = null
-      current.content = result.content
-      current.diskContent = null
-    } else {
-      await openNewTab()
-      applyContent(result.content)
-      const tab = activeTab()
-      if (tab) {
-        tab.filePath = null
-        tab.content = result.content
-        tab.diskContent = null
-      }
-    }
-    updateFileTitle()
-    updatePanelVisibility()
-    refreshSiblings()
-    scheduleOutlineUpdate()
-    renderTabBar()
-    // 导入结果以所见即所得呈现（applyContent → setContent 末尾已
-    // exitSourceMode）：转换后的 Markdown 由编辑器即时渲染，可直接校对版式。
-    const tab = activeTab()
-    if (tab) tab.sourceMode = false
-  })
+  // 菜单「文件 → docx转md」的转换结果：落在 docx 标签页右侧的编辑器里（不再
+  // 另开文档标签页 —— 与图片转md 一致，选文档 / 转换 / 校对都在同一个页面里）。
+  // 注意这段在下面 initDocxView 的钩子里做，这里不再有菜单级转换。
 
   api.onNewFile(async () => {
     // 新文档要落在（可能为此新建的）文档标签页上：当前这份先存回它自己的记录，

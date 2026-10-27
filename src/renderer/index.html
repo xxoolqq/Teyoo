@@ -400,6 +400,63 @@
     <!-- 进度 / 结果提示：转换中与失败原因都写在这里。 -->
     <p id="image-status" class="image-status" aria-live="polite" hidden></p>
   </aside>
+  <!-- docx转md 视图（菜单「文件 → docx转md」开的标签页）：左侧是源 Word 文档的
+       PDF 版式预览，右侧编辑器放转换出来的 Markdown。默认隐藏，docx-view.ts 在
+       切进该标签页时显示它、切走时收起。与图片转md 同一骨架 —— 先开标签页，文档
+       在页面里选（选完就自动转换，按钮用来重新转换）。 -->
+  <aside id="docx-panel" aria-label="Word 文档" hidden>
+    <div class="docx-panel-head">
+      <span class="docx-panel-title">Word 文档</span>
+      <span id="docx-source-name" class="docx-source-name"></span>
+      <!-- 重新转换：选中文档后才露出来（没源文件就没有可转换的东西）。 -->
+      <button id="docx-convert-btn" class="docx-panel-btn" type="button" hidden>重新转换</button>
+      <!-- 预览 PDF 存在应用的缓存目录里（不是 docx 同目录），这两个按钮负责
+           「拿得走」：导出到文档同目录 / 在文件管理器里定位它。都要有预览才露出来。 -->
+      <button id="docx-export-btn" class="docx-panel-btn" type="button" hidden>导出 PDF</button>
+      <button id="docx-reveal-btn" class="docx-panel-btn docx-icon-btn" type="button" hidden
+              aria-label="在文件夹中显示预览 PDF">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+      </button>
+    </div>
+    <!-- 转换中的加载态：绝对定位盖住 head 以下的内容区，左栏不至于空着干等。
+         只在「PDF 还没画出来」时显示（见 docx-view.ts 的 syncStatus）。 -->
+    <div id="docx-loading" class="docx-loading" hidden>
+      <span class="docx-spinner" aria-hidden="true"></span>
+      <span id="docx-loading-text" class="docx-loading-text"></span>
+    </div>
+    <!-- 版式预览：docx 由本机 Word 另存成 PDF（resources/bin/doc2pdf.exe），再用
+         pdf.js 画成一叠 canvas（见 renderer/pdf-canvas.ts）。 -->
+    <div id="docx-pdf" class="docx-pdf" hidden></div>
+    <!-- 还没生成预览时（以及预览失败时）：文件名 + 说明。转换结果落在右边编辑器，
+         这里不重复展示正文。 -->
+    <div id="docx-file" class="docx-file" hidden>
+      <div class="docx-file-card">
+        <span class="docx-file-icon" aria-hidden="true">DOCX</span>
+        <span class="docx-file-text">
+          <span id="docx-file-name" class="docx-file-name"></span>
+          <!-- 这行小字由 docx-view.ts 的 setFileHint 按状态改写（转换中 / 失败可重试）。 -->
+          <span id="docx-file-hint" class="docx-file-hint">正在转换…</span>
+        </span>
+      </div>
+      <p class="docx-file-tip">
+        转换分两步、都在本机完成（不联网）：先用 Word 生成 PDF 版式预览放在左边，
+        再把正文、表格、图片解析成 Markdown 填到右边。没装 Word 时预览会失败，
+        Markdown 照常生成。
+      </p>
+    </div>
+    <!-- 空态：标签页刚开出来还没选文档。 -->
+    <div id="docx-empty" class="docx-empty">
+      <p id="docx-empty-text" class="docx-empty-text"></p>
+      <button id="docx-open-btn" class="docx-open-btn" type="button">选择 Word 文档…</button>
+    </div>
+    <!-- 进度 / 结果提示：转换中与失败原因都写在这里。 -->
+    <p id="docx-status" class="docx-status" aria-live="polite" hidden></p>
+  </aside>
+  <!-- docx 面板与编辑器之间的分隔条：拖动改左栏宽度（docx-view.ts 的 bindDocxResizer）。 -->
+  <div id="docx-resizer" aria-hidden="true" hidden></div>
   <!-- 后台管理系统标签页（菜单「帮助 → 后台管理系统」）：一个 Vue 3 应用，整页
        接管编辑区（不显示编辑器与工具栏，见 base.css 的 body.admin-panel-view）。
        默认隐藏，src/adminPanel/host.ts 在切进该标签页时显示它并挂载应用。

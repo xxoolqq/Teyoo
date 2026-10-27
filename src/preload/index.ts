@@ -168,8 +168,21 @@ export interface ElectronAPI {
   print: () => Promise<boolean>
   exportHTML: (snapshot: { content: string; html: string; styles: string; bodyClass: string }) => Promise<boolean>
   exportDOCX: (content: string, formulaEngine?: string) => Promise<boolean>
-  // 导入 .docx → Markdown（主进程弹对话框 + mammoth/dwml-ts 转换）
-  importDocx: () => Promise<{ path: string; content: string } | null>
+  // 「docx转md」标签页：选 Word 文档（只弹对话框，转换要另外点按钮）
+  pickDocxFile: () => Promise<string | null>
+  // 「docx转md」标签页：把选中的 docx 转成 Markdown（mammoth/dwml-ts，选项读主进程偏好）
+  convertDocx: (path: string) => Promise<{ ok: boolean; markdown?: string; warnings?: string[]; error?: string }>
+  // 「docx转md」标签页左栏的版式预览：docx 由本机 Word 另存为 PDF，返回 PDF 路径
+  //（渲染端再用 readPdfFile 取字节、pdf.js 画）。没装 Word 时 ok=false，不影响 Markdown。
+  // PDF 落在 userData 缓存里，同一份文档（内容哈希相同）第二次直接命中，fromCache=true。
+  docxToPdf: (path: string) => Promise<{ ok: boolean; pdfPath?: string; error?: string; fromCache?: boolean }>
+  // 预览 PDF 在缓存目录里，不在用户眼皮底下：在系统文件管理器里定位它
+  docxRevealPreview: (pdfPath: string) => Promise<boolean>
+  // 把预览 PDF 复制到 docx 同目录（<name>.pdf）；同名文件已存在时由主进程询问是否覆盖
+  docxExportPdf: (sourcePath: string, pdfPath: string) =>
+    Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>
+  // docx转md 标签页挂着的源文档：主进程用它给「另存为」起默认文件名
+  setActiveDocxPath: (path: string | null) => void
   // 类 docx 文档标签页（canvas-editor）的读写通道：文本 ↔ 元素树的转换在做
   // 渲染端，主进程只管弹系统对话框与读写文件。与上面那条（Markdown ↔ docx）
   // 是两套互不相关的东西。
@@ -301,6 +314,8 @@ export interface ElectronAPI {
   onMenuPdfTab: (callback: () => void) => void
   // 菜单「文件 → 图片转md」：开一个图片转md 标签页。
   onMenuImageTab: (callback: () => void) => void
+  // 菜单「文件 → docx转md」：开一个 docx转md 标签页（文档在页面里选）。
+  onMenuDocxTab: (callback: () => void) => void
   // 菜单「文件 → 新建类docx文档」：开一个 canvas-editor 标签页。
   onMenuNewCanvasDoc: (callback: () => void) => void
   // 菜单「帮助 → 工具箱」：开一个工具箱标签页（目前是 PDF拆分）。
@@ -310,7 +325,6 @@ export interface ElectronAPI {
   onMenuPrintPreview: (callback: () => void) => void
   onMenuExportHTML: (callback: () => void) => void
   onMenuExportDOCX: (callback: () => void) => void
-  onMenuImportDocx: (callback: () => void) => void
   onMenuExportImage: (callback: (preset: ImageExportPreset) => void) => void
   onSetTheme: (callback: (theme: string) => void) => void
   onSetCustomCSS: (callback: (css: string) => void) => void
@@ -372,7 +386,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
   print: () => ipcRenderer.invoke('print') as Promise<boolean>,
   exportHTML: (snapshot: { content: string; html: string; styles: string; bodyClass: string }) => ipcRenderer.invoke('export-html', snapshot),
   exportDOCX: (content: string, formulaEngine?: string) => ipcRenderer.invoke('export-docx', content, formulaEngine),
-  importDocx: () => ipcRenderer.invoke('import-docx') as Promise<{ path: string; content: string } | null>,
+  pickDocxFile: () => ipcRenderer.invoke('pick-docx-file') as Promise<string | null>,
+  convertDocx: (path: string) =>
+    ipcRenderer.invoke('convert-docx', path) as Promise<{
+      ok: boolean
+      markdown?: string
+      warnings?: string[]
+      error?: string
+    }>,
+  docxToPdf: (path: string) =>
+    ipcRenderer.invoke('docx-to-pdf', path) as Promise<{
+      ok: boolean
+      pdfPath?: string
+      error?: string
+      fromCache?: boolean
+    }>,
+  docxRevealPreview: (pdfPath: string) => ipcRenderer.invoke('docx-reveal-preview', pdfPath) as Promise<boolean>,
+  docxExportPdf: (sourcePath: string, pdfPath: string) =>
+    ipcRenderer.invoke('docx-export-pdf', sourcePath, pdfPath) as Promise<{
+      ok: boolean
+      path?: string
+      canceled?: boolean
+      error?: string
+    }>,
+  setActiveDocxPath: (path: string | null) => ipcRenderer.send('set-active-docx-path', path),
   pickCanvasMarkdown: () => ipcRenderer.invoke('canvas-pick-md') as Promise<{ path: string; content: string } | null>,
   pickCanvasJson: () => ipcRenderer.invoke('canvas-pick-json') as Promise<{ path: string; data: CanvasEditorData } | null>,
   saveCanvasMarkdown: (content: string, fileName?: string) => ipcRenderer.invoke('canvas-save-md', content, fileName) as Promise<string | null>,
@@ -494,6 +531,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuImageTab: (callback: () => void) => {
     ipcRenderer.on('menu-image-tab', () => callback())
   },
+  onMenuDocxTab: (callback: () => void) => {
+    ipcRenderer.on('menu-docx-tab', () => callback())
+  },
   onMenuNewCanvasDoc: (callback: () => void) => {
     ipcRenderer.on('menu-new-canvas-doc', () => callback())
   },
@@ -532,9 +572,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMenuExportDOCX: (callback: () => void) => {
     ipcRenderer.on('menu-export-docx', () => callback())
-  },
-  onMenuImportDocx: (callback: () => void) => {
-    ipcRenderer.on('menu-import-docx', () => callback())
   },
   onMenuExportImage: (callback: (preset: ImageExportPreset) => void) => {
     ipcRenderer.on('menu-export-image', (_event, preset) => {
