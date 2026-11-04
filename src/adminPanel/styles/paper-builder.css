@@ -1,0 +1,829 @@
+/* 智能组卷：左挑题、右成卷。
+   配色与间距按 MathBank 那张截图对齐：浅灰底、白卡片、紫色主按钮。 */
+
+#paper-builder {
+  --pb-accent: #7c5cd6;
+  --pb-accent-strong: #6b49c8;
+  --pb-accent-weak: #f1ecfb;
+  --pb-bg: #f5f7fb;
+  --pb-surface: #ffffff;
+  --pb-border: #e6eaf2;
+  --pb-text: #1e293b;
+  --pb-text-weak: #64748b;
+  --pb-text-faint: #94a3b8;
+  --pb-ok: #16a34a;
+  --pb-danger: #dc2626;
+
+  /* 正文无衬线栈。题目卡片的题面再在前面挂 'BankFillRule'（注册在
+     styles/admin.css），只为了修全角下划线 U+FF3F —— 微软雅黑那个字形
+     左右留空隙，填空横线连写就断成一截截，与本地题库同一个坑。 */
+  --pb-font-ui: 'Inter', 'Outfit', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC',
+    'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei', '微软雅黑', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: hidden;
+  background: var(--pb-bg);
+  color: var(--pb-text);
+  font-family: var(--pb-font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Tailwind preflight 被关掉了，按钮/输入框的默认外观得自己抹平 */
+:where(#paper-builder) *,
+:where(#paper-builder) *::before,
+:where(#paper-builder) *::after {
+  box-sizing: border-box;
+}
+
+:where(#paper-builder) button {
+  appearance: none;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+:where(#paper-builder) button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+:where(#paper-builder) input,
+:where(#paper-builder) select {
+  margin: 0;
+  border: 1px solid var(--pb-border);
+  border-radius: 8px;
+  background: var(--pb-surface);
+  color: var(--pb-text);
+  font: inherit;
+  outline: none;
+}
+
+:where(#paper-builder) input:focus,
+:where(#paper-builder) select:focus {
+  border-color: var(--pb-accent);
+  box-shadow: 0 0 0 3px rgba(124, 92, 214, 0.12);
+}
+
+:where(#paper-builder) ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ── 顶部命令条 ─────────────────────────────────────────────────────────── */
+
+#paper-builder .pb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--pb-border);
+  border-radius: 12px;
+  background: var(--pb-surface);
+}
+
+#paper-builder .pb-search {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--pb-border);
+  border-radius: 10px;
+  background: var(--pb-surface);
+  color: var(--pb-text-faint);
+}
+
+#paper-builder .pb-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+#paper-builder .pb-search input:focus {
+  box-shadow: none;
+}
+
+#paper-builder .pb-search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+#paper-builder .pb-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border: 1px solid var(--pb-border);
+  border-radius: 10px;
+  background: var(--pb-surface);
+  color: var(--pb-text-weak);
+  font-size: 12.5px;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+#paper-builder .pb-tool:hover {
+  color: var(--pb-accent);
+  border-color: rgba(124, 92, 214, 0.35);
+}
+
+#paper-builder .pb-tool.is-on {
+  border-color: rgba(124, 92, 214, 0.45);
+  background: var(--pb-accent-weak);
+  color: var(--pb-accent);
+}
+
+#paper-builder .pb-tool.is-accent {
+  border-color: rgba(124, 92, 214, 0.45);
+  color: var(--pb-accent);
+}
+
+/* ── 筛选 / 试卷信息 ────────────────────────────────────────────────────── */
+
+#paper-builder .pb-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border: 1px solid var(--pb-border);
+  border-radius: 12px;
+  background: var(--pb-surface);
+}
+
+#paper-builder .pb-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-filter select {
+  min-width: 96px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+#paper-builder .pb-filter select:disabled {
+  color: var(--pb-text-faint);
+  background: #f8fafc;
+}
+
+#paper-builder .pb-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border: 1px solid var(--pb-border);
+  border-radius: 12px;
+  background: var(--pb-surface);
+}
+
+#paper-builder .pb-info-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-info-field input {
+  width: 300px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+#paper-builder .pb-info-hint {
+  color: var(--pb-text-faint);
+  font-size: 11.5px;
+}
+
+/* ── 主体：列表 + 面板 ──────────────────────────────────────────────────── */
+
+#paper-builder .pb-body {
+  display: grid;
+  /* 右侧试卷预览 516px（396 + 120）：总分/难度比/题宫三行挤在 396 里换行太频繁 */
+  grid-template-columns: minmax(0, 1fr) 516px;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#paper-builder .pb-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+#paper-builder .pb-list-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-right: 4px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* ── 题卡 ──────────────────────────────────────────────────────────────── */
+
+#paper-builder .pb-card {
+  flex: 0 0 auto;
+  padding: 12px 14px;
+  border: 1px solid var(--pb-border);
+  border-radius: 12px;
+  background: var(--pb-surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#paper-builder .pb-card:hover {
+  border-color: rgba(124, 92, 214, 0.28);
+}
+
+#paper-builder .pb-card.is-added {
+  border-color: rgba(124, 92, 214, 0.45);
+  box-shadow: 0 0 0 2px rgba(124, 92, 214, 0.08);
+}
+
+#paper-builder .pb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#paper-builder .pb-card-id {
+  color: var(--pb-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#paper-builder .pb-card-type {
+  color: var(--pb-text-faint);
+  font-size: 12px;
+}
+
+#paper-builder .pb-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+#paper-builder .pb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-link:hover {
+  color: var(--pb-accent);
+}
+
+#paper-builder .pb-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--pb-accent);
+  color: #fff;
+  font-size: 12px;
+  transition: background 0.15s ease;
+}
+
+#paper-builder .pb-add:hover {
+  background: var(--pb-accent-strong);
+}
+
+#paper-builder .pb-add.is-added {
+  background: var(--pb-accent-weak);
+  color: var(--pb-accent);
+}
+
+#paper-builder .pb-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+#paper-builder .pb-diff {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+#paper-builder .pb-card-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pb-text-weak);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#paper-builder .pb-card-source {
+  margin-top: 4px;
+  color: var(--pb-text-faint);
+  font-size: 11.5px;
+}
+
+#paper-builder .pb-card-kp {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--pb-text-faint);
+  font-size: 11.5px;
+}
+
+#paper-builder .pb-kp-label {
+  color: var(--pb-text-weak);
+}
+
+#paper-builder .pb-kp {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #f4f6fa;
+  color: var(--pb-text-weak);
+}
+
+/* 题面正文（md 渲染结果）：前置 'BankFillRule'，填空横线才连成一条直线。
+   只有 U+FF3F 走那个衬线字形，汉字与标点仍是 --pb-font-ui。 */
+#paper-builder .pb-card-body {
+  max-height: 118px;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--pb-text);
+  font-family: 'BankFillRule', var(--pb-font-ui);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+#paper-builder .pb-card-body p {
+  margin: 0 0 3px;
+}
+
+#paper-builder .pb-card-body .pr-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 18px;
+  margin-top: 4px;
+}
+
+#paper-builder .pb-card-body .pr-option b {
+  margin-right: 4px;
+  font-weight: 600;
+}
+
+#paper-builder .pb-card-body .pr-img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+#paper-builder .pb-card-body code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #f1f5f9;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+
+#paper-builder .pb-card-answer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--pb-border);
+  color: var(--pb-text-weak);
+  font-family: 'BankFillRule', var(--pb-font-ui);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+#paper-builder .pb-answer-title {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--pb-accent);
+  font-weight: 600;
+}
+
+#paper-builder .pb-card-answer p {
+  margin: 0 0 3px;
+}
+
+#paper-builder .pb-card-answer .pr-img {
+  max-width: 100%;
+}
+
+#paper-builder .pb-answer-empty {
+  margin: 0;
+  color: var(--pb-text-faint);
+}
+
+/* ── 列表状态与分页 ────────────────────────────────────────────────────── */
+
+#paper-builder .pb-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 48px 16px;
+  border: 1px dashed var(--pb-border);
+  border-radius: 12px;
+  background: var(--pb-surface);
+  color: var(--pb-text-faint);
+  text-align: center;
+}
+
+#paper-builder .pb-state i {
+  font-size: 22px;
+}
+
+#paper-builder .pb-state.is-error {
+  border-style: solid;
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+#paper-builder .pb-state-sub {
+  max-width: 380px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+#paper-builder .pb-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding-top: 8px;
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-pager button {
+  padding: 4px 12px;
+  border: 1px solid var(--pb-border);
+  border-radius: 8px;
+  background: var(--pb-surface);
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-pager button:hover:not(:disabled) {
+  border-color: var(--pb-accent);
+  color: var(--pb-accent);
+}
+
+/* ── 右侧试卷面板 ──────────────────────────────────────────────────────── */
+
+#paper-builder .pb-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+  border: 1px solid var(--pb-border);
+  border-radius: 12px;
+  background: var(--pb-surface);
+  scrollbar-width: thin;
+}
+
+#paper-builder .pb-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+}
+
+#paper-builder .pb-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--pb-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#paper-builder .pb-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e9f9ef;
+  color: var(--pb-ok);
+  font-size: 11px;
+}
+
+#paper-builder .pb-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px;
+  border: 1px solid var(--pb-border);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+#paper-builder .pb-summary-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-total b,
+#paper-builder .pb-count b {
+  color: var(--pb-text);
+  font-size: 13px;
+}
+
+#paper-builder .pb-diffbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--pb-text-weak);
+  font-size: 11.5px;
+}
+
+#paper-builder .pb-diffbar-label {
+  flex: 0 0 auto;
+}
+
+#paper-builder .pb-diffbar-track {
+  display: flex;
+  flex: 1 1 auto;
+  height: 6px;
+  min-width: 40px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8ecf3;
+}
+
+#paper-builder .pb-diffbar-track i {
+  display: block;
+  flex-basis: 0;
+}
+
+#paper-builder .pb-diffbar-text {
+  flex: 0 0 auto;
+  max-width: 132px;
+  overflow: hidden;
+  color: var(--pb-text-faint);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#paper-builder .pb-gap-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-gap-row select {
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+#paper-builder .pb-gap-row input {
+  width: 62px;
+  padding: 4px 6px;
+  text-align: center;
+  font-size: 12px;
+}
+
+#paper-builder .pb-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#paper-builder .pb-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 0;
+  padding: 8px 10px;
+  border: 1px solid var(--pb-border);
+  border-radius: 9px;
+  background: var(--pb-surface);
+  color: var(--pb-text-weak);
+  font-size: 12.5px;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+#paper-builder .pb-ghost:hover:not(:disabled) {
+  border-color: rgba(124, 92, 214, 0.4);
+  color: var(--pb-accent);
+}
+
+#paper-builder .pb-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1.8 1 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--pb-accent);
+  color: #fff;
+  font-size: 12.5px;
+  transition: background 0.15s ease;
+}
+
+#paper-builder .pb-primary:hover:not(:disabled) {
+  background: var(--pb-accent-strong);
+}
+
+#paper-builder .pb-exports {
+  display: flex;
+  gap: 8px;
+}
+
+#paper-builder .pb-wide {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+#paper-builder .pb-hint {
+  margin: 0;
+  color: var(--pb-text-faint);
+  font-size: 11.5px;
+}
+
+/* ── 卷面题目列表 ──────────────────────────────────────────────────────── */
+
+#paper-builder .pb-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+#paper-builder .pb-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--pb-border);
+  border-radius: 8px;
+  background: #fcfdff;
+  font-size: 12px;
+}
+
+#paper-builder .pb-entry-no {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--pb-accent-weak);
+  color: var(--pb-accent);
+  font-size: 11px;
+}
+
+#paper-builder .pb-entry-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pb-text-weak);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#paper-builder .pb-entry-score {
+  width: 50px;
+  padding: 2px 4px;
+  text-align: center;
+  font-size: 12px;
+}
+
+#paper-builder .pb-entry-unit {
+  color: var(--pb-text-faint);
+  font-size: 11.5px;
+}
+
+#paper-builder .pb-entry-remove {
+  flex: 0 0 auto;
+  color: var(--pb-text-faint);
+  font-size: 12px;
+}
+
+#paper-builder .pb-entry-remove:hover {
+  color: var(--pb-danger);
+}
+
+/* ── 最近导出 ──────────────────────────────────────────────────────────── */
+
+#paper-builder .pb-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--pb-border);
+}
+
+#paper-builder .pb-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--pb-text-weak);
+  font-size: 12px;
+}
+
+#paper-builder .pb-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#paper-builder .pb-history-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--pb-text-faint);
+  font-size: 11.5px;
+}
+
+#paper-builder .pb-history-list .is-ok {
+  color: var(--pb-ok);
+}
+
+#paper-builder .pb-history-list .is-fail {
+  color: var(--pb-danger);
+}
+
+#paper-builder .pb-history-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #2563eb;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#paper-builder .pb-history-list time {
+  flex: 0 0 auto;
+  color: var(--pb-text-faint);
+}
+
+#paper-builder .pb-history-empty {
+  margin: 0;
+  color: var(--pb-text-faint);
+  font-size: 11.5px;
+}
+
+/* ── 窄窗口：面板掉到下面 ──────────────────────────────────────────────── */
+
+@media (max-width: 1300px) {
+  #paper-builder .pb-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  #paper-builder .pb-panel {
+    max-height: 46vh;
+  }
+}

@@ -1,0 +1,779 @@
+/* 导入中心的非工具类样式。
+ *
+ * 来源：MathBank `static/css/app.css` 里与这一屏相关的规则（.import-*、.ui-state*、
+ * .glass-*、workspace-context-heading），数值原样搬过来，只做了三件事：
+ *
+ *   1. 每条选择器前加 `#daoru-center`。这套界面与 Teyoo 共用同一个 document，
+ *      规则漏出去就会改到宿主（admin.css 的注释里也是同一条规矩）。
+ *   2. 配色变量就地定义 —— 原页面定义在 :root 的 violet 主题里，这里不读宿主主题，
+ *      因为这一屏在 MathBank 里就是固定的浅紫配色。
+ *   3. 补一小份作用域化的 Tailwind preflight。生成工具类时关掉了 preflight（它会把
+ *      reset 撒到整个 document），但这一屏的像素恰恰依赖那套 reset：没有 border-box
+ *      和清零的 margin/padding，宽度和间距全都不对。
+ *
+ * 不要随手调这里的数字：像素级还原的基准是 MathBank 渲染出来的样子。
+ * 工具类在 daoru-center.tailwind.css，那份是生成的，不要手改。
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/inter-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/outfit-latin.woff2') format('woff2');
+}
+
+/* ── 作用域化的 preflight 补偿 ───────────────────────────────────────────── */
+
+/* 一律走 :where()：这类 reset 必须比工具类（.text-lg / .px-4 / .bg-slate-100）
+ * 特异性低，否则会把 px-4 的 padding、text-lg 的字号一起清掉。:where() 的参数不计
+ * 入特异性，所以下面每条规则的实际权重都是 0 —— 和 Tailwind preflight 一样，
+ * 只压 UA 默认样式，不压任何 class。 */
+
+:where(#daoru-center),
+:where(#daoru-center) *,
+:where(#daoru-center) *::before,
+:where(#daoru-center) *::after {
+  box-sizing: border-box;
+}
+
+:where(#daoru-center) :where(h3, h4, p, ul, ol) {
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+:where(#daoru-center) :where(ul, ol) {
+  list-style: none;
+}
+
+:where(#daoru-center) :where(button) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+:where(#daoru-center) :where(input, select, textarea) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+:where(#daoru-center) :where(textarea) {
+  resize: none;
+}
+
+:where(#daoru-center) :where(summary) {
+  cursor: pointer;
+}
+
+#daoru-center ::placeholder {
+  color: #9ca3af;
+  opacity: 1;
+}
+
+/* ── 根容器 ──────────────────────────────────────────────────────────────── */
+
+#daoru-center {
+  /* violet 主题的品牌色（原页面 :root 里的 --brand-*-rgb） */
+  --brand-50-rgb: 245, 243, 255;
+  --brand-100-rgb: 237, 233, 254;
+  --brand-200-rgb: 221, 214, 254;
+  --brand-500-rgb: 139, 92, 246;
+  --brand-600-rgb: 124, 58, 237;
+  --brand-700-rgb: 109, 40, 217;
+  --brand-900-rgb: 76, 29, 149;
+  --brand-rgb: 124, 58, 237;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-tertiary: #94a3b8;
+
+  /* .glass-card / .glass-input 依赖的两个变量，取自 MathBank app.css 的 :root */
+  --apple-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  display: flex;
+  flex: 1 1 auto;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 1rem;
+  overflow: hidden;
+  background: rgba(245, 247, 251, 0.96);
+  color: var(--text-primary);
+  font-family: 'Inter', 'Outfit', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC',
+    'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei', '微软雅黑', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+#daoru-center .import-workspace-shell {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 20px;
+  background: rgba(248, 250, 252, 0.97);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.1);
+}
+
+/* 标题区：视觉隐藏（sr-only），只为无障碍保留「导入中心」这个名字 */
+#daoru-center .import-workspace-header {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0 !important;
+}
+
+#daoru-center .import-workspace-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+#daoru-center .import-workspace-heading-icon {
+  display: inline-flex;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(var(--brand-500-rgb), 0.16);
+  border-radius: 12px;
+  background: rgba(var(--brand-100-rgb), 0.76);
+  color: rgb(var(--brand-600-rgb));
+}
+
+#daoru-center .import-workspace-heading p {
+  margin-top: 0.2rem;
+  color: var(--text-tertiary);
+  font-size: 0.66rem;
+  font-weight: 550;
+}
+
+/* ── 步骤条 ──────────────────────────────────────────────────────────────── */
+
+#daoru-center .import-workspace-steps {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+#daoru-center .import-workspace-steps li {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+  min-width: 0;
+  min-height: 50px;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  background: rgba(248, 250, 252, 0.82);
+}
+
+#daoru-center .import-workspace-steps li > span {
+  display: inline-flex;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: var(--text-tertiary);
+  background: rgba(148, 163, 184, 0.14);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+#daoru-center .import-workspace-steps li > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#daoru-center .import-workspace-steps strong {
+  font-size: 0.72rem;
+}
+
+#daoru-center .import-workspace-steps small {
+  margin-top: 0.1rem;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 0.58rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#daoru-center .import-workspace-steps li.is-current {
+  border-color: rgba(var(--brand-500-rgb), 0.28);
+  background: rgba(var(--brand-50-rgb), 0.88);
+  color: rgb(var(--brand-700-rgb));
+}
+
+#daoru-center .import-workspace-steps li.is-current > span {
+  background: rgb(var(--brand-500-rgb));
+  color: #fff;
+}
+
+/* ── 两栏 ────────────────────────────────────────────────────────────────── */
+
+#daoru-center .import-workspace-content {
+  gap: 0.85rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.85rem;
+  background: #f5f7fb;
+}
+
+#daoru-center #importInputPane.import-source-pane,
+#daoru-center #importReviewPane.import-result-pane {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.045);
+}
+
+#daoru-center #importInputPane.import-source-pane {
+  width: 44%;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+#daoru-center #importReviewPane.import-result-pane {
+  width: 56%;
+  padding: 1rem;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+/* ── 左栏折叠 ────────────────────────────────────────────────────────────
+ * 右上角开关悬在录入面板顶角；收起后按钮移到审查区左上角用于恢复。
+ * 44% 与 #importInputPane 的宽度同源 —— 调宽度时两处一起改。 */
+#daoru-center #importWorkspaceContent {
+  position: relative;
+}
+
+#daoru-center #importReviewPane.is-full {
+  width: 100%;
+}
+
+#daoru-center .daoru-pane-toggle {
+  position: absolute;
+  top: 10px;
+  left: calc(44% - 36px);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #64748b;
+  font-size: 11px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#daoru-center .daoru-pane-toggle:hover {
+  border-color: #94a3b8;
+  background: #ffffff;
+  color: #1e293b;
+}
+
+#daoru-center .daoru-pane-toggle.is-collapsed {
+  left: 10px;
+}
+
+/* ── 审查卡正文：左「编辑」右「渲染预览」两栏等高 ──────────────────────────
+ *
+ * 数值与 ParseResultCard.vue 模板里的行内样式是同一套，双保险：行内样式随 JS
+ * chunk 下发，这条随 CSS chunk 下发 —— 哪边先到都生效，避免出现「JS 新了 CSS 旧
+ * （或反过来）」的半截状态。两边只许改一处时，另一处必须同步，数值不一致的表现
+ * 就是两栏下边线错开。
+ *
+ * 预览框高度固定：flex 撑满整行剩余空间，内容超出在框内滚（overflow-y: auto），
+ * 绝不随内容长高。 */
+#daoru-center .pc-body {
+  height: 250px;
+}
+
+#daoru-center .pc-edit-col,
+#daoru-center .pc-preview-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#daoru-center .pc-edit-col {
+  gap: 8px;
+}
+
+/* 「渲染预览」标签行与预览框的间距：3px（左侧编辑栏的 4px 不动，按需求只改右侧） */
+#daoru-center .pc-preview-col {
+  gap: 3px;
+}
+
+#daoru-center .pc-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+#daoru-center .pc-edit-field textarea {
+  flex: 1 1 0;
+  min-height: 96px;
+}
+
+/* 题干编辑行的「插入长空白」小按钮：低调的灰图标，悬停变深 */
+#daoru-center .pc-insert-blank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+#daoru-center .pc-insert-blank:hover {
+  color: #1e293b;
+  background: rgba(241, 245, 249, 0.9);
+}
+
+#daoru-center .pc-preview {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  border: 0;
+}
+
+/* ── 预览内容（完整扩展语法渲染：mdast→DOM，公式 MathJax） ────────────
+ * 各扩展的视觉样式类（.emph-dot / .tianzi-grid / .sub-block / .cols 等）
+ * 由 extensions/*/style.css 全局提供；这里只管预览容器自身的排版。 */
+#daoru-center .pc-preview-content {
+  padding: 8px 10px;
+  color: #1e293b;
+  font-size: 12px;
+  line-height: 1.9;
+  /* HTML 默认把连续半角空格折叠成一个 —— 题库导出的选项对齐（A.  x   B.  y）
+   * 全靠多空格，一折叠选项就挤成一团。pre-wrap 保留原始空白序列，同时仍
+   * 允许自动换行；换行本身由 remark-breaks 转成 <br>，不会重复。 */
+  white-space: pre-wrap;
+}
+
+#daoru-center .pc-preview-content p {
+  margin: 0 0 3px;
+}
+
+#daoru-center .pc-preview-content p:last-child {
+  margin-bottom: 0;
+}
+
+/* 答案与解析：与题干之间只留空隙，绝无线条 */
+#daoru-center .pc-preview-content .pc-preview-answer {
+  margin-top: 12px;
+  padding-top: 6px;
+}
+
+#daoru-center .pc-preview-content img {
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+#daoru-center .pc-preview-content code {
+  background: rgba(175, 184, 193, 0.2);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+#daoru-center .pc-preview-content pre {
+  background: rgba(241, 245, 249, 0.9);
+  padding: 6px 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+#daoru-center .pc-preview-content blockquote {
+  margin: 3px 0;
+  padding: 2px 8px;
+  color: #64748b;
+  background: rgba(241, 245, 249, 0.6);
+}
+
+#daoru-center .pc-preview-content ul,
+#daoru-center .pc-preview-content ol {
+  margin: 3px 0;
+  padding-left: 1.4em;
+}
+
+/* gfm 表格：淡灰描边，与主题一致 */
+#daoru-center .pc-preview-content table {
+  border-collapse: collapse;
+  margin: 4px 0;
+}
+
+#daoru-center .pc-preview-content th,
+#daoru-center .pc-preview-content td {
+  border: 1px solid #e2e8f0;
+  padding: 2px 8px;
+}
+
+#daoru-center .pc-preview-content th {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+/* 块级公式（$$…$$）与分栏在窄预览里的兜底 */
+#daoru-center .pc-preview-content .pc-preview-math {
+  margin: 3px 0;
+  overflow-x: auto;
+}
+
+#daoru-center .pc-preview-content .cols {
+  max-width: 100%;
+}
+
+/* 左栏里的卡片：原页面用 !important 盖掉 Tailwind 的 padding/边框 */
+#daoru-center .import-config-card {
+  padding: 0.85rem !important;
+  border: 1px solid rgba(148, 163, 184, 0.16) !important;
+  border-radius: 13px !important;
+  background: rgba(248, 250, 252, 0.76) !important;
+}
+
+#daoru-center .import-config-card:focus-within {
+  border-color: rgba(var(--brand-500-rgb), 0.34) !important;
+  box-shadow: 0 0 0 3px rgba(var(--brand-500-rgb), 0.08);
+}
+
+#daoru-center #importInputPane > .import-config-card {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+/*
+ * 学段四选一：横向等分。
+ *
+ * 不用 Tailwind 的 grid-cols-4 —— 构建产物里根本没有这个工具类
+ * （项目只保留了一部分 utilities），写了等于没写，四个按钮会各占一整行。
+ */
+#daoru-center .import-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.375rem;
+}
+
+#daoru-center .import-stage-grid > button {
+  padding: 0.25rem 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+}
+
+#daoru-center .import-primary-actions {
+  position: sticky;
+  bottom: -1rem;
+  z-index: 4;
+  margin: 0 -1rem -1rem;
+  padding: 0.75rem 1rem 1rem !important;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(12px);
+}
+
+/* ── 输入细节（字号覆盖，原页面用 !important 定死 14px） ────────────────── */
+
+#daoru-center #importInputPane :is(label, input, button),
+#daoru-center #texFileName {
+  font-size: 14px !important;
+}
+
+#daoru-center #importInputPane #texDropzone {
+  min-height: 130px;
+}
+
+#daoru-center .import-file-summary {
+  padding: 12px 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 拖入高亮：原页面由 JS 加类，这里用 .is-dragging */
+#daoru-center .is-dragging {
+  border-color: rgba(var(--brand-500-rgb), 0.8);
+  background: rgba(var(--brand-50-rgb), 0.2);
+}
+
+/* ── 右栏三态 ────────────────────────────────────────────────────────────── */
+
+#daoru-center .import-result-placeholder {
+  min-height: 360px;
+  border: 1px dashed rgba(148, 163, 184, 0.34);
+  border-radius: 15px;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(var(--brand-100-rgb), 0.58), transparent 28%),
+    rgba(255, 255, 255, 0.68);
+}
+
+#daoru-center .ui-state {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 180px;
+  padding: 2rem 1.25rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+#daoru-center .ui-state > i,
+#daoru-center .ui-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid rgba(var(--brand-200-rgb), 0.72);
+  border-radius: 0.9rem;
+  background: rgba(var(--brand-50-rgb), 0.88);
+  color: rgb(var(--brand-600-rgb));
+  font-size: 1.15rem !important;
+}
+
+#daoru-center .ui-state-title,
+#daoru-center .ui-state > strong {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+#daoru-center .ui-state-description,
+#daoru-center .ui-state > span:not(.ui-state-icon) {
+  max-width: 28rem;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+  line-height: 1.55;
+}
+
+/* ── 玻璃拟态控件 ────────────────────────────────────────────────────────── */
+
+/* 数值与顺序都按 MathBank app.css 的先后排放：.glass-card（1200 行）→
+ * .glass-btn → .glass-select → .glass-input（1310 行）。
+ *
+ * 关于层叠顺序：MathBank 里 Tailwind CDN 的样式在 app.css 之前注入，所以自定义类
+ * 在平手时能压住工具类；本项目是反过来的 —— DaoRuCenter.vue 先 import 本文件、
+ * 后 import tailwind.css，平手时工具类赢。这里没有去调整顺序：逐条核对过，本文件
+ * 与工具类会撞车的声明要么本来就要输给工具类（留给它），要么已经用 !important
+ * 显式钉死（.import-config-card 的内边距/边框、.import-workspace-header 的 sr-only、
+ * input.glass-input 的纵向 padding）。改 daoru-center.css 的引入顺序会连带翻掉
+ * 这些已校准的结果，别顺手调。 */
+
+#daoru-center .glass-card {
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    var(--apple-shadow-sm);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#daoru-center .glass-input {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#daoru-center input.glass-input {
+  height: 34px;
+  box-sizing: border-box;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  line-height: 34px;
+}
+
+#daoru-center .glass-input:focus {
+  border-color: rgba(var(--brand-rgb), 0.7);
+  box-shadow:
+    0 0 0 3px rgba(var(--brand-rgb), 0.1),
+    var(--apple-shadow-sm);
+  background: #ffffff;
+}
+
+#daoru-center .glass-btn {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#daoru-center .glass-btn:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  color: #1e293b;
+}
+
+#daoru-center .glass-btn:active {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transform: translateY(0.5px);
+}
+
+/* 入库期间按钮要禁用。MathBank 没有这条（它靠 JS 直接写 innerHTML 盖掉），
+ * 但 :hover 在禁用按钮上照样触发，不显式压回去就会出现「灰着还跟着变亮」。 */
+#daoru-center .glass-btn:disabled,
+#daoru-center .glass-btn:disabled:hover {
+  border-color: #cbd5e1;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  color: #94a3b8;
+  cursor: default;
+  opacity: 0.75;
+  transform: none;
+}
+
+#daoru-center .glass-btn-primary {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(var(--brand-rgb), 0.75);
+  box-shadow: 0 2px 8px rgba(var(--brand-rgb), 0.15);
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+}
+
+#daoru-center .glass-btn-primary:hover {
+  background: rgba(var(--brand-rgb), 0.85);
+  box-shadow: 0 4px 12px rgba(var(--brand-rgb), 0.2);
+  transform: translateY(-1px);
+}
+
+#daoru-center .glass-btn-primary:active {
+  box-shadow: 0 1px 4px rgba(var(--brand-rgb), 0.15);
+  transform: scale(0.97) translateY(0.5px);
+}
+
+#daoru-center .glass-btn-primary:disabled {
+  cursor: default;
+  opacity: 0.7;
+  transform: none;
+}
+
+/* 「手动解析」按钮：指定品牌蓝背景（#2896cf），与公共 .glass-btn 白底区分。
+ * 禁用态不覆盖 —— 上面的 .glass-btn:disabled 会把它压回白底灰字，
+ * 与其它按钮的禁用表现一致。 */
+#daoru-center .manual-parse-btn {
+  border-color: #2896cf;
+  background: #2896cf;
+  color: #ffffff;
+}
+
+#daoru-center .manual-parse-btn:hover:not(:disabled) {
+  border-color: #2484b6;
+  background: #2484b6;
+  color: #ffffff;
+}
+
+#daoru-center .manual-parse-btn:active:not(:disabled) {
+  background: #20749f;
+  transform: scale(0.98);
+}
+
+#daoru-center .glass-select {
+  height: 34px;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  cursor: pointer;
+  line-height: 34px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#daoru-center .glass-select:focus {
+  border-color: rgba(var(--brand-rgb), 0.7);
+  outline: none;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.1);
+}
+
+/* ── 滚动条（app.css 的 "Custom Scrollbars - Apple Style"） ────────────────
+ * MathBank 是全局 ::-webkit-scrollbar；这里作用域到 #daoru-center，免得改到宿主。
+ * 审查卡的题干/预览区都是可滚动容器，滚动条宽度直接影响内容可用宽度。 */
+
+#daoru-center ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+#daoru-center ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#daoru-center ::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.15);
+  background-clip: content-box;
+}
+
+#daoru-center ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+  background-clip: content-box;
+}
+
+
+/* FontAwesome 的图标定义（.fa-* 的 ::before content 与 @font-face）在
+   assets/fontawesome/css/all.min.css 里，由 DaoRuCenter.vue 引入 ——
+   它的选择器全部以 .fa 开头，与项目现有类名不冲突。 */

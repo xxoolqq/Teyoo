@@ -1,0 +1,1174 @@
+/* 「本地题库」页的样式。
+ *
+ * 来源：MathBank `static/css/app.css` 里题库工作区的规则（.bank-* / .question-card /
+ * .glass-* / .mb-kp-* / .sidebar-pagination* / .paper-card），数值原样搬过来。
+ * 与 daoru-center.css 同一套三条规矩：
+ *
+ *   1. 每条选择器前加 `#local-bank`。这套界面与 Teyoo 共用同一个 document，
+ *      规则漏出去就会改到宿主（admin.css 的注释里也是同一条规矩）。
+ *   2. 配色变量就地定义 —— 原页面定义在 :root 的 violet 主题里，这里不读宿主
+ *      主题，因为这一屏在 MathBank 里就是固定的浅紫配色。
+ *   3. 补一小份作用域化的 preflight。这一屏的像素依赖那套 reset：没有 border-box
+ *      和清零的 margin/padding，宽度和间距全都不对。
+ *
+ * 布局用 grid 固定每个区块的行列号（不靠「按顺序排」）：筛选面板是 v-show 隐藏的，
+ * 一旦靠自动排列，隐藏那一行就会让左右两栏掉进 auto 行、滚动区失效。
+ *
+ * 不要随手调这里的数字：像素级还原的基准是 MathBank 渲染出来的样子。
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/inter-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/outfit-latin.woff2') format('woff2');
+}
+
+/* 填空横线专用字形 'BankFillRule'（只接管 U+FF3F 全角下划线这一个码位）的
+ * @font-face 注册在 styles/admin.css —— 智能组卷也要用同一份字形，放全局
+ * 一份就够。这里只负责把题目正文的字体栈挂上去，见下方的
+ * .bank-question-excerpt / .preview-box。 */
+
+/* ── 作用域化的 preflight 补偿 ───────────────────────────────────────────── */
+
+:where(#local-bank),
+:where(#local-bank) *,
+:where(#local-bank) *::before,
+:where(#local-bank) *::after {
+  box-sizing: border-box;
+}
+
+:where(#local-bank) :where(h1, h2, h3, h4, h5, p, ul, ol, figure) {
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+:where(#local-bank) :where(button) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+:where(#local-bank) :where(input, select) {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+#local-bank ::placeholder {
+  color: #9ca3af;
+  opacity: 1;
+}
+
+/* ── 根容器 ──────────────────────────────────────────────────────────────── */
+
+#local-bank {
+  /* violet 主题的品牌色（原页面 :root 里的 --brand-*-rgb） */
+  --brand-50-rgb: 245, 243, 255;
+  --brand-100-rgb: 237, 233, 254;
+  --brand-200-rgb: 221, 214, 254;
+  --brand-500-rgb: 139, 92, 246;
+  --brand-600-rgb: 124, 58, 237;
+  --brand-700-rgb: 109, 40, 217;
+  --brand-rgb: 124, 58, 237;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-tertiary: #94a3b8;
+  --apple-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  /* 正文无衬线栈；题目正文再在前面挂 'BankFillRule'，只为了修全角下划线 */
+  --bank-font-ui: 'Inter', 'Outfit', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC',
+    'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei', '微软雅黑', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+
+  /* 左右两栏的比例（MathBank 的 --bank-list-track / --bank-detail-track）：
+     拖中间的把手时由脚本改这两个值 */
+  --bank-list-track: 45fr;
+  --bank-detail-track: 55fr;
+
+  display: grid;
+  grid-template-columns: minmax(280px, var(--bank-list-track)) 12px minmax(340px, var(--bank-detail-track));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  row-gap: 0;
+  column-gap: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: hidden;
+  background: #f5f7fb;
+  color: var(--text-primary);
+  font-family: var(--bank-font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── 顶部命令条：库/草稿箱切换 + 搜索 + 筛选 + 新建 ─────────────────────── */
+
+#local-bank .bank-management-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 52px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+#local-bank .bank-management-header :is(button, input, select) {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+#local-bank .bank-sidebar-tabs {
+  flex: 0 0 auto;
+}
+
+#local-bank .glass-tab {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+#local-bank .glass-tab-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.5);
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#local-bank .glass-tab-item i {
+  font-size: 10px;
+}
+
+#local-bank .glass-tab-item:hover {
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+#local-bank .glass-tab-item.is-active {
+  border-color: rgba(var(--brand-rgb), 0.25);
+  background: rgba(var(--brand-rgb), 0.12);
+  color: rgba(var(--brand-rgb), 0.95);
+  box-shadow: 0 1px 4px rgba(var(--brand-rgb), 0.1);
+}
+
+/* 搜索框：放大镜压在左侧内边距里（MathBank 是绝对定位的 span） */
+#local-bank .bank-search-row {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 240px;
+}
+
+#local-bank .bank-search-row > i {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #94a3b8;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+#local-bank .bank-search-row .glass-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px 0 32px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 13px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#local-bank .bank-search-row .glass-input:focus {
+  outline: none;
+  border-color: rgba(var(--brand-rgb), 0.7);
+  box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.1);
+}
+
+#local-bank .glass-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #475569;
+  font-size: 13px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#local-bank .glass-btn:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+#local-bank .bank-filter-toggle[aria-expanded='true'] {
+  border-color: rgb(var(--brand-500-rgb));
+  background: rgba(var(--brand-500-rgb), 0.1);
+  color: rgb(var(--brand-600-rgb));
+}
+
+#local-bank .bank-management-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+#local-bank .glass-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(var(--brand-rgb), 0.82);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(var(--brand-rgb), 0.15);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#local-bank .glass-btn-primary:hover {
+  background: rgba(var(--brand-rgb), 0.9);
+  box-shadow: 0 4px 12px rgba(var(--brand-rgb), 0.2);
+}
+
+#local-bank .glass-btn-primary:active {
+  transform: scale(0.97);
+}
+
+#local-bank .bank-create-btn i,
+#local-bank .bank-filter-toggle i {
+  font-size: 10px;
+}
+
+/* ── 筛选面板（「筛选」按钮展开）───────────────────────────────────────── */
+
+#local-bank .bank-filter-toolbar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+#local-bank .bank-filter-toolbar .glass-select {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background-color: rgba(248, 250, 252, 0.9);
+  color: #334155;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#local-bank .bank-filter-toolbar .glass-select:focus {
+  outline: none;
+  border-color: rgba(var(--brand-rgb), 0.7);
+  box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.1);
+}
+
+#local-bank .bank-clear-filters {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+/* ── 左侧：题目列表 ─────────────────────────────────────────────────────── */
+
+#local-bank .bank-library-panel {
+  grid-column: 1;
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.92);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.055);
+}
+
+#local-bank .bank-list-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 11px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+#local-bank .bank-list-toolbar strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#local-bank .bank-list-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 与右侧排序控件同高同圆角，两个控件并排时才像一组 */
+#local-bank .bank-refresh-btn {
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 5px;
+}
+
+#local-bank .bank-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+#local-bank .bank-sort-control {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.92);
+  color: var(--text-secondary);
+}
+
+#local-bank .bank-sort-control > i {
+  color: rgb(var(--brand-500-rgb));
+  font-size: 11px;
+}
+
+#local-bank .bank-sort-control select {
+  min-height: 36px;
+  padding-right: 4px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+#local-bank .bank-question-list {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+  background: rgba(241, 245, 249, 0.48);
+  scrollbar-gutter: stable;
+}
+
+/* 卡片 */
+#local-bank .bank-question-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#local-bank .bank-question-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--brand-500-rgb), 0.23);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.07);
+}
+
+#local-bank .bank-question-card.is-active {
+  background: rgba(var(--brand-50-rgb), 0.94);
+  box-shadow: 0 8px 22px rgba(var(--brand-500-rgb), 0.1);
+}
+
+#local-bank .bank-question-card.is-active::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 999px;
+  background: rgb(var(--brand-500-rgb));
+}
+
+#local-bank .bank-question-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#local-bank .bank-question-type {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+#local-bank .bank-question-badges {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+#local-bank .badge-difficulty {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#local-bank .badge-seq {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(var(--brand-50-rgb), 1);
+  color: rgb(var(--brand-600-rgb));
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* 难度配色五档：'1'~'5' 由易到难，绿 → 蓝 → 紫
+   与主进程 store.ts 的 EASY_LABELS / utils/paper.ts 的 EASY_META 同一顺序 */
+#local-bank .diff-1 {
+  border: 1px solid rgba(187, 247, 208, 0.6);
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+#local-bank .diff-2 {
+  border: 1px solid rgba(190, 242, 100, 0.6);
+  background: #f7fee7;
+  color: #65a30d;
+}
+
+#local-bank .diff-3 {
+  border: 1px solid rgba(191, 219, 254, 0.6);
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+#local-bank .diff-4 {
+  border: 1px solid rgba(254, 202, 202, 0.6);
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+#local-bank .diff-5 {
+  border: 1px solid rgba(233, 213, 255, 0.6);
+  background: #faf5ff;
+  color: #9333ea;
+}
+
+#local-bank .diff-unknown {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+#local-bank .bank-question-excerpt {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.65;
+}
+
+#local-bank .bank-question-excerpt .katex {
+  font-size: 1.05em;
+}
+
+/* 左栏摘要 + 右栏题干/解析：让 U+FF3F 落到衬线字形上，填空横线才连成一条。
+ * 见文件顶部 'BankFillRule' 的注释；其余字符仍用 --bank-font-ui。 */
+#local-bank .bank-question-excerpt,
+#local-bank .preview-box {
+  font-family: 'BankFillRule', var(--bank-font-ui);
+}
+
+#local-bank .bank-question-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(148, 163, 184, 0.13);
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+#local-bank .bank-question-meta > span:first-child {
+  overflow: hidden;
+  max-width: 140px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#local-bank .bank-question-meta .bank-question-source {
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+
+#local-bank .bank-question-meta time {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* 知识点徽章：MathBank 的 .mb-kp-badge（名称 · 主要/辅助） */
+#local-bank .mb-kp-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+#local-bank .mb-kp-badge {
+  display: inline-block;
+  padding: 3px 6px;
+  border-radius: 7px;
+  background: rgba(var(--brand-500-rgb), 0.1);
+  color: var(--text-primary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* 分页条：等分三段（上一页 / 第 n 页 / 下一页） */
+#local-bank .sidebar-pagination {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.13);
+  background: rgba(255, 255, 255, 0.4);
+}
+
+#local-bank .pagination-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#local-bank .pagination-btn:hover:not(:disabled) {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text-primary);
+}
+
+#local-bank .pagination-btn:disabled {
+  opacity: 0.35;
+  background: transparent;
+  cursor: not-allowed;
+}
+
+#local-bank .pagination-page-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+#local-bank .pagination-jump-input {
+  width: 32px;
+  padding: 2px 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+#local-bank .pagination-jump-input:focus {
+  outline: none;
+  border-color: rgba(var(--brand-rgb), 0.4);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.1);
+}
+
+#local-bank .pagination-jump-input::-webkit-outer-spin-button,
+#local-bank .pagination-jump-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ── 中间把手 ───────────────────────────────────────────────────────────── */
+
+#local-bank .bank-split-resizer {
+  grid-column: 2;
+  grid-row: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 12px;
+  min-height: 0;
+  position: relative;
+  z-index: 12;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+#local-bank .bank-split-resizer-grip {
+  display: block;
+  width: 3px;
+  height: 68px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.42);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.62);
+  transition: width 150ms ease, height 150ms ease, background-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+#local-bank .bank-split-resizer:hover .bank-split-resizer-grip,
+#local-bank .bank-split-resizer.is-dragging .bank-split-resizer-grip {
+  width: 5px;
+  height: 92px;
+  background: rgb(var(--brand-500-rgb));
+  box-shadow: 0 0 0 4px rgba(var(--brand-500-rgb), 0.12);
+}
+
+/* ── 右侧：题目详情 ─────────────────────────────────────────────────────── */
+
+#local-bank .bank-detail-panel {
+  grid-column: 3;
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.055);
+}
+
+#local-bank .bank-preview-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 62px;
+  padding: 0 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.17);
+  border-radius: 18px 18px 0 0;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.035);
+}
+
+#local-bank .bank-preview-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+#local-bank .bank-preview-title i {
+  color: #6366f1;
+}
+
+#local-bank .bank-detail-edit-btn {
+  min-width: 82px;
+  min-height: 38px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#local-bank .bank-detail-edit-btn:disabled {
+  opacity: 0.42;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+#local-bank .bank-preview-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* 试卷卡：顶部一层极浅的紫，往下过渡到白（MathBank 的 .paper-card 渐变） */
+#local-bank .paper-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 14px;
+  background: linear-gradient(
+    180deg,
+    rgba(var(--brand-50-rgb), 0.45) 0%,
+    #ffffff 45%,
+    #ffffff 100%
+  );
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+}
+
+#local-bank .bank-document-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 18px;
+}
+
+#local-bank .paper-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+#local-bank .paper-badges > span {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+#local-bank .paper-badges .badge-seq {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 700;
+}
+
+#local-bank .paper-badges .badge-type {
+  background: rgba(var(--brand-50-rgb), 1);
+  color: rgb(var(--brand-700-rgb));
+  font-weight: 700;
+}
+
+#local-bank .paper-badges .badge-date {
+  background: #ecfdf5;
+  color: #047857;
+  font-weight: 700;
+}
+
+#local-bank .paper-badges .badge-date i {
+  margin-right: 4px;
+}
+
+/* 题干 + 解析里的公式排版来自 Milkdown；这里只负责容器与只读锁 */
+#local-bank .preview-wrap {
+  position: relative;
+}
+
+#local-bank .preview-box {
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+#local-bank .preview-box.is-content {
+  padding-bottom: 26px;
+}
+
+#local-bank .preview-box.is-answer {
+  padding: 16px 16px 28px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  font-size: 14px;
+}
+
+#local-bank .preview-box.is-empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* 只读预览：挡住指针事件（Tab 键由 lockPreview 挡） */
+#local-bank .preview-box .milkdown {
+  display: flex;
+  flex-direction: column;
+}
+
+#local-bank .preview-box .ProseMirror {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  pointer-events: none;
+  cursor: default;
+}
+
+/* 预览里的排版：主题那套 `#editor .ProseMirror …` 规则够不到这里（我们不在 #editor
+   里），而上面的 preflight 又把 p/ul/ol 的间距清了零 —— 不补回来，段落会连成一片。
+   数值对齐 MathBank 的 .preview-box（leading-relaxed + 段落间距）。 */
+#local-bank .preview-box p {
+  margin: 0 0 10px;
+}
+
+#local-bank .preview-box p:last-child,
+#local-bank .preview-box > :last-child {
+  margin-bottom: 0;
+}
+
+#local-bank .preview-box h1,
+#local-bank .preview-box h2,
+#local-bank .preview-box h3,
+#local-bank .preview-box h4 {
+  margin: 0 0 8px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+#local-bank .preview-box h1 {
+  font-size: 1.3em;
+}
+
+#local-bank .preview-box h2 {
+  font-size: 1.18em;
+}
+
+#local-bank .preview-box h3,
+#local-bank .preview-box h4 {
+  font-size: 1.05em;
+}
+
+#local-bank .preview-box ul,
+#local-bank .preview-box ol {
+  margin: 0 0 10px;
+  padding-left: 1.4em;
+}
+
+#local-bank .preview-box ul {
+  list-style: disc;
+}
+
+#local-bank .preview-box ol {
+  list-style: decimal;
+}
+
+#local-bank .preview-box li {
+  margin: 2px 0;
+}
+
+#local-bank .preview-box blockquote {
+  margin: 0 0 10px;
+  padding: 4px 12px;
+  border-left: 3px solid rgba(var(--brand-500-rgb), 0.4);
+  color: var(--text-secondary);
+}
+
+#local-bank .preview-box table {
+  margin: 0 0 10px;
+  border-collapse: collapse;
+}
+
+#local-bank .preview-box td,
+#local-bank .preview-box th {
+  padding: 4px 8px;
+  border: 1px solid #e2e8f0;
+}
+
+#local-bank .preview-box hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+/* 行间公式可能比栏宽：让它自己横向滚，别把详情面板撑开 */
+#local-bank .preview-box .katex-display {
+  margin: 8px 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+#local-bank .preview-box img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+#local-bank .preview-box .code-copy-btn {
+  display: none;
+}
+
+/* 复制按钮：悬浮才显形（MathBank 的 group-hover/copy） */
+#local-bank .copy-btn {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 700;
+  opacity: 0.4;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#local-bank .preview-wrap:hover .copy-btn,
+#local-bank .copy-btn:focus-visible {
+  opacity: 1;
+}
+
+#local-bank .copy-btn:hover {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: rgb(var(--brand-600-rgb));
+}
+
+/* 参考答案与详细解析 */
+#local-bank .paper-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.4);
+}
+
+#local-bank .paper-analysis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#local-bank .paper-analysis-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+#local-bank .paper-analysis-title i {
+  color: rgb(var(--brand-500-rgb));
+}
+
+#local-bank .paper-analysis-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid rgba(var(--brand-100-rgb), 1);
+  border-radius: 8px;
+  background: rgba(var(--brand-50-rgb), 1);
+  color: rgb(var(--brand-700-rgb));
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#local-bank .paper-analysis-toggle:hover {
+  background: rgba(var(--brand-100-rgb), 1);
+}
+
+#local-bank .paper-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+/* ── 空态 / 加载 / 错误 ─────────────────────────────────────────────────── */
+
+#local-bank .ui-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 180px;
+  padding: 32px 20px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+#local-bank .ui-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(var(--brand-200-rgb), 0.72);
+  border-radius: 14px;
+  background: rgba(var(--brand-50-rgb), 0.88);
+  color: rgb(var(--brand-600-rgb));
+  font-size: 18px;
+}
+
+#local-bank .ui-state-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+#local-bank .ui-state-description {
+  max-width: 28rem;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+#local-bank .ui-state-error .ui-state-icon {
+  border-color: rgba(244, 63, 94, 0.24);
+  background: rgba(255, 241, 242, 0.92);
+  color: #e11d48;
+}
+
+#local-bank .ui-state-action {
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 8px 14px;
+  border: 1px solid rgba(244, 63, 94, 0.24);
+  border-radius: 11px;
+  background: #ffffff;
+  color: #be123c;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+/* ── 草稿箱标签页：左右两栏让位给一块整幅空态 ───────────────────────────── */
+
+#local-bank .bank-drafts-pane {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.055);
+}
+
+#local-bank.is-drafts .bank-management-actions {
+  opacity: 0.5;
+  pointer-events: none;
+}
