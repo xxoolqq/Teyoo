@@ -96,6 +96,21 @@ function loadAdminSession(): AdminSessionData | null {
   }
 }
 
+/**
+ * 只读当前登录身份里的两个编码（主进程内部用，不给渲染端开通道）。
+ *
+ * 题库导入要把 user_code / school_code 一并落库：本地有登录态就有值，没登录
+ * （或登录返回里没带）就是空串，由调用方决定怎么处理。
+ */
+export function currentAdminIdentity(): { userCode: string; schoolCode: string } {
+  const session = loadAdminSession() ?? {}
+  const pick = (key: 'userCode' | 'schoolCode'): string => {
+    const value = session[key]
+    return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim()
+  }
+  return { userCode: pick('userCode'), schoolCode: pick('schoolCode') }
+}
+
 function clearAdminSession(): boolean {
   try {
     store.clear()

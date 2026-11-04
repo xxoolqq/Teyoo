@@ -1,6 +1,6 @@
 // 工具栏按钮 → markdown 语法串的插入表与插入算法。
 //
-// 表里的每一项都是 ColaMD 自己的语法（见《语文Markdown扩展-设计规约》，内联长下划线
+// 表里的每一项都是 Teyoo 自己的语法（见《语文Markdown扩展-设计规约》，内联长下划线
 // 与长空白那条是规约 C）。语法串本身不能改：题干最终按这份 markdown 入库，改一个
 // 字符就是另一种语义。
 //
@@ -21,13 +21,14 @@ export interface SyntaxSpec {
 }
 
 /**
- * 长空白：10 个全角空格（U+3000）。
+ * 长空白：4 个全角空格（U+3000）。
  *
  * 必须用全角空格而非半角（U+0020）：连续半角空格会被 HTML 折叠、也可能被 markdown
  * 序列化规整；全角空格是普通 CJK 字符，不参与语法、不被 trim、源码原样保存。
- * 与宿主工具栏的「插入长空白」按钮插的是同一串（editor.ts 的 insertLongBlank）。
+ * 宽度原来默认 10 个，按用户要求改 4；宿主编辑器工具栏（editor.ts 的
+ * insertLongBlank）同步改为 4，两边保持一致。
  */
-export const LONG_BLANK = '　'.repeat(10)
+export const LONG_BLANK = '　'.repeat(4)
 
 /**
  * 插入顺序无关紧要，展示顺序在 EditorToolbar 里定。

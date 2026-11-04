@@ -44,7 +44,7 @@ export interface SubmitSubjectPayload {
 }
 
 /**
- * 我录入的题。
+ * 「题库管理」列表（我录入的题）。
  *
  * 后端是 Spring PageHelper：pageNum 从 1 起算，返回 { list, total }。
  * 这个接口要求把 token 同时放在请求头（client 已统一加）和请求体里。

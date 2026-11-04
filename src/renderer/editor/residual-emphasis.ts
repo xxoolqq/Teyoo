@@ -41,7 +41,7 @@ const PATTERNS: { re: RegExp; type: string; delim: number; escaped: boolean }[] 
   { re: /\\\*\\\*\\\*((?:[^*]|\\*(?!\\\*\\*))+?)\\\*\\\*\\\*/g, type: 'emphasisStrong', delim: 6, escaped: true },
   { re: /\\\*\\\*((?:[^*]|\\*(?!\\\*))+?)\\\*\\\*/g, type: 'strong', delim: 4, escaped: true },
   { re: /(?<!\\\*)\\\*(?!\\\*)([^*]+?)(?<!\\\*)\\\*(?!\\\*)/g, type: 'emphasis', delim: 2, escaped: true },
-  { re: /\\\~\\\~([^~]+?)\\\~\\\~/g, type: 'delete', delim: 4, escaped: true },
+  { re: /\\~\\~([^~]+?)\\~\\~/g, type: 'delete', delim: 4, escaped: true },
   // 未转义
   { re: /\*\*\*((?:[^*]|\*(?!\*\*))+?)\*\*\*/g, type: 'emphasisStrong', delim: 3, escaped: false },
   { re: /\*\*((?:[^*]|\*(?!\*))+?)\*\*/g, type: 'strong', delim: 2, escaped: false },

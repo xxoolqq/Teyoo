@@ -4,12 +4,13 @@ import { autoUpdater } from 'electron-updater'
 import { join, basename, dirname, extname, isAbsolute, resolve, relative } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { appendFile, readFile, writeFile, readdir, copyFile, mkdir, stat } from 'fs/promises'
-import { watch, FSWatcher, existsSync, readdirSync, readFileSync, writeFileSync, statSync, accessSync, constants } from 'fs'
+import { watch, FSWatcher, existsSync, readdirSync, readFileSync, writeFileSync, statSync, accessSync, constants, cpSync, rmSync } from 'fs'
 import { mkdirSync } from 'fs'
 import { getUserSetting, getUserSettingByPath, setUserSetting, setUserSettingBatch, DEFAULT_WORK_DIR } from './user-setting'
-import { parsePdfOnline, findExtractedResult } from './http/mineru'
-import { ocrImageToLatex, readAttachment, savePastedImage } from './assistant-attach'
+import { parsePdfOnline, findExtractedResult, type MineruProgress } from './http/mineru'
+import { imageToMarkdown, ocrImageToLatex, readAttachment, savePastedImage } from './assistant-attach'
 import { splitPdfByPageCount, type SplitResult } from './pdf-split'
+import { parsePageRanges, pageRangeLabel, extractPdfPages } from './pdf-pages'
 import { completeChat, streamChat, type ChatContentPart, type ChatMessage, type ChatResult } from './llm'
 import { setAsDefaultApp } from './default-app'
 import { recognizeTexoFormula } from './texo-ocr'
@@ -17,9 +18,16 @@ import { docxCacheRoot, docxToPdf, pruneDocxPdfCache } from './docx-convert'
 import { saveFormulaRecord } from './formula-db'
 import { startSnipCapture } from './snip-window'
 import { registerAdminSessionIpc } from './session-store'
+import {
+  clearPaperExportHistory,
+  exportPaperPdf,
+  readPaperExportHistory,
+  recordPaperExport,
+  type PaperExportKind
+} from './paper-export'
 
 const startupStartedAt = performance.now()
-const startupTraceEnabled = process.env.COLAMD_STARTUP_TRACE === '1'
+const startupTraceEnabled = process.env.TEYOO_STARTUP_TRACE === '1'
 const startupMarks: Record<string, number> = { 'main-loaded': 0 }
 let startupTraceWritten = false
 
@@ -37,7 +45,7 @@ function writeStartupTrace(): void {
 }
 
 
-const themesDir = join(app.getPath('home'), '.colamd', 'themes')
+const themesDir = join(app.getPath('home'), '.teyoo', 'themes')
 const releaseNoticePath = join(app.getPath('userData'), 'release-notice.json')
 
 // The shell's top row, in CSS pixels: the window controls overlay on Windows has
@@ -105,8 +113,8 @@ function ensureThemesDir(): void {
 }
 
 // --- Recent files + session restore (#28, #45) ---
-const recentStorePath = join(app.getPath('home'), '.colamd', 'recent.json')
-let recentStore: { recent: string[]; restoreOnLaunch: boolean } = { recent: [], restoreOnLaunch: true }
+const recentStorePath = join(app.getPath('home'), '.teyoo', 'recent.json')
+const recentStore: { recent: string[]; restoreOnLaunch: boolean } = { recent: [], restoreOnLaunch: true }
 const languagePreferencePath = join(app.getPath('userData'), 'language.json')
 
 // Window size, position and view zoom survive a restart. Having to resize and
@@ -302,10 +310,11 @@ interface WindowState {
   imagePath: string | null
   // docx转md 标签页挂着的源文档（同上，见 set-active-docx-path）。
   docxPath: string | null
-  // 前台标签页的类型（渲染端在切标签页时上报，见 set-active-tab-kind）。目前只
-  // 服务于一件事：类 docx 文档（canvas-editor）标签页自成一套，菜单栏的
-  // 打印/打印预览不该对它生效 —— 打印只走它自己工具栏里那一个（canvas 把内容
-  // 渲成图再印，窗口级的 printToPDF 对它没有意义）。null = 还没上报，按文档算。
+  // 前台标签页的类型（渲染端在切标签页时上报，见 set-active-tab-kind）。服务于两
+  // 件事：一是「文件」菜单的保存/导出与打印只对编辑器标签页可用（见
+  // markdownMenuEnabled / printAllowed）；二是窗口能不能被当成空窗口复用（见
+  // findEmptyWindow，整页视图不能被别的窗口塞文档进来）。
+  // null = 还没上报，按文档算。
   activeTabKind: ActiveTabKind | null
 }
 
@@ -315,8 +324,16 @@ interface WindowState {
  * 'admin' 是后台管理系统（body.admin-panel-view 整页接管）：它在渲染端同样挂着
  * kind='document'，但窗口不绑定文件 —— 不区分出来的话，别的窗口点「打开」会把它
  * 当成「没有文件的空窗口」复用（见 findEmptyWindow）。
+ *
+ * 'tool' / 'texo' / 'solver' 是工具箱 / LaTeX公式 / 可视化解题（body.tool-view 等
+ * 整页接管）：它们在渲染端同样是 kind='document'，但前台是它们时编辑器被藏起来了，
+ * 「文件」下的保存 / 另存为 / 导出与打印都没有对象 —— 不区分出来的话，保存会把
+ * 上一个文档的内容又写一遍，导出 PDF 会把工具页本身印出去（见 markdownMenuEnabled）。
+ *
+ * 只有 'document'（含挂了 PDF / 图片 / docx 源文件的标签页，它们右侧仍是编辑器）
+ * 算「可保存可导出的 Markdown 前台」。
  */
-type ActiveTabKind = 'document' | 'submit' | 'canvas' | 'admin'
+type ActiveTabKind = 'document' | 'submit' | 'canvas' | 'admin' | 'tool' | 'texo' | 'solver'
 
 interface DocumentSnapshot {
   dirty: boolean
@@ -380,7 +397,13 @@ function notifyExternalChange(win: BrowserWindow, filePath: string): void {
     .catch(() => { /* the watcher picks it up on the next event */ })
 }
 
-function createWindow(filePath?: string, initialContent?: string, initialBrowsePath?: string): BrowserWindow {
+/**
+ * @param showStartupPage 本次窗口属于「应用启动」时传 true：投递完首份文档后再
+ *   发一次 open-startup-page，由渲染端按偏好 general.startPage 决定要不要把
+ *   后台管理系统切到前台。命令行/双击文件打开的窗口、带初始内容的窗口（更新
+ *   日志、随包文档）不传，免得把用户主动打开的东西盖掉。
+ */
+function createWindow(filePath?: string, initialContent?: string, initialBrowsePath?: string, showStartupPage = false): BrowserWindow {
   // Windows gets ONE row for its shell. A normal Windows frame stacks three
   // bars: the system title bar, the in-window menu bar, and our own 40px row,
   // which is what made the app read as heavy there (2026-09-15). So: no system
@@ -416,7 +439,7 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
       // Electron 默认 webSecurity 会拦截跨源加载，导致图片不显示。
       // 生产环境用 loadFile 从 file:// 加载，同源无需关闭。
       webSecurity: app.isPackaged,
-      // No spellcheck UI in ColaMD — avoid red squiggles in the editor (issue #7)
+      // No spellcheck UI in Teyoo — avoid red squiggles in the editor (issue #7)
       spellcheck: false
     }
   })
@@ -464,6 +487,12 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
     if (typeof savedWindowState.zoom === 'number' && savedWindowState.zoom > 0) {
       win.webContents.setZoomFactor(savedWindowState.zoom)
     }
+    // 启动页：只在投递完首份文档之后发一次。顺序要紧 —— 先 file-opened 再这一条，
+    // 渲染端据此知道「要等的那份文档已经在处理了」（见 openStartupPageIfReady）。
+    const sendStartupPage = (): void => {
+      if (!showStartupPage || win.isDestroyed()) return
+      win.webContents.send('open-startup-page')
+    }
     const deliver = (): void => {
       if (filePath) {
         // The queued tab-opens must go out only after this document's
@@ -471,15 +500,18 @@ function createWindow(filePath?: string, initialContent?: string, initialBrowseP
         void loadFileInWindow(win, filePath).then(() => {
           getState(win).initialDocDelivered = true
           flushPendingTabFiles(win)
+          sendStartupPage()
         })
       } else if (initialContent) {
         // In-memory content (e.g. the Markdown cheatsheet) — no file, no watcher
         win.webContents.send('file-opened', { path: null, content: initialContent })
         getState(win).initialDocDelivered = true
         flushPendingTabFiles(win)
+        sendStartupPage()
       } else {
         getState(win).initialDocDelivered = true
         flushPendingTabFiles(win)
+        sendStartupPage()
       }
     }
     // Wait for the renderer to be listening: a 'file-opened' that arrives
@@ -653,7 +685,7 @@ function defaultDialogDir(mode: 'read' | 'write' = 'write'): string {
   if (resolved !== configured) {
     console.info(`[dialog] 工作目录不可用（${configured}），改用 ${resolved}`)
   } else if (startupTraceEnabled) {
-    // 排查用：COLAMD_STARTUP_TRACE=1 时能看到每个对话框实际落在哪儿。
+    // 排查用：TEYOO_STARTUP_TRACE=1 时能看到每个对话框实际落在哪儿。
     console.info(`[dialog] 默认目录（${mode}）：${resolved}`)
   }
   cachedDirKey = key
@@ -1777,6 +1809,8 @@ function sniffImageMime(buffer: Buffer): string | null {
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg'
   if (buffer.length >= 6 && buffer.toString('latin1', 0, 3) === 'GIF') return 'image/gif'
   if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) return 'image/bmp'
+  // WEBP：RIFF....WEBP，题库配图常用，缺了只能靠扩展名兜底
+  if (buffer.length >= 12 && buffer.toString('latin1', 0, 4) === 'RIFF' && buffer.toString('latin1', 8, 12) === 'WEBP') return 'image/webp'
   return null
 }
 
@@ -1790,6 +1824,64 @@ ipcHandle('read-image-as-data-url', async (_event, filePath: unknown) => {
   } catch {
     // 图片缺失是常态（老解析结果只有 json 没有 images/）：不是错误。
     return null
+  }
+})
+
+// ─── 录入题目：markdown 里的本地图片路径 → data URL ──────────────────────────
+// 题干里手写的 ![图](D:\a.png)、![图](images/a.png) 这类引用，后端读不到用户的
+// 磁盘（提交接口只认 ctbimg:// 占位符 + 文件 part），必须在提交前把字节取出。
+// 为什么放主进程：渲染端是 file:// 页面，CSP 只放行 'self'，绝对路径既 fetch 不到
+// 也读不了（同 image-localize.ts 的理由）。
+//
+// 相对路径的基准（按顺序找，命中即用）：
+//   1) 工作目录/images  —— 与编辑器插图、题目配图同一处，最常见的写法
+//   2) 工作目录         —— images/a.png 这样的写法
+//   3) 应用当前目录     —— 开发态（项目根）里的相对引用
+const MARKDOWN_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+const MARKDOWN_IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i
+
+/** 相对路径的候选基准目录（绝对路径不走这里） */
+function markdownImageCandidates(src: string): string[] {
+  const workDir = getUserSettingByPath<string>('image.workDir') || DEFAULT_WORK_DIR
+  return [join(workDir, 'images'), workDir, process.cwd()].map((base) => resolve(base, src))
+}
+
+ipcHandle('read-markdown-image', async (_event, src: unknown) => {
+  if (typeof src !== 'string' || !src.trim()) return { ok: false, error: 'EMPTY' }
+  const raw = src.trim()
+  // 只处理看起来是图片的引用：题干里还有 .md/.pdf 之类，误读没有意义
+  if (!MARKDOWN_IMAGE_EXT.test(raw.split(/[?#]/)[0])) return { ok: false, error: 'NOT_IMAGE', path: raw }
+
+  let filePath: string | null = null
+  if (/^file:/i.test(raw)) {
+    try {
+      filePath = fileURLToPath(raw)
+    } catch {
+      return { ok: false, error: 'BAD_PATH', path: raw }
+    }
+  } else if (isAbsolute(raw)) {
+    filePath = raw
+  } else {
+    filePath = markdownImageCandidates(raw).find((candidate) => existsSync(candidate)) ?? null
+  }
+  if (!filePath) return { ok: false, error: 'NOT_FOUND', path: raw }
+
+  try {
+    const info = await stat(filePath)
+    if (!info.isFile()) return { ok: false, error: 'NOT_FILE', path: filePath }
+    if (info.size > MARKDOWN_IMAGE_MAX_BYTES) return { ok: false, error: 'TOO_LARGE', path: filePath }
+    const buffer = await readFile(filePath)
+    // 文件头优先，扩展名兜底；认不出来就不是图片，别把字节塞进题干
+    const mime = sniffImageMime(buffer) ?? IMAGE_MIME[extname(filePath).toLowerCase()] ?? ''
+    if (!/^image\//i.test(mime)) return { ok: false, error: 'NOT_IMAGE', path: filePath }
+    return {
+      ok: true,
+      dataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
+      path: filePath,
+      mime
+    }
+  } catch {
+    return { ok: false, error: 'READ_FAILED', path: filePath }
   }
 })
 
@@ -1854,7 +1946,7 @@ ipcHandle('read-pdf-file', async (_event, pdfPath: unknown): Promise<{ path: str
   }
 })
 
-// 「工具箱 → PDF拆分」：按「每 N 页一份」把 PDF 切开，结果写进原文件旁边的
+// 「帮助 → PDF拆分」：按「每 N 页一份」把 PDF 切开，结果写进原文件旁边的
 // <原名>_拆分_<日期>/ 目录。真正的活在主进程做（pdf-lib 跑在 Node 侧），渲染端
 // 只管把路径与页数递进来、把结果画出来。
 ipcHandle('split-pdf', async (_event, payload: unknown): Promise<SplitResult> => {
@@ -1900,12 +1992,15 @@ ipcOn('set-active-tab-kind', (event, kind: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   const next: ActiveTabKind =
-    kind === 'canvas' || kind === 'submit' || kind === 'admin' || kind === 'document'
+    kind === 'canvas' || kind === 'submit' || kind === 'admin' || kind === 'tool'
+      || kind === 'texo' || kind === 'solver' || kind === 'document'
       ? kind
       : 'document'
   const state = getState(win)
   if (state.activeTabKind === next) return
   state.activeTabKind = next
+  // 「文件」下的保存 / 导出按前台是不是编辑器置灰（原地改，不重建菜单）
+  syncDocMenuState(win)
   syncPrintMenuState()
 })
 
@@ -1975,6 +2070,546 @@ ipcHandle('assistant-complete', async (_event, payload: unknown): Promise<ChatRe
   const clean = readAssistantMessages(payload)
   if (!clean) return { ok: false, error: 'BAD_MESSAGES' }
   return completeChat({ ...assistantConnection(), messages: clean })
+})
+
+// ─── 导入中心：「开始解析」 ──────────────────────────────────────────────────
+//
+// 与文档助手共用连接信息（assistant.baseUrl / apiKey / model），但**不复用对话
+// 通道**：拆题是一次性的长输出调用（temperature 0.2 / max_tokens 65536 /
+// response_format=json_object），和侧边栏那种边聊边流完全是两种请求。
+// 模型可用环境变量 MATH_PARSE_MODEL 单独覆盖 —— 想拿便宜模型拆题、好模型审稿时
+// 不用改偏好设置。
+function parseConnection(): { baseUrl: string; apiKey: string; model: string } {
+  const base = assistantConnection()
+  const override =
+    typeof process.env.MATH_PARSE_MODEL === 'string' ? process.env.MATH_PARSE_MODEL.trim() : ''
+  return override ? { ...base, model: override } : base
+}
+
+// 主流程全在主进程：Prompt、词表、公式锁定、JSON 校验都在这一侧，渲染端只拿结果。
+// 动态 import 是有意的 —— prompt + 词表是一大坨字符串，不该压在启动路径上。
+// 各阶段进度经 math-parse-log 实时推给发起窗口：没有这条通道，慢的时候只能干等，
+// 分不清卡在转换、锁公式还是模型（排查「两分钟没结果」就靠它）。
+// 学科配置在这里查、在 parse.ts 里用：题型候选、知识点词表、锁不锁公式都来自
+// SQLite 字典表，渲染端只报「科目 + 勾了哪些年级」。少任何一个都拼不出提示词，
+// 所以缺科目直接拒（BAD_SUBJECT），而不是拿一份空词表硬跑出一堆无标签的题。
+ipcHandle('math-parse-start', async (event, payload: unknown): Promise<unknown> => {
+  const input = payload as {
+    markdown?: unknown
+    title?: unknown
+    generateAnswers?: unknown
+    subjectCode?: unknown
+    stage?: unknown
+    gradeTerms?: unknown
+    classifySubjectType?: unknown
+    annotateKnowledge?: unknown
+  }
+  const markdown = typeof input?.markdown === 'string' ? input.markdown : ''
+  const subjectCode = typeof input?.subjectCode === 'string' ? input.subjectCode.trim() : ''
+  const stage = typeof input?.stage === 'string' ? input.stage.trim() : ''
+  // `01-1` 这种「年级-学期」组合键：词表条目按 (class_level, term) 建，必须精确到学期
+  const gradeTerms = Array.isArray(input?.gradeTerms)
+    ? input.gradeTerms.map((v) => String(v ?? '').trim()).filter(Boolean)
+    : []
+  // 两个可选能力：题型分类默认开（历史行为），知识点标注默认关（310 条词表约 6K 字符）。
+  // 老版本渲染端不传这两个字段，按默认值走，行为与改造前一致。
+  const classifySubjectType = input?.classifySubjectType !== false
+  const annotateKnowledge = input?.annotateKnowledge === true
+  try {
+    const { resolveParseSubject, resolveParsePrompts } = await import('./question-bank')
+    const { parsePaperText } = await import('./math-parse')
+    const config = resolveParseSubject(subjectCode, gradeTerms, stage)
+    if (!config) {
+      return { ok: false, error: 'BAD_SUBJECT', warnings: ['请先选择科目后再开始解析'] }
+    }
+    const onLog = (line: string): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('math-parse-log', line)
+    }
+    onLog(
+      `[SUBJECT] ${config.subjectName}（${config.stage}）· ` +
+        `题型分类${classifySubjectType ? `开（${config.subjectTypes.length} 个）` : '关'} · ` +
+        `知识点标注${annotateKnowledge ? `开（${config.knowledgePoints.length} 条）` : '关'} · ` +
+        `公式锁定${config.lockFormula ? '开' : '关'} · ` +
+        `年级 ${gradeTerms.length ? gradeTerms.join('/') : '不限'}`
+    )
+    // 提示词按「科目 + 学段 + 是否生成答案」查库。缺任一段就拒绝解析：
+    // 半套提示词拼出来的 system 会让模型按常识自由发挥，题看着正常但字段对不上，
+    // 排查成本远高于直接说「这个科目/学段还没配提示词」。
+    const prompts = resolveParsePrompts({
+      course: config.subjectCode,
+      stage: config.stage,
+      generateAnswers: input?.generateAnswers === true,
+      classifySubjectType,
+      annotateKnowledge
+    })
+    if (!prompts.ok) {
+      return {
+        ok: false,
+        error: 'BAD_PROMPT',
+        warnings: [
+          `以下提示词尚未配置：${prompts.missing.join('；')}`,
+          '请在 prompt_table 里补上对应 course/stage/prompt_type 的行（prompt 不能为空）'
+        ]
+      }
+    }
+    // 段名按实际取的那一份写（选中 / 没选中是库里两行），排查时一眼能看出
+    // 这次注入的是「带清单」还是「禁止项」
+    const loadedSegments = [
+      'core',
+      classifySubjectType ? 'subject_type' : 'subject_type_off',
+      annotateKnowledge ? 'knowledge_point' : 'knowledge_point_off',
+      'answer'
+    ]
+    onLog(
+      `[PROMPT] 已从 prompt_table 载入 ${loadedSegments.length} 段（${loadedSegments.join(' / ')}），` +
+        `合计 ${[
+          prompts.blocks.core,
+          prompts.blocks.subjectType,
+          prompts.blocks.knowledgePoint,
+          prompts.blocks.answer
+        ].join('').length} 字符`
+    )
+    return await parsePaperText({
+      markdown,
+      title: typeof input?.title === 'string' ? input.title : undefined,
+      generateAnswers: input?.generateAnswers === true,
+      connection: parseConnection(),
+      subjectCode: config.subjectCode,
+      subjectName: config.subjectName,
+      stage: config.stage,
+      gradeTerms,
+      subjectTypes: config.subjectTypes,
+      knowledgePoints: config.knowledgePoints,
+      prompts: prompts.blocks,
+      classifySubjectType,
+      annotateKnowledge,
+      lockFormula: config.lockFormula,
+      onLog
+    })
+  } catch (error) {
+    console.error('[math-parse] failed', error)
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      warnings: []
+    }
+  }
+})
+
+// 审查卡「AI 生成解析」：单题走一次模型，覆盖式返回详细解析。
+//
+// 与整卷拆题共用连接（parseConnection）与提示词库，但 system 只拼 core +
+// answer_prompt_generate 两段 —— buildSystemPrompt 会追加整卷 JSON【输出格式】，
+// 单题纯文本通道不能复用。题型分类、知识点标注两段与本题无关，不查不注入。
+ipcHandle('math-parse-answer', async (event, payload: unknown): Promise<unknown> => {
+  const input = payload as { content?: unknown; subjectCode?: unknown; stage?: unknown }
+  const content = typeof input?.content === 'string' ? input.content : ''
+  const subjectCode = typeof input?.subjectCode === 'string' ? input.subjectCode.trim() : ''
+  const stage = typeof input?.stage === 'string' ? input.stage.trim() : 'other'
+  if (!content.trim()) return { ok: false, error: 'EMPTY_CONTENT', warnings: [] }
+  if (!subjectCode) {
+    return { ok: false, error: 'BAD_SUBJECT', warnings: ['请先选择科目后再生成解析'] }
+  }
+  try {
+    const { resolveParseSubject, resolveParsePrompts } = await import('./question-bank')
+    const { generateAnswerText } = await import('./math-parse')
+    const config = resolveParseSubject(subjectCode, [], stage || 'other')
+    if (!config) {
+      return { ok: false, error: 'BAD_SUBJECT', warnings: ['科目未配置，请先在左栏选择学科'] }
+    }
+    const onLog = (line: string): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('math-parse-log', line)
+    }
+    onLog(
+      `[ANSWER] 单题生成解析：${config.subjectName}（${config.stage}）· ` +
+        `公式锁定${config.lockFormula ? '开' : '关'}`
+    )
+    const prompts = resolveParsePrompts({
+      course: config.subjectCode,
+      stage: config.stage,
+      generateAnswers: true,
+      classifySubjectType: false,
+      annotateKnowledge: false
+    })
+    if (!prompts.ok) {
+      return {
+        ok: false,
+        error: 'BAD_PROMPT',
+        warnings: [
+          `以下提示词尚未配置：${prompts.missing.join('；')}`,
+          '请在 prompt_table 里补上对应 course/stage/prompt_type 的行（prompt 不能为空）'
+        ]
+      }
+    }
+    return await generateAnswerText({
+      content,
+      connection: parseConnection(),
+      prompts: { core: prompts.blocks.core, answer: prompts.blocks.answer },
+      subjectName: config.subjectName,
+      stage: config.stage,
+      lockFormula: config.lockFormula,
+      onLog
+    })
+  } catch (error) {
+    console.error('[math-parse-answer] failed', error)
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      warnings: []
+    }
+  }
+})
+
+// 拖进来的 .docx：渲染端把字节递过来（能同时服务拖放与文件选择），这里转 Markdown。
+//
+// 这里**刻意不走**文档助手那条「行内公式图片 OCR」偏好：那个开关一开，每张行内
+// 公式图都要过一遍 Texo ONNX，而且是串行推理（见 docx-import 的注释），几十张图
+// 就是几分钟 —— 全部发生在模型调用之前，界面上一点动静都没有。原项目（MathBank）
+// 的 docx 管线是纯本地 XML 解析，图片公式留给后续 VLM 疑点核对去看，没有这一步。
+// 拆题只求快进快出：图片保留为 Markdown 图片，协议允许（referenced_images）。
+// 下拉数据源：科目 / 年级 / 题型 / 难度。
+// 全部来自 SQLite 字典表，渲染端不再自带一份枚举常量 —— 两份一旦漂移，
+// 界面上选得出的值就会被 store 的校验拒掉。
+ipcHandle('question-bank-dictionaries', async (): Promise<unknown> => {
+  const { EASY_OPTIONS, listDictionaries } = await import('./question-bank')
+  const dict = listDictionaries()
+  return { ...dict, easyLevels: EASY_OPTIONS }
+})
+
+// 拆题页沿用的 channel 名（渲染端已在用），返回结构换成 v2 的字典。
+// 教材树 CURRICULUM 不再返回：v2 不记录教材位置。
+ipcHandle('math-parse-catalog', async (): Promise<unknown> => {
+  const { EASY_OPTIONS, listDictionaries } = await import('./question-bank')
+  const dict = listDictionaries()
+  return {
+    subjects: dict.subjects,
+    classLevels: dict.classLevels,
+    subjectTypes: dict.subjectTypes,
+    easyLevels: EASY_OPTIONS
+  }
+})
+
+// 审查卡「导入此题」：把卡片上编辑后的内容写进本地题库（userData/question-bank.db）。
+// payload 一律当不可信输入，字段校验、查重、事务都在 question-bank/store 里做 ——
+// 渲染端也能算 sha256，但只有主进程说了算。
+ipcHandle('question-bank-import', async (_event, payload: unknown) => {
+  const { importExercise } = await import('./question-bank')
+  const { exercise, options } = (payload ?? {}) as {
+    exercise?: Parameters<typeof importExercise>[0]
+    options?: Parameters<typeof importExercise>[1]
+  }
+  if (!exercise) return { ok: false, error: 'BAD_PAYLOAD' }
+  const result = importExercise(exercise, options ?? {})
+  // 失败一律落一条主进程日志：渲染端只有一条 2.6 秒的 toast，一闪就没了，
+  // 「点了导入题库里却什么都没有」这种问题只能靠终端里的这行定位（错误码 + 题干开头）
+  if (!result.ok) {
+    console.warn(
+      `[question-bank] 入库失败 error=${result.error ?? 'UNKNOWN'} subject=${String(exercise.subjectCode)}` +
+        ` stage=${String(exercise.stage)} type=${String(exercise.subjectTypeCode)}` +
+        ` easy=${String(exercise.easy)} content=${JSON.stringify(
+          String(exercise.content ?? '').slice(0, 40)
+        )}`
+    )
+  } else {
+    console.log(`[question-bank] 已入库 #${result.id}`)
+  }
+  return result
+})
+
+// 审查卡「导入选中」：逐题独立事务，返回逐题结果让界面标出哪几道没进去
+ipcHandle('question-bank-import-batch', async (_event, payload: unknown) => {
+  const { importExercises } = await import('./question-bank')
+  const { exercises } = (payload ?? {}) as { exercises?: Parameters<typeof importExercises>[0] }
+  if (!Array.isArray(exercises)) return { ok: false, saved: 0, results: [], error: 'BAD_PAYLOAD' }
+  const result = importExercises(exercises)
+  console.log(`[question-bank] 批量入库 saved=${result.saved}/${exercises.length}`)
+  for (const item of result.results) {
+    if (!item.ok) {
+      console.warn(`[question-bank] 第 ${item.index + 1} 题入库失败 error=${item.error ?? 'UNKNOWN'}`)
+    }
+  }
+  return result
+})
+
+// 知识点候选（拆题侧）：按科目 + 「年级-学期」组合取，勾几个组合就有多长。
+// 拆题拼 prompt 走这一条 —— 它要的是一份短词表，与录入弹窗不是同一张表。
+ipcHandle('question-bank-knowledge', async (_event, payload: unknown) => {
+  const { listKnowledgePoints } = await import('./question-bank')
+  const { subjectCode, gradeTerms } = (payload ?? {}) as {
+    subjectCode?: string
+    gradeTerms?: string[]
+  }
+  if (typeof subjectCode !== 'string' || !subjectCode.trim()) return []
+  return listKnowledgePoints(subjectCode.trim(), Array.isArray(gradeTerms) ? gradeTerms : [])
+})
+
+// 知识点候选（录入弹窗）：按「科目 + 学段」从 key_points 取全量考点树。
+// 与上面那条并存：拆题要短词表，录入要按学段展开的全量考点。
+ipcHandle('question-bank-key-points', async (_event, payload: unknown) => {
+  const { listKeyPoints } = await import('./question-bank')
+  const { courseCode, classLevel } = (payload ?? {}) as {
+    courseCode?: string
+    classLevel?: string
+  }
+  if (typeof courseCode !== 'string' || !courseCode.trim()) return []
+  return listKeyPoints(courseCode.trim(), typeof classLevel === 'string' ? classLevel : '')
+})
+
+// 题目配图：把粘贴/拖进来的图片写进「工作目录/images」，回一个 file:// URL 供
+// markdown 引用。图片字节走结构化克隆（Uint8Array 原生支持），不要再过 toPlain。
+// sourcePath 是拖拽/选文件时拿到的源路径：已在 images 里的图由 saveQuestionImage
+// 直接复用，不再复制一份。
+ipcHandle('question-image-save', async (_event, payload: unknown) => {
+  const { saveQuestionImage } = await import('./question-bank')
+  const { name, data, sourcePath } = (payload ?? {}) as {
+    name?: string
+    data?: Uint8Array
+    sourcePath?: string
+  }
+  const result = await saveQuestionImage({ name, data, sourcePath })
+  if (!result.ok) {
+    console.warn(`[question-image] 保存失败 error=${result.error ?? 'UNKNOWN'}`)
+  }
+  return result
+})
+
+// 「本地题库」页读取：分页列表 + 关键词/条件筛选 + 知识点徽章。
+// 查询条件的合法化（页码夹取、LIKE 转义、空筛选跳过）都在 store 里做，
+// 这里只把 payload 当不可信输入拆开 —— 渲染端传什么都不能拼进 SQL。
+ipcHandle('question-bank-list', async (_event, payload: unknown) => {
+  const { listExercises } = await import('./question-bank')
+  const { query } = (payload ?? {}) as { query?: Parameters<typeof listExercises>[0] }
+  const result = listExercises(query ?? {})
+  if (!result.ok) {
+    console.error('[question-bank] 读取失败', result.error)
+  }
+  return result
+})
+
+ipcHandle('math-parse-docx', async (_event, payload: unknown) => {
+  const bytes = (payload as { bytes?: unknown })?.bytes
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+    return { ok: false, error: 'BAD_BYTES' }
+  }
+  try {
+    const startedAt = Date.now()
+    const { docxToMarkdown } = await import('./docx-import')
+    const { stripEmbeddedImages } = await import('./math-parse')
+    // 图片落盘是 docx-import 的内置行为（默认写工作目录/images，见 docx-image-store）：
+    // Markdown 里是路径，模型侧只看到短路径而不是几百 KB 的 base64。
+    const result = await docxToMarkdown(bytes, {})
+    // mammoth 的图片是 data URI 内嵌：不剥的话 347KB 的卷子会变成 25 万字符的
+    // markdown，在 IPC 和模型的 prompt 里各跑一趟。真图留在 docx 里，这里只出占位路径。
+    const stripped = stripEmbeddedImages(result.markdown)
+    return {
+      ok: true,
+      markdown: stripped.text,
+      warnings: [
+        ...result.warnings,
+        `docx → Markdown 转换完成，耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s` +
+          (stripped.images > 0
+            ? `；已把 ${stripped.images} 张内嵌图片替换为占位路径（正文 ${result.markdown.length} → ${stripped.text.length} 字符）`
+            : '') +
+          `（未做行内公式图片 OCR，拆题阶段不等待识别）`
+      ]
+    }
+  } catch (error) {
+    console.error('[math-parse] docx convert failed', error)
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+/** MinerU 阶段 → 日志行。放在 handler 外面，免得每次调用重建闭包。 */
+function mineruStageLine(progress: MineruProgress): string {
+  switch (progress.stage) {
+    case 'applying':
+      return '[MINERU] 正在申请上传地址…'
+    case 'uploading':
+      return '[MINERU] 上传中…'
+    case 'waiting':
+      return '[MINERU] 已受理，排队等待识别…'
+    case 'running':
+      return `[MINERU] 识别中 ${progress.extracted ?? 0}/${progress.total ?? '?'} 页`
+    case 'converting':
+      return '[MINERU] 服务端正在转换…'
+    case 'downloading':
+      return '[MINERU] 正在下载结果包…'
+    case 'done':
+      return '[MINERU] 结果包已解压，正在读取 Markdown…'
+    case 'failed':
+      return `[MINERU] 失败：${progress.detail ?? '未知原因'}`
+    default:
+      return `[MINERU] ${progress.stage}`
+  }
+}
+
+// PDF 走 MinerU：本机没有 PDF 文字层解析能力（MathBank 那套靠 Python 的 pdf-inspector，
+// 见 mathbank.md），所以整份文件送去 MinerU 换成 Markdown，之后接的仍是同一条拆题
+// 管线 —— 锁公式、Prompt 拼装、审查卡都与 docx 完全一致。
+//
+// 落盘方式刻意与「PDF 转 md」那个功能完全一致（renderer/pdf-view.ts 的
+// probeExtractedFiles 就是按这个约定去探测的）：
+//   结果目录 = 源 PDF 旁边的 <pdf 名>.mineru/（由 http/mineru.ts 的 extractDirFor 决定）
+//   里面有 full.md（正文）、layout.json（中间结果）、images/（配图）
+// 所以这里接的是**源文件路径**，不做临时目录中转 —— 中转的副作用是结果跟着临时目录
+// 被系统回收，用户回头想对照原页或复用图片就找不到了；而且同一份 PDF 会被重复上传解析。
+// 源 PDF 是用户自己的文件，不复制也不删除。
+//
+// 页码范围：MinerU 的接口没有页码参数（见 http/mineru.ts 的 applyUploadUrl），所以只能
+// 本地先用 pdf-lib 把选中的页抽成一份临时 PDF 再上传（pdf-pages.ts，与「PDF 拆分」同库）。
+// 有范围时结果目录加段标签 —— <pdf 名>.p1-6.mineru/ —— 免得覆盖掉之前整篇解析的结果。
+ipcHandle('math-parse-pdf', async (event, payload: unknown) => {
+  const data = (payload ?? {}) as { filePath?: unknown; pageRange?: unknown }
+  const filePath = typeof data.filePath === 'string' ? data.filePath.trim() : ''
+  // 拖进来的 File 在渲染端拿不到磁盘路径时才走到这里（Web 宿主、或非 Electron 文件）
+  if (!filePath) return { ok: false, error: 'NO_FILE_PATH' }
+  if (extname(filePath).toLowerCase() !== '.pdf') return { ok: false, error: 'NOT_PDF' }
+  if (!existsSync(filePath)) return { ok: false, error: 'FILE_NOT_FOUND' }
+
+  const log = (line: string): void => {
+    if (!event.sender.isDestroyed()) event.sender.send('math-parse-log', line)
+  }
+
+  const parsedRange = parsePageRanges(typeof data.pageRange === 'string' ? data.pageRange : '')
+  if (!parsedRange.ok) return { ok: false, error: parsedRange.error }
+  const ranges = parsedRange.ranges // 空数组 = 全部页面
+
+  const sourceDir = dirname(filePath)
+  const baseName = basename(filePath, extname(filePath))
+  const rangeLabel = ranges.length > 0 ? `.p${pageRangeLabel(ranges)}` : ''
+  const resultDir = join(sourceDir, `${baseName}${rangeLabel}.mineru`)
+
+  // 已有结果就直接复用（省额度也省几分钟等待）：判定口径与 pdf-view 一致 —— 只看 full.md。
+  const cachedMarkdown = join(resultDir, 'full.md')
+  if (existsSync(cachedMarkdown)) {
+    try {
+      const markdown = readFileSync(cachedMarkdown, 'utf8')
+      if (markdown.trim()) {
+        let imageCount = 0
+        try {
+          imageCount = readdirSync(join(resultDir, 'images')).length
+        } catch {
+          /* 没有 images 目录就是 0 张 */
+        }
+        log(`[MINERU] 复用已解析结果：${cachedMarkdown}`)
+        log('[MINERU] 要重新识别，请删掉上面那个 .mineru 目录后再点「开始解析」')
+        return {
+          ok: true,
+          markdown,
+          markdownPath: cachedMarkdown,
+          jsonPath: existsSync(join(resultDir, 'layout.json'))
+            ? join(resultDir, 'layout.json')
+            : undefined,
+          imageCount,
+          extractDir: resultDir,
+          warnings: [
+            `复用了已解析的结果目录（图片 ${imageCount} 张）：${resultDir}`,
+            '若要重新识别，请删掉该目录后重试'
+          ]
+        }
+      }
+    } catch {
+      /* 读不出来就当没有缓存，走正常解析 */
+    }
+  }
+
+  // token：环境变量优先（调试/CI 不用改 userSetting.json），其次偏好设置，与 mineru-parse 同一约定
+  const token =
+    (typeof process.env.MINERU_TOKEN === 'string' ? process.env.MINERU_TOKEN.trim() : '') ||
+    (getUserSettingByPath<string>('mineru.token') ?? '').trim()
+  if (!token) return { ok: false, error: 'NO_TOKEN' }
+
+  // 有页码范围就先裁一份临时 PDF。临时目录用完即删 —— 用户的源文件不动，也不在
+  // 他的目录里留下裁剪副本。
+  let tempDir: string | null = null
+  let uploadPath = filePath
+  if (ranges.length > 0) {
+    tempDir = join(
+      app.getPath('temp'),
+      'teyoo-pdf-pages',
+      `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    )
+    try {
+      mkdirSync(tempDir, { recursive: true })
+    } catch (error) {
+      return {
+        ok: false,
+        error: `临时目录创建失败：${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+    uploadPath = join(tempDir, `${baseName}${rangeLabel}.pdf`)
+    const extracted = await extractPdfPages(filePath, ranges, uploadPath)
+    if (!extracted.ok) {
+      rmSync(tempDir, { recursive: true, force: true })
+      return { ok: false, error: extracted.error }
+    }
+    log(
+      `[MINERU] 已按页码范围抽取 ${extracted.extracted}/${extracted.pageCount} 页（${pageRangeLabel(ranges)}）`
+    )
+  }
+
+  const startedAt = Date.now()
+  log(`[MINERU] ${basename(uploadPath)}，开始上传…`)
+  try {
+    const result = await parsePdfOnline({
+      filePath: uploadPath,
+      token,
+      // 结果 CDN 证书过期时的逃生开关，每次现读（勾上不用重启）
+      insecureDownload: getUserSettingByPath<boolean>('mineru.insecureDownload') === true,
+      onProgress: (progress) => log(mineruStageLine(progress))
+    })
+    if (!result.ok || !result.markdownPath || !result.extractDir) {
+      log(`[FAIL] MinerU：${result.error ?? '未返回 Markdown'}`)
+      return { ok: false, error: result.error ?? 'MINERU_FAILED' }
+    }
+
+    // 裁剪过的话，MinerU 把结果解到了临时目录里：搬到源 PDF 旁边，保持与整篇解析同一约定
+    let markdownPath = result.markdownPath
+    let jsonPath = result.jsonPath
+    let extractDir = result.extractDir
+    if (tempDir) {
+      rmSync(resultDir, { recursive: true, force: true })
+      cpSync(extractDir, resultDir, { recursive: true })
+      extractDir = resultDir
+      markdownPath = join(resultDir, 'full.md')
+      jsonPath = existsSync(join(resultDir, 'layout.json')) ? join(resultDir, 'layout.json') : undefined
+    }
+
+    const markdown = readFileSync(markdownPath, 'utf8')
+    if (!markdown.trim()) return { ok: false, error: 'EMPTY_SOURCE' }
+    log(`[MINERU] 结果目录：${extractDir}`)
+    log(
+      `[MINERU] 完成：Markdown ${markdown.length} 字符 / 图片 ${result.imageCount} 张 / 耗时 ${(
+        (Date.now() - startedAt) / 1000
+      ).toFixed(1)}s`
+    )
+    // markdownPath / jsonPath 一并回传：渲染端日志里能直接给出可打开的路径，
+    // 与「PDF 转 md」右侧那两块面板读的是同一批文件。
+    return {
+      ok: true,
+      markdown,
+      markdownPath,
+      jsonPath,
+      imageCount: result.imageCount,
+      extractDir,
+      warnings: [
+        `MinerU 识别完成，提取图片 ${result.imageCount} 张`,
+        `结果目录：${extractDir}`
+      ]
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    log(`[FAIL] MinerU：${message}`)
+    return { ok: false, error: message }
+  } finally {
+    if (tempDir) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true })
+      } catch {
+        /* 临时目录删不掉不影响结果，交给系统回收 */
+      }
+    }
+  }
 })
 
 // 文档助手的流式版本：每收到一块就经 assistant-delta 推给发起的那窗口。
@@ -2123,6 +2758,24 @@ ipcHandle('assistant-paste-image', async (_event, dataUrl: unknown) => {
   }
 })
 
+// 「图片 → Markdown」：题目录入的 OCR 页用（MinerU 版式解析，原样交回 full.md）。
+// 与 assistant-ocr-image 的区别是不抽公式 —— 题干要的是整道题的排版。
+// 收 filePath（选图）或 dataUrl（拖拽 / 粘贴），后者先落成临时文件统一处理。
+ipcHandle('assistant-image-to-markdown', async (_event, payload: unknown) => {
+  const { filePath, dataUrl } = (payload ?? {}) as { filePath?: unknown; dataUrl?: unknown }
+  let target = typeof filePath === 'string' ? filePath : ''
+  if (!target && typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
+    const pasted = await savePastedImage(dataUrl).catch(() => null)
+    target = pasted?.path ?? ''
+  }
+  if (!target) return { ok: false, error: 'BAD_IMAGE' }
+  const options = attachmentOptions()
+  // 与 mineru-parse 一致：环境变量优先（调试 / CI 不必改 userSetting.json）
+  const envToken = (process.env.MINERU_TOKEN ?? '').trim()
+  if (envToken) options.mineruToken = envToken
+  return imageToMarkdown(target, options)
+})
+
 // LaTeX公式：图片 data URL → 本地 Texo 模型识别出的 LaTeX（主进程 onnxruntime-node）
 ipcHandle('texo-recognize', async (_event, payload: unknown) => {
   const { dataUrl, source } = (payload ?? {}) as { dataUrl?: unknown; source?: unknown }
@@ -2263,6 +2916,36 @@ ipcHandle('pick-image-file', async (event) => {
   return result.filePaths[0]
 })
 
+// 编辑器粘贴 / 插入图片：字节 → 工作目录/images/<sha>.<ext>，返回绝对路径。
+//
+// 这是「不再默认内嵌 base64」的落点：Markdown 里只留本地路径，渲染时才由
+// toFileUrl 转 file://，保存时 main 的 restoreImagePaths 再转回路径 —— 与
+// 「打开 .md 时图片路径 ↔ file:// URL」的既有约定完全一致。写盘失败返回
+// { ok:false }，由渲染端决定是否退回内嵌（WebView2 没有文件系统，只能内嵌）。
+ipcHandle('store-editor-image', async (_event, payload: unknown): Promise<unknown> => {
+  const input = payload as { mime?: unknown; bytes?: unknown }
+  const mime = typeof input?.mime === 'string' && input.mime ? input.mime : 'image/png'
+  const bytes = input?.bytes instanceof Uint8Array ? input.bytes : null
+  if (!bytes || bytes.length === 0) return { ok: false, path: null }
+  const { storeEditorImage } = await import('./docx-image-store')
+  const path = await storeEditorImage(mime, bytes)
+  return { ok: Boolean(path), path }
+})
+
+// 图片模态框「转本地」：base64 / 网络图片 → 工作目录/images，返回本地路径。
+//
+// 下载放主进程：渲染端是 file:// 页面、CSP 只放行 'self'，跨域图 fetch 会被拦；
+// net.fetch 走 Chromium 网络栈，系统代理与窗口一致。落盘规则与粘贴图片同一份
+// （见 image-localize.ts / docx-image-store.ts）：内容哈希命名、字节头定扩展名。
+ipcHandle('store-image-to-local', async (_event, payload: unknown): Promise<unknown> => {
+  const input = payload as { src?: unknown }
+  const src = typeof input?.src === 'string' ? input.src : ''
+  // base64 的 data URL 本身就几十 MB，上限按字符数给足；再大也不该走这条通道
+  if (!src.trim() || src.length > 48 * 1024 * 1024) return { ok: false, error: 'BAD_SRC' }
+  const { localizeImage } = await import('./image-localize')
+  return localizeImage(src)
+})
+
 // 「图片转md」的选图：只列 MinerU 认的图片格式（官方「文件限制」表）。
 // 与上面共用的 pick-image-file 分开是故意的 —— 那个也服务编辑器插图，要支持
 // svg / avif 这类只用来显示的格式，而 MinerU 收到它们只会回 -60002。
@@ -2357,6 +3040,77 @@ async function insertPrintCss(win: BrowserWindow): Promise<string> {
 
 const PRINT_PDF_OPTIONS = { margins: { top: 0, bottom: 0, left: 0, right: 0 }, printBackground: true, pageSize: 'A4' } as const
 
+// ─── 智能组卷：卷面 PDF + 导出历史 ──────────────────────────────────────────
+// 卷面不打印当前 webContents（那会把后台界面打下来），而是把渲染端拼好的 HTML
+// 交给一个隐藏窗口打印，见 paper-export.ts。
+ipcHandle('paper-export-pdf', async (event, payload: unknown) => {
+  const { html, defaultName, title, kind, openAfter } = (payload ?? {}) as {
+    html?: unknown
+    defaultName?: unknown
+    title?: unknown
+    kind?: unknown
+    openAfter?: unknown
+  }
+  if (typeof html !== 'string' || !html.trim()) return { ok: false, error: 'EMPTY_PAPER' }
+  const win = getWinFromEvent(event)
+  const result = await exportPaperPdf(
+    {
+      html,
+      defaultName: typeof defaultName === 'string' && defaultName.trim() ? defaultName.trim() : '试卷',
+      title:
+        typeof title === 'string' && title.trim()
+          ? title.trim()
+          : uiText('导出卷面 PDF', 'Export Paper PDF'),
+      openAfter: openAfter === true
+    },
+    win
+  )
+  // 用户取消不算一次导出，别往历史里塞一条「-canceled」
+  if (result.error === 'CANCELED') return result
+  recordPaperExport(kind === 'answer-sheet' ? 'answer-sheet' : 'pdf', result)
+  return result
+})
+
+ipcHandle('paper-export-history', () => readPaperExportHistory())
+
+// docx 走已有的 export-docx（它会自己弹保存框），成功后渲染端回来补一条历史
+ipcHandle('paper-export-history-add', (_event, record: unknown) => {
+  const item = record as { kind?: unknown; name?: unknown; path?: unknown; ok?: unknown }
+  const kind: PaperExportKind =
+    item?.kind === 'docx' ? 'docx' : item?.kind === 'answer-sheet' ? 'answer-sheet' : 'pdf'
+  recordPaperExport(kind, {
+    ok: item?.ok !== false,
+    path: typeof item?.path === 'string' ? item.path : undefined,
+    name: typeof item?.name === 'string' ? item.name : undefined
+  })
+  return readPaperExportHistory()
+})
+
+ipcHandle('paper-export-history-clear', () => clearPaperExportHistory())
+
+// 「保存试卷」：卷面存成 Markdown（与正文同一种格式，之后可以用编辑器打开继续改）
+ipcHandle('paper-save', async (event, payload: unknown) => {
+  const { markdown, defaultName } = (payload ?? {}) as { markdown?: unknown; defaultName?: unknown }
+  if (typeof markdown !== 'string' || !markdown.trim()) return { ok: false, error: 'EMPTY_PAPER' }
+  const win = getWinFromEvent(event)
+  const suggested = typeof defaultName === 'string' && defaultName.trim() ? defaultName.trim() : '试卷'
+  const options: Electron.SaveDialogOptions = {
+    title: uiText('保存试卷', 'Save Paper'),
+    buttonLabel: uiText('保存', 'Save'),
+    nameFieldLabel: uiText('文件名：', 'File name：'),
+    defaultPath: join(app.getPath('documents'), `${suggested}.md`),
+    filters: [{ name: 'Markdown', extensions: ['md'] }]
+  }
+  const picked = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+  if (picked.canceled || !picked.filePath) return { ok: false, error: 'CANCELED' }
+  try {
+    await writeFile(picked.filePath, markdown, 'utf-8')
+    return { ok: true, path: picked.filePath, name: picked.filePath.split(/[\\/]/).pop() ?? '' }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
 ipcHandle('export-pdf', async (event) => {
   const win = getWinFromEvent(event)
   if (!win) return false
@@ -2420,15 +3174,23 @@ function focusedWindow(): BrowserWindow | null {
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null
 }
 
-// canvas-editor 标签页是自成一体的画布文档：它的打印走自己工具栏里那一个，
-// 菜单栏的打印/打印预览在前台是它时一律不生效（点击被挡住、菜单项也置灰）。
-function isCanvasTabActive(win: BrowserWindow | null): boolean {
-  return !!win && getState(win).activeTabKind === 'canvas'
+/**
+ * 这个窗口的前台标签页能不能走「窗口级」打印（print / printToPDF）。
+ *
+ * 两类不行：类 docx 文档标签页（canvas-editor）自成一体的那套 —— 它把页面渲成图
+ * 再交给打印，窗口级的 printToPDF 对它没有意义；以及整页视图（工具箱 / 公式页 /
+ * 解题页 / 提交 / 后台管理）—— 它们前台时窗口里根本没有文档，打出来的是界面本身。
+ */
+function printAllowed(win: BrowserWindow | null): boolean {
+  // 没有窗口时保持可用（此时也点不到）：与渲染端还没上报（null）按文档算同一约定。
+  if (!win || win.isDestroyed()) return true
+  const kind = getState(win).activeTabKind
+  return kind === null || kind === 'document'
 }
 
 /** 打印相关菜单项此刻是否可用（按聚焦窗口的前台标签页算） */
 function printMenuEnabled(): boolean {
-  return !isCanvasTabActive(focusedWindow())
+  return printAllowed(focusedWindow())
 }
 
 // 菜单是全局的、构建时 enabled 就定死了，所以状态翻转时要重建一次；用缓存挡掉
@@ -2442,15 +3204,50 @@ function syncPrintMenuState(): void {
   buildMenu()
 }
 
+// 「文件」下的保存 / 另存为 / 导出要求前台是接管编辑器的 md 标签页。前台是整页视图
+//（提交 / 类docx / 工具箱 / LaTeX公式 / 可视化解题 / 后台管理）时一律置灰：否则保存
+// 会把上一个文档的内容又写一遍（模块级编辑器状态还留在那儿），导出 PDF 更会把工具页
+// 本身印出去。
+//
+// 挂了源文件的三种标签页（PDF 对照 / 图片转md / docx转md）仍然算可用 —— 它们右侧
+// 就是编辑器，转换结果只能靠保存落地（suggestFileName 也按源文件名给默认值）。
+const MARKDOWN_MENU_ITEM_IDS = [
+  'file-save',
+  'file-save-as',
+  'file-export-docx',
+  'file-export-html',
+  'file-export-pdf'
+] as const
+
+function markdownMenuEnabled(win: BrowserWindow | null): boolean {
+  // 没有窗口、或渲染端还没上报（null）时按文档算，与 activeTabKind 字段的约定一致。
+  const kind = win && !win.isDestroyed() ? getState(win).activeTabKind : null
+  return kind === null || kind === 'document'
+}
+
+/**
+ * 原地改这几个菜单项的 enabled —— 切标签页太频繁，不值得为此重建整份菜单
+ *（buildMenu 要重发 menubar-labels-changed）。
+ */
+function syncDocMenuState(win: BrowserWindow | null = focusedWindow()): void {
+  const enabled = markdownMenuEnabled(win)
+  const menu = Menu.getApplicationMenu()
+  if (!menu) return
+  for (const id of MARKDOWN_MENU_ITEM_IDS) {
+    const item = menu.getMenuItemById(id)
+    if (item && item.enabled !== enabled) item.enabled = enabled
+  }
+}
+
 ipcHandle('print', (event) => {
   const win = getWinFromEvent(event)
-  if (!win || isCanvasTabActive(win)) return false
+  if (!win || !printAllowed(win)) return false
   return printWindow(win)
 })
 
 ipcHandle('print-preview', async (event) => {
   const win = getWinFromEvent(event)
-  if (!win || isCanvasTabActive(win)) return null
+  if (!win || !printAllowed(win)) return null
   return await printPreviewBytes(win)
 })
 
@@ -2597,11 +3394,9 @@ ipcHandle('load-theme-css', async (_event, fileName: string) => {
   }
 })
 
-// Renderer reports the applied theme; the Theme menu checkmarks are updated
-// in place (never rebuild the menu from an IPC callback — setApplicationMenu
-// inside a menu-triggered path hangs the main process).
+// Renderer reports the applied theme. There is no Theme menu any more (the three
+// built-in themes live in Preferences → Appearance), so this is just bookkeeping.
 let currentTheme = 'elegant'
-let themeMenuItems: Array<{ id: string; theme: string }> = []
 // Enumerate installed system font families for the font settings dialog (#7752855).
 // Uses NSFontManager via JXA — the same source as the macOS font panel — so the
 // list matches what the system and other apps (e.g. Typora) show, with
@@ -2690,11 +3485,13 @@ ipcHandle('report-external-conflict', async (event) => {
   event.sender.send('external-conflict-result', { action: 'keep' })
 })
 
+// 主题菜单已撤（选项在偏好设置「外观 → 主题」里，切换完全发生在渲染端）。
+// 这条上报留着：主进程仍需要知道当前主题名，别的按主题判断的地方（窗口控件配色、
+// 以后的日志/诊断）都靠它。
 ipcHandle('report-theme', (_event, theme: unknown) => {
   const next = typeof theme === 'string' && theme ? theme : 'elegant'
   if (next === currentTheme) return
   currentTheme = next
-  updateThemeMenuChecks()
 })
 
 // The Windows window controls are painted by the OS inside our own row, so their
@@ -2733,10 +3530,10 @@ ipcHandle('popup-app-menu', (event) => {
 })
 
 // ─── Typora 式自定义顶部菜单栏 ──────────────────────────────────────────────
-// 顶部五个一级标签（文件/编辑/视图/主题/帮助）由 renderer 绘制，二级菜单仍弹出
-// 原生菜单：复用全部 accelerator / checkbox / 动态子菜单（最近文件、主题）。
+// 顶部一级标签（文件/格式/插入/字体/字号/视图/打印/帮助）由 renderer 绘制，
+// 二级菜单仍弹出原生菜单：复用全部 accelerator / checkbox / 动态子菜单（最近文件）。
 // buildMenu 每次重建后按 key 保存当前顶层 MenuItem 引用。
-type MenubarKey = 'file' | 'edit' | 'format' | 'insert' | 'font' | 'fontSize' | 'view' | 'theme' | 'print' | 'help'
+type MenubarKey = 'file' | 'edit' | 'format' | 'insert' | 'font' | 'fontSize' | 'view' | 'print' | 'help'
 let menubarItems: Partial<Record<MenubarKey, Electron.MenuItem>> = {}
 
 // renderer 拉取当前界面语言下的五个标签文本
@@ -2758,6 +3555,9 @@ ipcHandle('menubar-get-labels', () => {
 ipcHandle('menubar-popup', (event, key: unknown, x: unknown, y: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || win.isDestroyed()) return
+  // 自绘菜单按钮弹的是同一份 MenuItem：弹出前先按本窗口的前台视图同步一次
+  //（菜单已经弹出时再改 enabled 不会重绘，所以只能在这里补）。
+  syncDocMenuState(win)
   if (typeof key !== 'string') return
   const item = menubarItems[key as MenubarKey]
   if (!item?.submenu) return
@@ -2815,31 +3615,10 @@ function sendToFocused(channel: string, ...args: unknown[]): void {
 function buildMenu(): void {
   const isMac = process.platform === 'darwin'
 
-  // Scan custom themes synchronously for menu building
-  const customThemeItems: Electron.MenuItemConstructorOptions[] = []
-  try {
-    const files = readdirSync(themesDir).filter((f: string) => f.endsWith('.css')).sort()
-    for (const file of files) {
-      customThemeItems.push({
-        label: file.replace(/\.css$/, ''),
-        id: `theme-custom-${file}`,
-        checked: currentTheme === `custom:${file}`,
-        type: 'checkbox' as const,
-        click: async () => {
-          try {
-            const css = await readFile(join(themesDir, file), 'utf-8')
-            sendToFocused('set-theme', `custom:${file}`)
-            sendToFocused('set-custom-css', css)
-          } catch { /* ignore */ }
-        }
-      })
-    }
-  } catch { /* themes dir may not exist yet */ }
-
   const preferredCheatsheetLanguage = getPreferredCheatsheetLanguage()
   const labels = preferredCheatsheetLanguage === 'zh'
     ? {
-        file: '文件', edit: '编辑', format: '格式', insert: '插入', view: '视图', theme: '主题', window: '窗口', help: '帮助',
+        file: '文件', edit: '编辑', format: '格式', insert: '插入', view: '视图', window: '窗口', help: '帮助',
         print: '打印', printPage: '打印', printPreview: '打印预览',
         newFile: '新建markdown', newMdFile: '新建md文件', open: '打开', save: '保存', saveAs: '另存为',
         newTab: '新建标签页', closeTab: '关闭标签页',
@@ -2854,12 +3633,9 @@ function buildMenu(): void {
         circledSup: '带圈序号…', pinyin: '拼音…', tianzi: '田字格…',
         image: '图片…', table: '表格…', subblock: '子块…', cols: '分栏…',
         latexFormula: 'LaTex公式…', bulletList: '无序列表', orderedList: '有序列表',
-        light: '浅色', dark: '深色', elegant: '雅致',
-        sepia: '羊皮纸', notion: '简白', bear: '熊红', writer: '作家',
-        solarizedDark: '夜航', nord: '极地', gruvbox: '暖木', dracula: '德古拉', midnight: '午夜',
-        importTheme: '导入主题', usageGuide: 'Teyoo用法指南',
-        cheatsheet: 'Markdown 语法', about: '关于 Teyoo', checkForUpdates: '检查更新', updateAvailable: '发现新版本', close: '关闭窗口',
-        preferences: '偏好设置…', toolbox: '工具箱', visualSolve: '可视化解题', latexOcr: 'LaTeX公式',
+        usageGuide: 'Teyoo用法指南',
+        cheatsheet: 'Markdown 语法', about: '关于 Teyoo', updateAvailable: '发现新版本', close: '关闭窗口',
+        preferences: '偏好设置…', pdfSplit: 'PDF拆分', visualSolve: '可视化解题', latexOcr: 'LaTeX公式',
         adminPanel: '后台管理系统',
         snipFormula: '截屏识别公式…',
         font: '字体', fontFamily: '字体名', fontSize: '字号', clearFont: '清除字体',
@@ -2874,7 +3650,7 @@ function buildMenu(): void {
         minimize: '最小化', zoom: '缩放', front: '前置全部窗口',
       }
     : {
-        file: 'File', edit: 'Edit', format: 'Format', insert: 'Insert', view: 'View', theme: 'Theme', window: 'Window', help: 'Help',
+        file: 'File', edit: 'Edit', format: 'Format', insert: 'Insert', view: 'View', window: 'Window', help: 'Help',
         print: 'Print', printPage: 'Print', printPreview: 'Print Preview',
         newFile: 'New Markdown', newMdFile: 'New MD File', open: 'Open', save: 'Save', saveAs: 'Save As',
         newTab: 'New Tab', closeTab: 'Close Tab',
@@ -2889,12 +3665,9 @@ function buildMenu(): void {
         circledSup: 'Circled Number…', pinyin: 'Pinyin…', tianzi: 'Tianzi Grid…',
         image: 'Image…', table: 'Table…', subblock: 'Sub-block…', cols: 'Columns…',
         latexFormula: 'LaTeX Formula…', bulletList: 'Bullet List', orderedList: 'Ordered List',
-        light: 'Light', dark: 'Dark', elegant: 'Elegant',
-        sepia: 'Sepia', notion: 'Notion', bear: 'Bear', writer: 'Writer',
-        solarizedDark: 'Solarized Dark', nord: 'Nord', gruvbox: 'Gruvbox', dracula: 'Dracula', midnight: 'Midnight',
-        importTheme: 'Import Theme', usageGuide: 'Teyoo Guide',
-        cheatsheet: 'Markdown Syntax', about: 'About Teyoo', checkForUpdates: 'Check for Updates', updateAvailable: 'Update Available', close: 'Close Window',
-        preferences: 'Preferences…', toolbox: 'Toolbox', visualSolve: 'Visual Solver', latexOcr: 'LaTeX OCR',
+        usageGuide: 'Teyoo Guide',
+        cheatsheet: 'Markdown Syntax', about: 'About Teyoo', updateAvailable: 'Update Available', close: 'Close Window',
+        preferences: 'Preferences…', pdfSplit: 'Split PDF', visualSolve: 'Visual Solver', latexOcr: 'LaTeX OCR',
         adminPanel: 'Admin',
         snipFormula: 'Snip Formula…',
         font: 'Font', fontFamily: 'Font Family', fontSize: 'Font Size', clearFont: 'Clear Font',
@@ -2909,42 +3682,9 @@ function buildMenu(): void {
         minimize: 'Minimize', zoom: 'Zoom', front: 'Bring All to Front',
       }
 
-  const themeIdByLabel = new Map<string, string>([
-    [labels.light, 'light'],
-    [labels.elegant, 'elegant'],
-    [labels.notion, 'notion'],
-    [labels.writer, 'writer'],
-    [labels.bear, 'bear'],
-    [labels.sepia, 'sepia'],
-    [labels.dark, 'dark'],
-    [labels.gruvbox, 'gruvbox'],
-    [labels.midnight, 'midnight'],
-    [labels.solarizedDark, 'solarized-dark'],
-    [labels.nord, 'nord'],
-    [labels.dracula, 'dracula'],
-  ])
-  const themeSubmenu: Electron.MenuItemConstructorOptions[] = [
-    { label: labels.light, id: 'theme-light', type: 'checkbox' as const, checked: currentTheme === 'light', click: () => sendToFocused('set-theme', 'light') },
-    { label: labels.elegant, id: 'theme-elegant', type: 'checkbox' as const, checked: currentTheme === 'elegant', click: () => sendToFocused('set-theme', 'elegant') },
-    { label: labels.notion, id: 'theme-notion', type: 'checkbox' as const, checked: currentTheme === 'notion', click: () => sendToFocused('set-theme', 'notion') },
-    { label: labels.writer, id: 'theme-writer', type: 'checkbox' as const, checked: currentTheme === 'writer', click: () => sendToFocused('set-theme', 'writer') },
-    { label: labels.bear, id: 'theme-bear', type: 'checkbox' as const, checked: currentTheme === 'bear', click: () => sendToFocused('set-theme', 'bear') },
-    { label: labels.sepia, id: 'theme-sepia', type: 'checkbox' as const, checked: currentTheme === 'sepia', click: () => sendToFocused('set-theme', 'sepia') },
-    { type: 'separator' },
-    { label: labels.dark, id: 'theme-dark', type: 'checkbox' as const, checked: currentTheme === 'dark', click: () => sendToFocused('set-theme', 'dark') },
-    { label: labels.gruvbox, id: 'theme-gruvbox', type: 'checkbox' as const, checked: currentTheme === 'gruvbox', click: () => sendToFocused('set-theme', 'gruvbox') },
-    { label: labels.midnight, id: 'theme-midnight', type: 'checkbox' as const, checked: currentTheme === 'midnight', click: () => sendToFocused('set-theme', 'midnight') },
-    { label: labels.solarizedDark, id: 'theme-solarized-dark', type: 'checkbox' as const, checked: currentTheme === 'solarized-dark', click: () => sendToFocused('set-theme', 'solarized-dark') },
-    { label: labels.nord, id: 'theme-nord', type: 'checkbox' as const, checked: currentTheme === 'nord', click: () => sendToFocused('set-theme', 'nord') },
-    { label: labels.dracula, id: 'theme-dracula', type: 'checkbox' as const, checked: currentTheme === 'dracula', click: () => sendToFocused('set-theme', 'dracula') },
-  ]
-  if (customThemeItems.length > 0) {
-    themeSubmenu.push({ type: 'separator' }, ...customThemeItems)
-  }
-  themeSubmenu.push({ type: 'separator' }, {
-    label: labels.importTheme,
-    click: () => sendToFocused('menu-import-theme')
-  })
+  // 主题不再是顶层菜单：选项收进了偏好设置「外观 → 主题」（renderer 侧直接调
+  // applyTheme，不再经过主进程）。这里留不下任何主题菜单项，相关勾选态机制
+  // （themeMenuItems / updateThemeMenuChecks）也一并撤了。
 
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{
@@ -3035,27 +3775,40 @@ function buildMenu(): void {
         //   click: () => sendToFocused('menu-close-tab')
         // },
         // { type: 'separator' },
+        // 下面五项都要有可编辑的 Markdown 前台才有对象：前台是整页视图时置灰。
+        // id 是给 syncDocMenuState 原地改 enabled 用的（label 会随界面语言变，
+        // 不能拿 label 当 id）。enabled 只在构建时算一次，之后靠原地同步。
         {
+          id: 'file-save',
           label: labels.save,
           accelerator: 'CmdOrCtrl+S',
+          enabled: markdownMenuEnabled(focusedWindow()),
           click: () => sendToFocused('menu-save')
         },
         {
+          id: 'file-save-as',
           label: labels.saveAs,
           accelerator: 'CmdOrCtrl+Shift+S',
+          enabled: markdownMenuEnabled(focusedWindow()),
           click: () => sendToFocused('menu-save-as')
         },
         { type: 'separator' },
         {
+          id: 'file-export-docx',
           label: labels.exportWord,
+          enabled: markdownMenuEnabled(focusedWindow()),
           click: () => sendToFocused('menu-export-docx')
         },
         {
+          id: 'file-export-html',
           label: labels.exportHTML,
+          enabled: markdownMenuEnabled(focusedWindow()),
           click: () => sendToFocused('menu-export-html')
         },
         {
+          id: 'file-export-pdf',
           label: labels.exportPDF,
+          enabled: markdownMenuEnabled(focusedWindow()),
           click: () => sendToFocused('menu-export-pdf')
         },
         // 「导出图片（电脑阅读）/（手机阅读）」已从菜单移除（labels.exportImage*
@@ -3217,17 +3970,13 @@ function buildMenu(): void {
         { label: labels.devTools, role: 'toggleDevTools' }
       ]
     },
-    {
-      label: labels.theme,
-      submenu: themeSubmenu
-    },
     // The Window menu is not cosmetic: macOS injects the system window-tiling
     // commands (System Settings → Keyboard → Keyboard Shortcuts → Windows, e.g.
     // ⌃⌥⌘←) into whichever menu is registered via setWindowsMenu. Electron does
     // that only for role 'windowMenu' — without it every tiling shortcut is
     // dead in the app (#97). The role supplies the items; the label is ours, so
     // the menu speaks the interface language like every other one (an English
-    // "Window" sat between 主题 and 帮助 until 2026-09-15).
+    // "Window" sat between the old 主题 menu and 帮助 until 2026-09-15).
     ...(isMac ? [{ role: 'windowMenu' as const, label: labels.window }] : []),
     {
       label: labels.print,
@@ -3235,11 +3984,12 @@ function buildMenu(): void {
         {
           label: labels.printPage,
           accelerator: 'CmdOrCtrl+P',
-          // 类 docx 文档（canvas-editor）标签页上前台时置灰：打印只走它自己工具栏
+          // 类 docx 文档（canvas-editor）或整页视图在前台时置灰：前者只走它自己工具栏
+          // 那套，后者窗口里根本没有文档（见 printAllowed）。
           enabled: printMenuEnabled(),
           click: () => {
             const win = focusedWindow()
-            if (!win || isCanvasTabActive(win)) return
+            if (!win || !printAllowed(win)) return
             printWindow(win)
           }
         },
@@ -3252,28 +4002,32 @@ function buildMenu(): void {
           enabled: printMenuEnabled(),
           click: () => {
             const win = focusedWindow()
-            if (!win || isCanvasTabActive(win)) return
+            if (!printAllowed(win)) return
             sendToFocused('menu-print-preview')
           }
         }
       ]
     },
+    // 「帮助」：整页功能入口在前（后台管理系统是最常用的，放第一位），
+    // 随包文档居中，偏好设置收在最后。原来的「关于 Teyoo / 检查更新」已经去掉
+    // （关于在 macOS 的 Teyoo 应用菜单里还有一条，见上面的 appMenu）。
     {
       label: labels.help,
       submenu: [
+        // 后台管理系统：整页的 Vue 3 应用（src/adminPanel），登录后才能用。
+        // 开在当前窗口的标签页里，不另起窗口。
         {
-          label: labels.preferences,
-          accelerator: 'CmdOrCtrl+,',
-          click: () => sendToFocused('menu-preferences')
+          label: labels.adminPanel,
+          click: () => sendToFocused('menu-admin-panel')
         },
-        // 工具箱：独立工具页（目前只有 PDF拆分）。与「PDF转md / 图片转md」同一
-        // 套路 —— 开在当前窗口的标签页里，不另起窗口。
+        // PDF拆分：独立工具页（工具箱里目前只有这一个工具，菜单直接按它命名）。
+        // 与「PDF转md / 图片转md」同一套路 —— 开在当前窗口的标签页里。
         {
-          label: labels.toolbox,
+          label: labels.pdfSplit,
           click: () => sendToFocused('menu-toolbox-tab')
         },
         // 可视化解题：整页解题标签页（题目输入 / 分步求解 / 步骤插入正文）。
-        // 与工具箱同一套路 —— 开在当前窗口的标签页里。
+        // 与上面几个同一套路 —— 开在当前窗口的标签页里。
         {
           label: labels.visualSolve,
           click: () => sendToFocused('menu-solver-tab')
@@ -3282,12 +4036,6 @@ function buildMenu(): void {
         {
           label: labels.latexOcr,
           click: () => sendToFocused('menu-texo-tab')
-        },
-        // 后台管理系统：整页的 Vue 3 应用（src/adminPanel），登录后才能用。
-        // 与上面几个同一套路：开在当前窗口的标签页里。
-        {
-          label: labels.adminPanel,
-          click: () => sendToFocused('menu-admin-panel')
         },
         // 截屏识别公式：同一份本地模型，只是配方从「选一张图」换成「屏幕上框一块」。
         // 菜单事件只发通知，抓屏由渲染端发起（preload 的 requestSnip）：要看是哪个
@@ -3311,11 +4059,8 @@ function buildMenu(): void {
           accelerator: 'CmdOrCtrl+Shift+/',
           click: () => { void openCheatsheet(preferredCheatsheetLanguage, labels.cheatsheet) }
         },
-        {
-          label: labels.checkForUpdates,
-          enabled: app.isPackaged,
-          click: () => { void checkForUpdates(true) }
-        },
+        // 自动检查发现有新版本时（latestVersion 由 autoUpdater 的回包写入）才出现，
+        // 是唯一的手动下载入口 —— 菜单里已经没有「检查更新」，别把这条也删了。
         ...(latestVersion ? [{
           label: `${labels.updateAvailable} v${latestVersion}`,
           click: () => {
@@ -3324,7 +4069,11 @@ function buildMenu(): void {
           }
         }] : []),
         { type: 'separator' },
-        { label: labels.about, role: 'about' }
+        {
+          label: labels.preferences,
+          accelerator: 'CmdOrCtrl+,',
+          click: () => sendToFocused('menu-preferences')
+        }
       ]
     }
   ]
@@ -3342,7 +4091,6 @@ function buildMenu(): void {
     font: menu.items.find((item) => item.label === labels.font),
     fontSize: menu.items.find((item) => item.label === labels.fontSize),
     view: menu.items.find((item) => item.label === labels.view),
-    theme: menu.items.find((item) => item.label === labels.theme),
     print: menu.items.find((item) => item.label === labels.print),
     help: menu.items.find((item) => item.label === labels.help),
   }
@@ -3354,14 +4102,10 @@ function buildMenu(): void {
   })
   // 这次构建用的就是当前的打印可用状态，记下来给 syncPrintMenuState 比对
   printMenuEnabledCache = printMenuEnabled()
-  // 菜单可能因语言切换/主题变更/更新状态而重建，通知 renderer 刷新标签文本
+  // 菜单可能因语言切换/更新状态而重建，通知 renderer 刷新标签文本
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('menubar-labels-changed')
   }
-  themeMenuItems = [
-    ...themeSubmenu.filter((item): item is Electron.MenuItemConstructorOptions & { id: string } => typeof item.id === 'string')
-      .map((item) => ({ id: item.id, theme: themeIdByLabel.get(item.label ?? '') ?? (item.id.startsWith('theme-custom-') ? `custom:${String(item.label)}.css` : '') })),
-  ]
 }
 
 // The Window menu's three standard items come from the 'windowMenu' role, and
@@ -3383,15 +4127,6 @@ function localizeWindowMenu(menu: Menu, labels: { minimize: string; zoom: string
   for (const item of windowMenu.submenu.items) {
     const label = item.role ? byRole[item.role] : undefined
     if (label) item.label = label
-  }
-}
-
-function updateThemeMenuChecks(): void {
-  const menu = Menu.getApplicationMenu()
-  if (!menu) return
-  for (const entry of themeMenuItems) {
-    const item = menu.getMenuItemById(entry.id)
-    if (item) item.checked = entry.theme === currentTheme
   }
 }
 
@@ -3474,6 +4209,14 @@ function setupAutoUpdater(): void {
   }, 8000)
 }
 
+// 标题栏「检查更新」那颗云图标（原「帮助 → 检查更新」菜单项，菜单项已撤）。
+// manual=true：结果会弹系统对话框（已是最新 / 检查失败），有新版则走
+// broadcast('update-available') 让渲染端弹横幅 —— 与自动检查共用同一条链路。
+// 未打包的调试环境里 checkForUpdates 直接返回，什么都不会发生。
+ipcHandle('check-updates', async () => {
+  await checkForUpdates(true)
+})
+
 ipcHandle('download-update', async () => {
   updateDownloadRequested = true
   await autoUpdater.downloadUpdate()
@@ -3486,7 +4229,7 @@ ipcHandle('install-update', () => {
 // App lifecycle
 
 // --- Single instance (#99, #100) ---
-// A second launch while ColaMD runs must not become a second process: it
+// A second launch while Teyoo runs must not become a second process: it
 // doubles memory, shows two menu bars, and its renderer stalls ~4 seconds on
 // the first instance's LevelDB lock for Local Storage before giving up on
 // writing theme/state preferences. The second launch's files arrive in
@@ -3528,6 +4271,13 @@ app.whenReady().then(() => {
   ensureThemesDir()
   buildMenu()
 
+  // 菜单是全局的，可用性按「聚焦窗口的前台标签页」算：切窗口时重新同步一次，
+  // 否则菜单仍按上一个窗口的前台视图显示（打印项同理）。
+  app.on('browser-window-focus', () => {
+    syncDocMenuState()
+    syncPrintMenuState()
+  })
+
   // Check command line args for file paths
   const args = process.argv.slice(app.isPackaged ? 1 : 2)
   const fileArgs = args.filter((arg) => !arg.startsWith('-'))
@@ -3547,10 +4297,13 @@ app.whenReady().then(() => {
     // available from Help and are loaded only when explicitly requested.
     // With session restore on, reopen the most recent document instead (#45).
     const lastDoc = recentStore.restoreOnLaunch ? recentStore.recent.find((p) => existsSync(p)) : undefined
+    // 这两个分支才是「启动」：第四个参数让渲染端有机会把启动页（偏好
+    // general.startPage = 后台管理系统）切到前台。恢复出来的文档照常打开，只是
+    // 留在后台标签里。
     if (lastDoc) {
-      createWindow(lastDoc)
+      createWindow(lastDoc, undefined, undefined, true)
     } else {
-      createWindow()
+      createWindow(undefined, undefined, undefined, true)
     }
   }
 

@@ -29,14 +29,14 @@ index c5ca771..a6da775 100644
 -        notInConstruct
 -      }
 -    ]
-+    // ColaMD patch: removed the original 3 unsafe rules for '@', '.', ':'.
++    // Teyoo patch: removed the original 3 unsafe rules for '@', '.', ':'.
 +    //
 +    // They escaped `foo\@bar.com`, `www\.x.com`, `http\://x.com` in text —
 +    // but the from-markdown side (transformGfmAutolinkLiterals) is a
 +    // post-parse find-and-replace that runs on text VALUES (where the
 +    // backslashes are already consumed by the escape parser), so these
 +    // escapes can never prevent linkification. They were pure source noise
-+    // and broke ColaMD's character-fidelity round-trip guarantee.
++    // and broke Teyoo's character-fidelity round-trip guarantee.
 +    unsafe: []
    }
  }

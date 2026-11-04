@@ -7,12 +7,12 @@ import { getPrefs, setPrefsPath } from '../preferences-store'
 // ────────────────────────────────────────────────────────────────────────────
 // - 引擎在模块加载时注册（katex / mathjax），后续新引擎在此追加
 // - 当前引擎 id 持久化：主进程 userSetting.json（markdown.latexEngine）；
-//   兼容期仍写 localStorage 'colamd-latex-engine'，prefs-store 启动时会
+//   兼容期仍写 localStorage 'teyoo-latex-engine'，prefs-store 启动时会
 //   自动迁移到主进程 JSON 并清掉旧 key，之后不再写。
 // - 切换时同步通知所有监听者（nodeView 据此立即重渲染）
 
 // 兼容期旧 localStorage key（preferences-store 启动时迁移）
-const LEGACY_LS_KEY = 'colamd-latex-engine'
+const LEGACY_LS_KEY = 'teyoo-latex-engine'
 const PREFS_PATH = 'markdown.latexEngine'
 
 const engines = new Map<MathEngineId, MathEngine>()

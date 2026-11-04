@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 /** 把这次构建产出的 JS / CSS 全部内联进 HTML 模板，只留一个文件。 */
 function singleFileHtml(templatePath: string): Plugin {
   return {
-    name: 'colamd-webview2-single-file',
+    name: 'teyoo-webview2-single-file',
     enforce: 'post',
     generateBundle(_options, bundle) {
       let js = ''
@@ -53,12 +53,24 @@ const mathjaxVersion = JSON.parse(
 export default defineConfig({
   root: resolve(__dirname, 'src/webview2'),
   resolve: {
-    alias: {
+    // 必须用数组形式：对象字面量的正则 key 会被字符串化（"[object RegExp]"），
+    // 匹配不上任何 importee，别名也就静默失效。
+    alias: [
       // docx-import.ts（Word → Markdown）原本跑在主进程，依赖 @napi-rs/canvas
       // 的原生 Skia 绑定来栅格化 MathType 公式图片。页面里没有 Node 原生模块，
       // 换成同接口的 Canvas/OffscreenCanvas 实现 —— 源码一行不改。
-      '@napi-rs/canvas': resolve(__dirname, 'src/webview2/canvas-shim.ts'),
-    },
+      {
+        find: '@napi-rs/canvas',
+        replacement: resolve(__dirname, 'src/webview2/canvas-shim.ts'),
+      },
+      // docx-import.ts 默认把图片落盘到工作目录（node:fs / node:crypto / node:path）。
+      // 页面里没有文件系统，换成同签名的空实现 —— 自动退回 base64 内嵌，
+      // docx-import.ts 的源码同样一行不改。
+      {
+        find: /^\.\/docx-image-store$/,
+        replacement: resolve(__dirname, 'src/webview2/docx-image-store-shim.ts'),
+      },
+    ],
   },
   define: {
     PACKAGE_VERSION: JSON.stringify(mathjaxVersion)
@@ -75,7 +87,7 @@ export default defineConfig({
     lib: {
       entry: resolve(__dirname, 'src/webview2/main.ts'),
       formats: ['iife'],
-      name: 'ColamdEditorBundle',
+      name: 'TeyooEditorBundle',
       fileName: () => 'editor.js'
     }
   },

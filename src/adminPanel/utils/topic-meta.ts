@@ -11,14 +11,22 @@ export const EASY_LEVELS = ['1', '2', '3', '4', '5']
 
 export interface TopicMeta {
   course: string
+  /**
+   * 学段码（primary / junior / senior / other）。
+   *
+   * ctbapp 的提交表单里没有这一项 —— 它只管「从哪个学段的考点树里挑知识点」：
+   * key_points 按 (course_code, class_level) 两列筛，不先定学段就不知道该展开哪一支。
+   * 因此它参与校验，但**不进提交 payload**（后端要的是 classLevelName 翻出来的年级码）。
+   */
+  stage: string
   classLevelName: string
   easy: string
   knowledgePoints: string
 }
 
-/** 三个选项都不给默认值：填错了比没填更麻烦（ctbapp 也是从空开始） */
+/** 四个选项都不给默认值：填错了比没填更麻烦（ctbapp 也是从空开始） */
 export function createMeta(): TopicMeta {
-  return { course: '', classLevelName: '', easy: '', knowledgePoints: '' }
+  return { course: '', stage: '', classLevelName: '', easy: '', knowledgePoints: '' }
 }
 
 /**
@@ -36,10 +44,14 @@ export function blankProblem(value: string, label: string): string | null {
  *
  * 顺序与文案照 ctbapp 的 submit()：科目 → 难易程度 → 适用年级 → 知识点。
  * 题目 / 答案两项由页面先查（ctbapp 也是先查习题、答案，再查这几个下拉）。
+ *
+ * 「学段」是本页新增的一项（ctbapp 没有）：它决定知识点候选从哪一支取，
+ * 所以排在适用年级前面 —— 层级由大到小，先学段再年级。
  */
 export function firstMetaProblem(meta: TopicMeta): string | null {
   if (!meta.course) return '科目未选择'
   if (!meta.easy) return '难易程度未选择'
+  if (!meta.stage) return '学段未选择'
   if (!meta.classLevelName) return '适用年级未选择'
   return blankProblem(meta.knowledgePoints, '知识点')
 }

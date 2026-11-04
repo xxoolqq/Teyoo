@@ -8,7 +8,7 @@
 // 与 C# 对话的三种方式，任选其一：
 //   1) C# → 页面：CoreWebView2.PostWebMessageAsJson({"type":"setMarkdown","markdown":"…"})
 //   2) 页面 → C#：window.chrome.webview.postMessage({type:'ready'|'change'|'markdown'|'error'})
-//   3) C# 直接调：ExecuteScriptAsync("ColamdEditor.getMarkdown()")（同步返回字符串）
+//   3) C# 直接调：ExecuteScriptAsync("TeyooEditor.getMarkdown()")（同步返回字符串）
 //
 // 编辑器内核不依赖 Electron（未判空的两处调用见 ./host-stub），所以这个产物是
 // 纯前端的：单个 HTML 文件，JS/CSS 全部内联，file:// 直接打开也能跑。
@@ -131,7 +131,7 @@ const host = (window as unknown as { chrome?: { webview?: WebviewHost } }).chrom
 // postMessage 会被自己的监听器收到并再次 handle：'change' 之类还算无害，
 // 但 default 分支会回一条 {type:'error'}，于是自激成死循环。
 // iframe 里 parent 是真正的宿主，照常发。
-const OUTBOUND = 'colamd-webview2'
+const OUTBOUND = 'teyoo-webview2'
 
 function post(message: Record<string, unknown>): void {
   const payload = { source: OUTBOUND, ...message }
@@ -146,7 +146,7 @@ function initialTheme(): string {
 
 function setTheme(name: string): void {
   applyTheme(name)
-  localStorage.setItem('colamd-theme', name)
+  localStorage.setItem('teyoo-theme', name)
 }
 
 // ─── Word 选区导入（VSTO → 任务窗格）───────────────────────────────────
@@ -154,11 +154,11 @@ function setTheme(name: string): void {
 // VSTO 把 Word 里的选区（比如一道数学题）另存为 .docx，例如在
 // D:\TeyooDocx\question_20260929_152138.docx，然后把字节送进页面。四种送法
 // 任选，页面按下面的顺序挑第一个给出来的：
-//   bytes —— JS 直接传 Uint8Array（ColamdEditor.importDocx({ bytes })）
+//   bytes —— JS 直接传 Uint8Array（TeyooEditor.importDocx({ bytes })）
 //   data  —— base64 字符串，塞在 PostWebMessageAsJson 里（C# 改动最小；
 //            选区级别的 docx 通常几十 KB，走这条最省事）
 //   url   —— 完整 URL，页面自己 fetch（C# 用 SetVirtualHostNameToFolderMapping
-//            把目录映射成 https://colamd-docx/ 时走这条，不受消息体积限制）
+//            把目录映射成 https://teyoo-docx/ 时走这条，不受消息体积限制）
 //   file  —— 只有文件名时拼到 docxBase 上（?docxBase=… 或消息 setDocxBase）
 //
 // 落地方式 mode：append（默认，追加到该栏末尾）/ replace（整栏替换）/
@@ -524,7 +524,7 @@ window.addEventListener('message', (event) => {
 // C# 侧 ExecuteScriptAsync 可以直接调用这个对象；ready 用来等待就绪。
 // 每个方法都可带一个 target 参数（'exercise' | 'answer'），不写就作用于当前
 // 有焦点那一栏 —— 单参数的旧调用方式不受影响。
-;(window as unknown as { ColamdEditor: unknown }).ColamdEditor = {
+;(window as unknown as { TeyooEditor: unknown }).TeyooEditor = {
   ready,
   getMarkdown: (target?: string) => getMarkdown(rootOf(target)),
   setMarkdown: (markdown: string, target?: string) => setMarkdown(markdown, true, rootOf(target)),

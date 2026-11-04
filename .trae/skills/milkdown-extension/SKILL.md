@@ -1,11 +1,11 @@
 ---
 name: milkdown-extension
-description: 在 ColaMD 中实现新的 Markdown 扩展语法（规约 A-G 类自定义语法，含行内节点、mark、块级容器）。当用户给出 .trae/规约*.txt 或要求新增 milkdown/markdown 自定义语法、渲染+源码往返时使用。不用于普通 bug 修复或 docx 导出逻辑。
+description: 在 Teyoo 中实现新的 Markdown 扩展语法（规约 A-G 类自定义语法，含行内节点、mark、块级容器）。当用户给出 .trae/规约*.txt 或要求新增 milkdown/markdown 自定义语法、渲染+源码往返时使用。不用于普通 bug 修复或 docx 导出逻辑。
 ---
 
-# ColaMD milkdown 扩展开发
+# Teyoo milkdown 扩展开发
 
-ColaMD = Electron + milkdown（@milkdown/kit + commonmark/gfm preset）。所有规约扩展源码放在 `src/extensions/<kebab-name>/`，注释用中文，且必须同时支持：所见即所得即时渲染、源码模式原样语法、两者无损往返。
+Teyoo = Electron + milkdown（@milkdown/kit + commonmark/gfm preset）。所有规约扩展源码放在 `src/extensions/<kebab-name>/`，注释用中文，且必须同时支持：所见即所得即时渲染、源码模式原样语法、两者无损往返。
 
 ## 0. 动手前先定协议（最重要）
 

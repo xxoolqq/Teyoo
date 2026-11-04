@@ -216,7 +216,7 @@ export class ColsModal {
 
       const oldCount = node.childCount
       const newCount = columnCount(spec)
-      let tr = view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, spec })
+      const tr = view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, spec })
 
       if (newCount > oldCount) {
         // 新增子块：追加到末尾

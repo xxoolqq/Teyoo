@@ -1,7 +1,7 @@
 // 图片 NodeView —— WYSIWYG 单击选中出现定位框，拖拽手柄自由调整尺寸
 // ────────────────────────────────────────────────────────────────────────────
-// 结构：dom = 包裹层 span.colamd-image-view（position:relative）> img + 定位框
-// （.colamd-image-frame，8 手柄）。img 的属性/样式渲染与 schema.toDOM 完全一致。
+// 结构：dom = 包裹层 span.teyoo-image-view（position:relative）> img + 定位框
+// （.teyoo-image-frame，8 手柄）。img 的属性/样式渲染与 schema.toDOM 完全一致。
 //
 // - 显隐：ProseMirror 原生 selectNode / deselectNode（点击 inline atom 节点即
 //   产生 NodeSelection），定位框画在 nodeView 内部，天然跟随滚动/重排，
@@ -136,7 +136,7 @@ export function createImageNodeView(
   destroy: () => void
 } {
   const wrap = document.createElement('span')
-  wrap.classList.add('colamd-image-view')
+  wrap.classList.add('teyoo-image-view')
 
   const img = document.createElement('img')
   img.draggable = false // 屏蔽浏览器原生图片拖拽，移动节点交给 PM 自身 drag 机制
@@ -144,10 +144,10 @@ export function createImageNodeView(
 
   // 定位框：pointer-events none 不挡点击，仅手柄可交互
   const frame = document.createElement('div')
-  frame.className = 'colamd-image-frame'
+  frame.className = 'teyoo-image-frame'
   for (const { dir, cursor } of HANDLES) {
     const h = document.createElement('span')
-    h.className = 'colamd-image-handle'
+    h.className = 'teyoo-image-handle'
     h.dataset.dir = dir
     h.style.cursor = cursor
     frame.appendChild(h)
@@ -195,7 +195,7 @@ export function createImageNodeView(
   }
 
   const onHandleDown = (e: PointerEvent): void => {
-    const handle = (e.target as HTMLElement | null)?.closest?.('.colamd-image-handle') as HTMLElement | null
+    const handle = (e.target as HTMLElement | null)?.closest?.('.teyoo-image-handle') as HTMLElement | null
     const dir = handle?.dataset.dir as Dir | undefined
     if (!handle || !dir) return
     e.preventDefault() // 掐断后续兼容 mouse 事件，PM 不会把它当拖选
@@ -272,7 +272,7 @@ export function createImageNodeView(
     dom: wrap,
     // 手柄上的事件全部拦下（capture 期间事件 target 均为手柄），img 上的不拦，
     // PM 默认点击 → NodeSelection 仍生效
-    stopEvent: (e) => e.target instanceof Element && e.target.closest('.colamd-image-handle') != null,
+    stopEvent: (e) => e.target instanceof Element && e.target.closest('.teyoo-image-handle') != null,
     ignoreMutation: () => true, // atom 节点，内部 DOM 变更全是我们自己的
     update(n) {
       if (n.type.name !== 'image') return false

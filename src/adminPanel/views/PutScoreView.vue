@@ -1,11 +1,12 @@
 <template>
-  <div class="ps-page">
-   
+  <div class="ps-page" :class="{ 'is-embedded': embedded }">
+  
 
     <!-- ── 查询条件：科目 + 班级（照 ctbapp PutScore 的排布）──────────────── -->
     <section class="card">
       <div class="grid">
-         <label class="field">
+         <!-- 嵌在「创建班级」右栏时班已经定死了（外面标题里写着），不用再放下拉 -->
+         <label v-if="showClassSelect" class="field">
           <span class="field-label">班级：</span>
           <select v-model="selectedClass" class="ctl">
             <option v-for="item in classOptions" :key="item.classCode" :value="item.classCode">
@@ -49,9 +50,48 @@
             <td colspan="2" class="empty">没有符合条件的记录</td>
           </tr>
           <tr v-for="row in rows" :key="row.childCode">
-            <td class="name-cell">{{ row.realName }}</td>
+            <!-- 分数输入与「录入成绩」都摆在姓名这一格里：一看就知道这行是在给谁录分，
+                 操作列只留「查看」，窄栏里也不用把两颗按钮挤在一处 -->
+            <td class="name-cell">
+              <div class="name-row">
+                <span class="name-text">{{ row.realName }}</span>
+                <!-- 分数这一组靠姓名列右侧、垂直居中（margin-left:auto 推开），
+                     姓名留在左边，一眼对得上人；放不下就换行，不横向溢出 -->
+                <span class="score-group">
+                  <!-- 嵌在「创建班级」右栏：分数就在行内填，点「录入成绩」直接提交，
+                       弹窗那一步在窄栏里太折腾；录完这颗按钮变「已录入」不能再点 -->
+                  <template v-if="embedded">
+                    <input
+                      v-model="scoreDrafts[keyOf(row)]"
+                      class="ctl score-input"
+                      type="number"
+                      min="0"
+                      :placeholder="fullScore ? `0-${fullScore}` : '得分'"
+                      :disabled="isRecorded(row)"
+                      @keyup.enter="submitRowScore(row)"
+                    />
+                    <button
+                      class="btn small score-submit"
+                      type="button"
+                      :disabled="isRecorded(row) || submittingCode === row.childCode"
+                      :title="isRecorded(row) ? '本次已录入，不能重复录入' : '按顶部科目与满分折算后录入'"
+                      @click="submitRowScore(row)"
+                    >
+                      {{ isRecorded(row) ? '已录入' : '录入成绩' }}
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="btn small score-submit"
+                    type="button"
+                    @click="openScoreModal(row)"
+                  >
+                    录入成绩
+                  </button>
+                </span>
+              </div>
+            </td>
             <td class="col-op">
-              <button class="btn small" type="button" @click="openScoreModal(row)">录入成绩</button>
               <button class="btn small refuse" type="button" @click="openHistory(row)">查看</button>
             </td>
           </tr>
@@ -126,7 +166,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import Pagination from '../components/Pagination.vue'
 import { fetchClassOptions, type ClassItem } from '../api/classes'
 import {
@@ -141,6 +181,19 @@ import { describeError, showError, showInfo, showSuccess } from '../stores/toast
 
 // ── 查询条件 ─────────────────────────────────────────────────────────────
 
+/**
+ * 两种用法：
+ * - 整页（路由 PutScore）：自带班级下拉；
+ * - 嵌入（创建班级页右栏）：embedded=true + presetClassCode，班由外层定死，下拉不显示。
+ */
+const props = defineProps<{
+  embedded?: boolean
+  presetClassCode?: string
+}>()
+
+/** 嵌入且外层给了班就不显示下拉（否则没地方换班，等于把入口藏了） */
+const showClassSelect = computed(() => !props.embedded || !(props.presetClassCode ?? '').trim())
+
 const course = ref('')
 const selectedClass = ref('')
 const classOptions = ref<ClassItem[]>([])
@@ -152,6 +205,12 @@ const courseLabel = computed(
 const FULL_SCORE_OPTIONS = ['100', '120', '150'] as const
 
 onMounted(async () => {
+  // 嵌在右栏：班由外层指定，省掉班级列表那次请求
+  const preset = (props.presetClassCode ?? '').trim()
+  if (props.embedded && preset) {
+    selectedClass.value = preset
+    return
+  }
   try {
     classOptions.value = await fetchClassOptions()
     // 默认选中第一个班（与审核加入 / 错题统计同一做法）
@@ -246,6 +305,60 @@ async function submitScore(): Promise<void> {
   }
 }
 
+// ── 行内录分（嵌在「创建班级」右栏时用，省掉弹窗那一步）────────────────────
+
+/**
+ * 每行填的分数草稿，键是「科目:childCode」。
+ * 键里带科目：换科目后自然是一片空白，不会把数学的分数带到语文那一栏去。
+ */
+const scoreDrafts = reactive<Record<string, string>>({})
+/**
+ * 本次已经录过的行（同样按「科目:childCode」记）。
+ * 录成功就把按钮锁成「已录入」—— 同一科目同一学生不再让点，避免重复提交；
+ * 换科目 / 换班级键跟着变，又是可录状态。
+ */
+const recorded = reactive(new Set<string>())
+/** 正在提交的那一行，防连点 */
+const submittingCode = ref('')
+
+function keyOf(row: ScoreStudentRow): string {
+  return `${course.value}:${row.childCode}`
+}
+
+function isRecorded(row: ScoreStudentRow): boolean {
+  return recorded.has(keyOf(row))
+}
+
+async function submitRowScore(row: ScoreStudentRow): Promise<void> {
+  if (isRecorded(row) || submittingCode.value === row.childCode) return
+  if (!course.value) {
+    showInfo('请先选择科目')
+    return
+  }
+  if (!fullScore.value) {
+    showInfo('请先选择满分')
+    return
+  }
+  const draft = scoreDrafts[keyOf(row)] ?? ''
+  const raw = Number(draft)
+  if (String(draft).trim() === '' || Number.isNaN(raw)) {
+    showInfo('请填写得分')
+    return
+  }
+  // 折算成 150 分制四舍五入（与弹窗那条路同一个算法）
+  const normalized = Math.round((150 * raw) / Number(fullScore.value))
+  submittingCode.value = row.childCode
+  try {
+    const msg = await addStudentScore(row.childCode, course.value, normalized)
+    showSuccess(msg || '提交成功')
+    recorded.add(keyOf(row))
+  } catch (error) {
+    showError(describeError(error))
+  } finally {
+    submittingCode.value = ''
+  }
+}
+
 // ── 查看历史成绩 ─────────────────────────────────────────────────────────
 
 const historyOpen = ref(false)
@@ -271,6 +384,102 @@ async function openHistory(row: ScoreStudentRow): Promise<void> {
   max-width: 900px;
   margin: 0 auto;
   padding: 20px 24px 32px;
+}
+
+/* ── 嵌在「创建班级」右栏时的紧凑版 ──────────────────────────────────────
+   右栏只有 300~900 宽，外面那圈居中留白去掉，宽高都跟着这一列走。 */
+.ps-page.is-embedded {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.is-embedded .card {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+}
+
+.is-embedded .grid {
+  gap: 8px 12px;
+}
+
+/* 三个下拉平分一行，窄了就各自换行，不会撑出横向滚动 */
+.is-embedded .field {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.is-embedded .ctl {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+.is-embedded .actions {
+  margin-top: 10px;
+}
+
+.is-embedded .table {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.is-embedded .table th,
+.is-embedded .table td {
+  padding: 6px 8px;
+}
+
+/* 操作列只剩「查看」一颗按钮，宽度按内容收（1% + nowrap 的老办法），
+   剩下的宽度都给姓名列，别在右栏里把操作列撑成一大片空白 */
+.is-embedded .table .col-op {
+  width: 1%;
+}
+
+/* 姓名格：姓名 + 分数输入 + 录入按钮排一行；放不下就换行，绝不横向溢出 */
+.name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+/* 输入框 + 按钮当一组：内部间距固定，整体靠姓名列右侧（见 .is-embedded 那条） */
+.score-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 嵌在右栏时把这一组推到列的最右，姓名在左、录分在右，中间是空的 */
+.is-embedded .score-group {
+  margin-left: auto;
+}
+
+/* 行内录分的输入框：固定窄宽度，别跟着上面 .ctl 的 width:100% 撑满整格
+   （这条写在 .is-embedded .ctl 后面，同特异性靠顺序压过去） */
+.is-embedded .score-input {
+  flex: none;
+  width: 72px;
+  height: 26px;
+  font-size: 13px;
+}
+
+/* 「已录入」：灰底灰字，跟还能点的蓝按钮一眼分开；输入框同样置灰 */
+.is-embedded .score-submit:disabled {
+  opacity: 1;
+  color: var(--admin-text-weak, #8492a6);
+  background: var(--admin-nav-hover, #eef2f7);
+  cursor: not-allowed;
+}
+
+.is-embedded .score-input:disabled {
+  color: var(--admin-text-weak, #8492a6);
+  background: var(--admin-nav-hover, #eef2f7);
 }
 
 .page-title {
@@ -400,7 +609,8 @@ async function openHistory(row: ScoreStudentRow): Promise<void> {
   background: var(--admin-nav-hover, #f0f4f8);
 }
 
-.name-cell {
+/* 只把姓名本身加粗：整格加粗会把输入框和按钮里的字一起带粗 */
+.name-text {
   font-weight: 600;
 }
 

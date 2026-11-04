@@ -172,7 +172,7 @@
     <button
       type="button"
       class="toolbar-btn"
-      title="插入长空白（10 个全角空格）"
+      title="插入长空白（4 个全角空格）"
       @mousedown.prevent
       @click="emit('insert', 'longblank')"
     >
@@ -413,7 +413,7 @@
 // 项目工具栏里用文字表示的那几个（B / I / U / S）照旧用文字 —— 项目自己就是
 // `<b>B</b>` 这种写法，不是图标。
 // 另外两条虽借了项目的图标，但插的不是同一个东西，title 已写明：
-//   长空白 = 项目的「插入长空白（10 个全角空格）」原样；
+//   长空白 = 项目的「插入长空白（4 个全角空格）」原样；
 //   填空线 = 项目工具栏那条插的是 10 个全角下划线，这里插的是规约 C 的 `--(N)`。
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { FONT_FAMILIES, FONT_SIZES } from '../../renderer/editor/font-style-modal'

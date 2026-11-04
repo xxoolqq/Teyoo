@@ -26,7 +26,7 @@ import { hostEditorEl } from '../host-editor'
  *   避免被祖先 overflow 裁剪，做视口边界 clamp（见经验 100001967）。
  */
 
-export const tableToolbarPluginKey = new PluginKey('colamd-table-toolbar')
+export const tableToolbarPluginKey = new PluginKey('teyoo-table-toolbar')
 
 // 沿着选区 $from 向上查找 table 祖先，返回 table 在文档中的起始位置。
 function findTablePos(state: EditorState): number | null {
@@ -204,7 +204,7 @@ export const tableFloatingToolbarPlugin = $prose((ctx) => {
 
   const btn = (label: string, title: string, onClick: () => void): HTMLButtonElement => {
     const b = document.createElement('button')
-    b.className = 'colamd-tb-btn'
+    b.className = 'teyoo-tb-btn'
     b.title = title
     b.textContent = label
     // mousedown preventDefault 维持编辑器选区焦点，避免点击导致选区丢失
@@ -216,13 +216,13 @@ export const tableFloatingToolbarPlugin = $prose((ctx) => {
 
   const sep = (): HTMLSpanElement => {
     const s = document.createElement('span')
-    s.className = 'colamd-tb-sep'
+    s.className = 'teyoo-tb-sep'
     return s
   }
 
   const buildToolbar = (): HTMLDivElement => {
     const el = document.createElement('div')
-    el.className = 'colamd-table-toolbar'
+    el.className = 'teyoo-table-toolbar'
     el.style.display = 'none'
 
     el.append(

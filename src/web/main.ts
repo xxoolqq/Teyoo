@@ -65,14 +65,14 @@ const COPY = {
   }
 } as const
 
-const THEME_KEY = 'colamd-try-theme'
-const LANG_KEY = 'colamd-try-lang'
+const THEME_KEY = 'teyoo-try-theme'
+const LANG_KEY = 'teyoo-try-lang'
 
 // Message types. The child asks, the parent decides; the parent then tells the
 // child what happened, so both sides can never end up disagreeing.
-const ASK_FULLSCREEN = 'colamd-try:ask-fullscreen'
-const SET_FULLSCREEN = 'colamd-try:set-fullscreen'
-const SET_LANG = 'colamd-try:set-lang'
+const ASK_FULLSCREEN = 'teyoo-try:ask-fullscreen'
+const SET_FULLSCREEN = 'teyoo-try:set-fullscreen'
+const SET_LANG = 'teyoo-try:set-lang'
 
 function initialLang(): Lang {
   const saved = localStorage.getItem(LANG_KEY)
@@ -185,7 +185,7 @@ async function boot(): Promise<void> {
   setMarkdown(SAMPLES[lang], true)
   if (EMBED) {
     // Tell the homepage we are here and ready for language updates.
-    window.parent.postMessage({ type: 'colamd-try:ready' }, location.origin)
+    window.parent.postMessage({ type: 'teyoo-try:ready' }, location.origin)
   } else {
     document.querySelector<HTMLElement>('.ProseMirror')?.focus()
   }

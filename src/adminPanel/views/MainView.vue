@@ -241,15 +241,20 @@ function onLogout(): void {
   overflow: hidden;
 }
 
+/* 侧栏是「面」：纯白 + 一条极淡的分隔线，内容区才是灰底。
+   导航项做成内缩的圆角块（左右各留 8px），鼠标扫过时是"块亮起来"，
+   而不是整行横贯的色带 —— 这是这一版观感差异最大的一处。 */
 .nav {
   display: flex;
   flex-direction: column;
   flex: none;
   width: 230px;
   height: 100%;
+  padding-bottom: 6px;
   overflow-y: auto;
-  background: var(--admin-nav-bg, #eef1f6);
-  border-right: 1px solid var(--admin-border, #d8dee6);
+  overflow-x: hidden;
+  background: var(--admin-nav-bg, #ffffff);
+  border-right: 1px solid var(--admin-border, #e3e8ef);
   transition: margin-left 0.2s ease;
 }
 
@@ -259,34 +264,40 @@ function onLogout(): void {
 
 .nav-top {
   flex: none;
-  height: 50px;
-  line-height: 50px;
-  padding: 0 16px;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--admin-text, #1f2d3d);
+  height: 52px;
+  line-height: 52px;
+  padding: 0 18px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--admin-text, #1e293b);
 }
 
 .wrapper {
   flex: none;
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
+/* 分组标题降成小标签：字重与色阶都让位给下面的菜单项，一眼能分出层级 */
 .wrapper-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px 8px 16px;
-  font-size: 14px;
+  margin: 0 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--admin-text, #1f2d3d);
+  letter-spacing: 0.03em;
+  color: var(--admin-text-weak, #7c8aa0);
   cursor: pointer;
   user-select: none;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .wrapper-header:hover {
-  color: var(--admin-primary, #2d8cf0);
-  background: var(--admin-nav-hover, #e0e6ee);
+  color: var(--admin-text, #1e293b);
+  background: var(--admin-nav-hover, #f1f4f9);
 }
 
 .group-icon {
@@ -315,34 +326,37 @@ function onLogout(): void {
   transform: rotate(0deg);
 }
 
+/* 缩进对齐分组标题的文字起点：8(margin) + 10(padding) + 18(图标) + 8(gap) = 44 */
 .wrapper-title {
-  /* 左侧 42px：缩进到分组标题文字（图标 16px + 18px + 间距 8px）之下 */
-  padding: 9px 16px 9px 42px;
-  font-size: 14px;
-  color: var(--admin-text, #1f2d3d);
+  margin: 1px 8px;
+  padding: 8px 12px 8px 36px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: var(--admin-text, #1e293b);
   cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .wrapper-title:hover {
-  background: var(--admin-nav-hover, #e0e6ee);
+  background: var(--admin-nav-hover, #f1f4f9);
 }
 
 .wrapper-title.is-active {
-  color: var(--admin-primary, #2d8cf0);
-  background: var(--admin-nav-active, #dce8f7);
+  color: var(--admin-primary, #2f6fed);
+  background: var(--admin-nav-active, #e8f0fe);
   font-weight: 600;
 }
 
 .nav-foot {
   margin-top: auto;
-  padding: 12px 16px;
+  padding: 10px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   font-size: 12px;
-  color: var(--admin-text-weak, #8492a6);
-  border-top: 1px solid var(--admin-border, #d8dee6);
+  color: var(--admin-text-weak, #7c8aa0);
+  border-top: 1px solid var(--admin-border, #e3e8ef);
 }
 
 .who {
@@ -353,13 +367,19 @@ function onLogout(): void {
 
 .logout {
   flex: none;
-  padding: 4px 8px;
+  padding: 4px 9px;
   font-size: 12px;
-  color: var(--admin-text-weak, #8492a6);
-  border: 1px solid var(--admin-border, #d8dee6);
-  border-radius: 4px;
+  color: var(--admin-text-weak, #7c8aa0);
+  border: 1px solid var(--admin-border, #e3e8ef);
+  border-radius: 6px;
   background: transparent;
   cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.logout:hover {
+  color: #e5534b;
+  border-color: rgba(229, 83, 75, 0.45);
 }
 
 .nav-content {
@@ -368,17 +388,18 @@ function onLogout(): void {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--admin-bg, #f4f6f9);
+  background: var(--admin-bg, #f1f4f9);
 }
 
-/* ── 顶部标签栏：汉堡按钮 + 页签；活动页白底蓝字高亮，其余灰字 ──── */
+/* ── 顶部标签栏：与侧栏同属「面」，白色通栏；页签是透明胶囊，
+      活动页才浮起一层浅主色底 ── */
 .tabbar {
   flex: none;
   display: flex;
   align-items: center;
-  padding: 6px 12px;
-  background: var(--admin-bg, #f4f6f9);
-  border-bottom: 1px solid var(--admin-border, #d8dee6);
+  padding: 8px 14px;
+  background: var(--admin-surface, #ffffff);
+  border-bottom: 1px solid var(--admin-border, #e3e8ef);
 }
 
 .hamburger {
@@ -407,8 +428,8 @@ function onLogout(): void {
 }
 
 .hamburger:hover {
-  background: var(--admin-nav-hover, #e0e6ee);
-  color: var(--admin-primary, #2d8cf0);
+  background: var(--admin-nav-hover, #f1f4f9);
+  color: var(--admin-primary, #2f6fed);
 }
 
 .tabs {
@@ -416,7 +437,7 @@ function onLogout(): void {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   overflow-x: auto;
 }
 
@@ -424,30 +445,33 @@ function onLogout(): void {
   display: none;
 }
 
+/* 页签不再画边框：一整排描边方块太重，透明底 + 圆角已经是可点区域 */
 .tab {
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
+  height: 30px;
   padding: 0 12px;
   font-size: 13px;
-  color: var(--admin-text, #1f2d3d);
-  background: var(--admin-surface, #fff);
-  border: 1px solid var(--admin-border, #d8dee6);
-  border-radius: 4px;
+  color: var(--admin-text-weak, #7c8aa0);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .tab:hover {
-  color: var(--admin-primary, #2d8cf0);
+  color: var(--admin-text, #1e293b);
+  background: var(--admin-nav-hover, #f1f4f9);
 }
 
 .tab.is-active {
-  color: var(--admin-primary, #2d8cf0);
-  border-color: var(--admin-primary-weak, #e4eefa);
+  color: var(--admin-primary, #2f6fed);
+  background: var(--admin-primary-weak, #e8f0fe);
   font-weight: 600;
 }
 

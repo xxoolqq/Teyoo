@@ -2,7 +2,7 @@
 //
 // 两个 base：7088 是业务后端，
 
-// 这套界面只跑在 ColaMD 里（file:// 页面没有同源可言，只能打绝对地址），
+// 这套界面只跑在 Teyoo 里（file:// 页面没有同源可言，只能打绝对地址），
 // 所以两个 base 默认指向本机。后端换了地方就用环境变量盖：
 //   VITE_ADMIN_API_BASE  业务后端（7088）
 //   VITE_ADMIN_API2_BASE 检索后端（8088）
@@ -143,6 +143,60 @@ export const endpoints = {
    */
   joinClassStep2: `${BASE}background/join/class/step_2/sq.do`,
 
+  // ── 编码映射（SurveyController）──────────────────────────────────────────
+  /**
+   * 新建编码映射（后端当「问卷」存）：映射名 + 所属班级（可多选）+ 若干 题码-题号 对。
+   * 入参 CreateSurveyMappingArgs{ userCode, classCodes[], title, items[{ exerciseCode, sortNo }] }，
+   * 返回 data.surveyId。后端还会校验：题码必须存在于题库、题号/题码在本次提交内不可重复、
+   * 每个班都必须是当前老师执教且审核通过的班（别的老师的班走「追加班级」）。
+   */
+  createSurveyMapping: `${BASE}background/create/survey/mapping.do`,
+  /**
+   * 分页查自己创建的编码映射（SurveyController.scanSurveyMapping）。
+   * 入参 ScanSurveyMappingArgs{ userCode, pageNum, pageSize }，身份以 header token 为准；
+   * 返回 PageInfo<SurveyMappingVo>{ list, total, pageNum, pageSize, pages… }。
+   * 一行一个班级：自己关联了几个班，同一个 surveyId 就出现几行，total 按行数计。
+   */
+  scanSurveyMapping: `${BASE}background/scan/survey/mapping.do`,
+  /**
+   * 修改编码映射（SurveyController.updateSurveyMapping）：全量提交映射名 + 班级列表 + 题码对。
+   * 入参 UpdateSurveyMappingArgs{ userCode, surveyId, title, classCodes[], items[] }，
+   * 后端按状态分流：草稿全量生效；已发布只能改映射名（班级/题对要与现值一致才放行）；
+   * 已停止收集一律拒绝。
+   */
+  updateSurveyMapping: `${BASE}background/update/survey/mapping.do`,
+  /**
+   * 把自己的班级追加到某份编码映射（SurveyController.addSurveyClass）。
+   * 入参 AddSurveyClassArgs{ userCode, surveyId, classCode }（单值）；
+   * 仅 status=1（已发布）可追加，且当前老师必须是该班审核通过的老师，班级已关联会报错。
+   */
+  addSurveyClass: `${BASE}background/add/survey/class.do`,
+  /**
+   * 发布编码映射（SurveyController.publishSurveyMapping）：草稿 → 已发布。
+   * 入参 PublishSurveyMappingArgs{ userCode, surveyId }，身份以 header token 为准；
+   * 只能发自己创建的、status=0 的：已发布 / 已停止收集都回业务错误。
+   * 发布后学生可作答、映射不可再改，属于不可逆动作。
+   */
+  publishSurveyMapping: `${BASE}background/publish/survey/mapping.do`,
+  /**
+   * 按班级过滤的题目对错统计（SurveyController.statSurveyByClass）。
+   * 入参 StatSurveyByClassArgs{ userCode, surveyId, classCodes[], pageNum, pageSize }，
+   * 班级必须属于当前老师且存在；返回 PageInfo<SurveyClassStatVo>，一个题码一行：
+   * { sortNo, exerciseCode, cntRight, cntWrong, cntBlank, rightRate, wrongRate }，
+   * 按题号排序分页。rightRate / wrongRate 是百分数值（66.67），
+   * 分母是已作答数（正确 + 错误），空白不计入，没有作答的题码计数为 0。
+   */
+  statSurveyByClass: `${BASE}background/stat/survey/class.do`,
+  /**
+   * 班级视角的编码映射列表（SurveyController.scanClassMappings）。
+   * 入参 ScanClassSurveyArgs{ userCode, classCode, pageNum, pageSize }，身份以 header token 为准；
+   * 当前老师必须是该班审核通过（agree）的老师，否则回「只有该班级的老师才能查看班级的编码映射」。
+   * 返回 PageInfo<ClassSurveyMappingVo>，一行一份映射（不按创建者过滤，含草稿 / 已发布 / 已停止）：
+   * { surveyId, title, status, itemCount, creatorUserCode, creatorRealName,
+   *   addedByUserCode, addedByRealName, createdAt }
+   */
+  scanClassSurvey: `${BASE}background/scan/class/survey.do`,
+
   // ── 我的 → 孩子（ChildController）────────────────────────────────────────
   /** 家长账号下的孩子列表（附当前已通过的主班级） */
   childList: `${BASE}background/child/list.do`,
@@ -154,6 +208,24 @@ export const endpoints = {
   childDetail: `${BASE}background/child/detail.do`,
   /** 孩子已加入的班级（已通过审核，按入班时间倒序，最多 10 条） */
   childJoinedClasses: `${BASE}background/get/child/joined/classes.do`,
+
+  // ── 我的 → 提交错题（CTBRedisPutController）──────────────────────────────
+  /**
+   * 学生批量提交错题（家长账号替名下的孩子提交，后端校验 ownsChild）。
+   * 入参 SubmitSubjectsArgs：{ token, childCode, subjectCodes, classCode,
+   * schoolCode, classLevel, city }，其中
+   *   subjectCodes 是空格分隔的 6 位题码（不以 0 开头），单次最多 10 个；
+   *   schoolCode 4~6 位数字、classLevel 两位、city 6 位数字，格式错一项整批拒绝。
+   * 返回 data 为空，成功即 code=2000；不存在的题码后端静默跳过，
+   * 同一孩子重复提交同一题只把 timesofadd 累加。
+   */
+  submitSubjects: `${BASE}background/submit/subjects/sq.do`,
+  /**
+   * 提交错题页面。家长视角：孩子所在班级里已发布（status=1）的编码映射。
+   * 入参 ScanChildSurveyArgs{ userCode, childCode, pageNum, pageSize }，
+   * 返回 PageInfo<SurveyMappingVo>：映射信息 + 班级 + 题码-题号明细（items）。
+   */
+  childPublishedSurveys: `${BASE}background/scan/child/survey.do`,
 
   // ── 在线 OCR（Web 端没有本地 Texo 时的退路）─────────────────────────────
   tencentOcr: `${BASE}background/tencent/ocr/sq.do`,

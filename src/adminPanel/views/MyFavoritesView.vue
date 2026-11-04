@@ -1,5 +1,5 @@
 <template>
-  <!-- 版式与「我录入的题」同一副：一列居中、850px 宽、自己滚动、分页压底，
+  <!-- 版式与「题库管理」同一副：一列居中、850px 宽、自己滚动、分页压底，
        卡片共用 TopicCard。收藏页多两件事：
        1) 每张卡可勾选，工具栏把勾选的题目合并成一份 md 下载；
        2) 卡片上的「收藏」在两页里是摆设，在这里是「取消收藏」——点了调后端
@@ -24,7 +24,7 @@
       <p v-else-if="error" class="state is-error">{{ error }}</p>
       <template v-else>
         <p v-if="items.length === 0" class="state">还没有收藏过题目</p>
-        <!-- id="editor"：与「我录入的题」同一招，给主题的 #editor 排版规则一个锚点 -->
+        <!-- id="editor"：与「题库管理」同一招，给主题的 #editor 排版规则一个锚点 -->
         <div id="editor" class="topic-list-host">
           <!-- 选中态的边框高亮靠 class 直通到 TopicCard 根元素（Vue 的 attrs
                fallthrough），不用动共用组件 -->
@@ -112,7 +112,7 @@ async function load(page: number): Promise<void> {
   error.value = ''
   try {
     const result = await fetchFavorites(page, PAGE_SIZE)
-    // 当前页因取消收藏变空时退回最后一页，与「我录入的题」同一处理
+    // 当前页因取消收藏变空时退回最后一页，与「题库管理」同一处理
     if (result.list.length === 0 && page > 1 && result.total > 0) {
       const lastPage = Math.max(1, Math.ceil(result.total / PAGE_SIZE))
       await load(Math.min(lastPage, page - 1))
@@ -235,7 +235,7 @@ onMounted(() => {
   height: 100%;
 }
 
-/* 题目区：850px 宽、可滚动（与「我录入的题」一致） */
+/* 题目区：850px 宽、可滚动（与「题库管理」一致） */
 .search_body {
   display: flex;
   flex-direction: column;
@@ -317,7 +317,7 @@ onMounted(() => {
   cursor: default;
 }
 
-/* 与「我录入的题」同一副外壳复位（承接主题的 #editor 排版规则） */
+/* 与「题库管理」同一副外壳复位（承接主题的 #editor 排版规则） */
 #admin-panel .search_body #editor.topic-list-host {
   display: flex;
   flex-direction: column;

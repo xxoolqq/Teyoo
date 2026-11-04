@@ -42,11 +42,33 @@ export interface ChatRequest {
   messages: ChatMessage[]
   /** 超时（毫秒）。大模型首字可能很慢，默认给足两分钟。 */
   timeoutMs?: number
+  /**
+   * 采样温度。不给就整个字段不发，用服务端默认。
+   * 拆题要 0.2（同输入尽量同输出），对话则通常留默认。
+   */
+  temperature?: number
+  /** 输出上限（OpenAI 的 max_tokens）。拆题要长输出，得显式给。 */
+  maxTokens?: number
+  /** 要求服务端返回 JSON 对象（OpenAI 兼容的 response_format） */
+  responseFormat?: 'json_object'
+  /**
+   * 思考开关（DeepSeek 官方扩展字段）。**拆题必须关**：
+   * deepseek-flash 默认开启思考，同一份 21 题试卷实测 193s / 31,395 个
+   * reasoning token；关掉后 24.7s / 0，正文长度几乎不变（16.6k vs 17.0k 字符）。
+   * 只有 api.deepseek.com + deepseek-flash/v4 系列认这个字段，其余端点不能发。
+   */
+  thinking?: 'enabled' | 'disabled'
 }
 
 export interface ChatUsage {
   promptTokens?: number
   completionTokens?: number
+  /**
+   * 思考型模型（deepseek-flash 这类）花在 reasoning 上的 token，**已计入**
+   * completionTokens。拆题慢的时候先看这个值 —— 实测一份 21 题的卷子
+   * 31k/39k 都在 reasoning 上，跟本地代码没有任何关系。
+   */
+  reasoningTokens?: number
 }
 
 export type ChatResult =
@@ -93,9 +115,45 @@ function extractText(payload: unknown): string {
 }
 
 function extractUsage(payload: unknown): ChatUsage | undefined {
-  const usage = (payload as { usage?: { prompt_tokens?: number; completion_tokens?: number } })?.usage
+  const usage = (
+    payload as {
+      usage?: {
+        prompt_tokens?: number
+        completion_tokens?: number
+        completion_tokens_details?: { reasoning_tokens?: number }
+      }
+    }
+  )?.usage
   if (!usage) return undefined
-  return { promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens }
+  return {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens
+  }
+}
+
+/** 结束原因：stop / length / content_filter / tool_calls… */
+function readFinishReason(payload: unknown): string {
+  const choices = (payload as { choices?: { finish_reason?: unknown }[] })?.choices
+  const reason = Array.isArray(choices) ? choices[0]?.finish_reason : undefined
+  return typeof reason === 'string' ? reason : ''
+}
+
+/**
+ * 空内容时的诊断串。
+ *
+ * 光说 EMPTY_RESPONSE 没法判断病因：finish=length + reasoning_tokens 接近
+ * max_tokens = 预算被思考吃光（换非思考模型）；finish=stop 且 token 很少 =
+ * 偶发空返回（重试即可）。这两种处置完全相反，所以必须带上证据。
+ */
+function emptyResponseDetail(payload: unknown): string {
+  const usage = extractUsage(payload)
+  const parts: string[] = []
+  const finish = readFinishReason(payload)
+  if (finish) parts.push(`finish=${finish}`)
+  if (usage?.completionTokens != null) parts.push(`completion_tokens=${usage.completionTokens}`)
+  if (usage?.reasoningTokens != null) parts.push(`reasoning_tokens=${usage.reasoningTokens}`)
+  return parts.length > 0 ? `EMPTY_RESPONSE: ${parts.join(', ')}` : 'EMPTY_RESPONSE'
 }
 
 function errorMessage(error: unknown): string {
@@ -128,6 +186,24 @@ function toWireMessages(messages: ChatMessage[]): ChatMessage[] {
     )
     return { ...message, content: parts }
   })
+}
+
+/**
+ * 拼请求体。三个可选参数只在**给了**的时候才写进 body —— 有些兼容端点对
+ * `max_tokens: null` / `response_format` 会直接 400，留空比塞默认值安全。
+ */
+function buildBody(request: ChatRequest, stream: boolean): string {
+  const body: Record<string, unknown> = {
+    model: request.model,
+    messages: toWireMessages(request.messages),
+    stream
+  }
+  if (typeof request.temperature === 'number') body.temperature = request.temperature
+  if (typeof request.maxTokens === 'number') body.max_tokens = request.maxTokens
+  if (request.responseFormat) body.response_format = { type: request.responseFormat }
+  // DeepSeek 的思考开关是 `{"thinking": {"type": "enabled" | "disabled"}}`
+  if (request.thinking) body.thinking = { type: request.thinking }
+  return JSON.stringify(body)
 }
 
 /** 流式调用：边收边把增量交给 onDelta，返回值与 completeChat 同形（text = 全文）。 */
@@ -166,7 +242,7 @@ export async function streamChat(
         Accept: 'text/event-stream',
         Authorization: `Bearer ${request.apiKey}`
       },
-      body: JSON.stringify({ model: request.model, messages: toWireMessages(request.messages), stream: true }),
+      body: buildBody(request, true),
       signal: controller.signal
     })
     if (!response.ok) {
@@ -251,7 +327,7 @@ export async function completeChat(request: ChatRequest): Promise<ChatResult> {
         Authorization: `Bearer ${request.apiKey}`
       },
       // 密钥只在请求头里，不写日志、不回给渲染端。
-      body: JSON.stringify({ model: request.model, messages: toWireMessages(request.messages), stream: false }),
+      body: buildBody(request, false),
       signal: controller.signal
     })
     if (!response.ok) {
@@ -260,7 +336,7 @@ export async function completeChat(request: ChatRequest): Promise<ChatResult> {
     }
     const payload = (await response.json()) as unknown
     const text = extractText(payload)
-    if (!text.trim()) return { ok: false, error: 'EMPTY_RESPONSE' }
+    if (!text.trim()) return { ok: false, error: emptyResponseDetail(payload) }
     return { ok: true, text, usage: extractUsage(payload) }
   } catch (error) {
     if (controller.signal.aborted) return { ok: false, error: 'TIMEOUT' }

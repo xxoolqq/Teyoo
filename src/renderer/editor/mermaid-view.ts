@@ -13,7 +13,7 @@ function isMermaid(node: { attrs: { language?: string } }): boolean {
 
 const mermaidViewConstructor: NodeViewConstructor = (node, view, getPos) => {
   const dom = document.createElement('div')
-  dom.className = 'colamd-code-block'
+  dom.className = 'teyoo-code-block'
 
   const diagram = document.createElement('div')
   diagram.className = 'mermaid-diagram'

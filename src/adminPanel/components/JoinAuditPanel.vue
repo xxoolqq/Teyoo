@@ -1,6 +1,7 @@
 <template>
-  <div class="ad-panel">
-    <div class="panel-head">
+  <div class="ad-panel" :class="{ 'is-embedded': embedded }">
+    <!-- 嵌在「创建班级」右栏时，标题和返回按钮由外层给，这里不再重复一套 -->
+    <div v-if="!embedded" class="panel-head">
       <h1 class="panel-title">审核加入</h1>
       <button class="btn ghost small" type="button" @click="emit('back')">返回班级列表</button>
     </div>
@@ -18,8 +19,43 @@
       <button class="btn confirm" type="button" :disabled="loading" @click="onSearch">确定</button>
     </div>
 
-    <!-- 申请列表：姓名 / 类型 / 审核状态 / 操作 -->
-    <section class="card">
+    <!-- 嵌在右栏（300–420 宽）时四列表格塞不下，改成一行一个申请的卡片式 -->
+    <ul v-if="embedded" class="apply-list">
+      <li v-if="rows.length === 0" class="apply-empty">
+        {{ selectedClass ? '该班级暂无加入申请' : '请先选择班级' }}
+      </li>
+      <li v-for="row in rows" :key="row.id" class="apply-item">
+        <div class="apply-title">
+          <span class="apply-name" :title="row.studentName">{{ row.studentName }}</span>
+          <span class="apply-status" :class="`is-${row.applyStatus}`">
+            {{ statusLabel(row.applyStatus) }}
+          </span>
+        </div>
+        <div class="apply-foot">
+          <span class="apply-type">{{ row.userType }}</span>
+          <span class="apply-ops">
+            <!-- 已经通过的成员，「通过」置灰不可再点；要撤销只能走「移除班级」 -->
+            <button
+              class="btn small pass"
+              type="button"
+              :disabled="row.applyStatus === 'agree'"
+              @click="openConfirm(row, 'agree')"
+            >
+              通过
+            </button>
+            <button class="btn small refuse" type="button" @click="openConfirm(row, 'refused')">
+              移除班级
+            </button>
+          </span>
+        </div>
+      </li>
+      <li v-if="rows.length > 0" class="apply-pager">
+        <Pagination :total="total" :page-num="pageNum" :page-size="PAGE_SIZE" @change="onPage" />
+      </li>
+    </ul>
+
+    <!-- 整页使用时还是表格，信息密度更高 -->
+    <section v-else class="card">
       <table class="table">
         <thead>
           <tr>
@@ -40,7 +76,7 @@
             <td>{{ row.userType }}</td>
             <td>{{ statusLabel(row.applyStatus) }}</td>
             <td class="col-op">
-              <!-- 已经通过的成员，「通过」置灰不可再点；要撤销只能走「剔除」 -->
+              <!-- 已经通过的成员，「通过」置灰不可再点；要撤销只能走「移除班级」 -->
               <button
                 class="btn small pass"
                 type="button"
@@ -50,7 +86,7 @@
                 通过
               </button>
               <button class="btn small refuse" type="button" @click="openConfirm(row, 'refused')">
-                剔除
+                移除班级
               </button>
             </td>
           </tr>
@@ -63,13 +99,15 @@
     <div v-if="confirmOpen" class="mask" @click.self="confirmOpen = false">
       <div class="dialog">
         <div class="dialog-head">
-          <span>{{ pendingAction === 'agree' ? '审核通过' : '剔除' }}</span>
+          <span>{{ pendingAction === 'agree' ? '审核通过' : '移除班级' }}</span>
           <button class="dialog-close" type="button" title="关闭" @click="confirmOpen = false">
             ×
           </button>
         </div>
         <div class="dialog-body">
-          <p class="confirm-text">{{ pendingAction === 'agree' ? '确定通过吗？' : '确定剔除吗？' }}</p>
+          <p class="confirm-text">
+            {{ pendingAction === 'agree' ? '确定通过吗？' : '确定把该成员移出班级吗？' }}
+          </p>
         </div>
         <div class="dialog-foot">
           <button class="btn ghost" type="button" @click="confirmOpen = false">取消</button>
@@ -102,10 +140,13 @@ import { describeError, showError, showInfo, showSuccess } from '../stores/toast
 
 /**
  * 「审核加入」面板。原来是一个独立页面（AuditingView），
- * 现在挂在「创建班级」页里：点某一行的「审核」就地切换过来，
+ * 现在挂在「创建班级」页的右栏：点某一行的「审核加入」把右栏换成本面板，
  * 进来时用 initialClassCode 直接选中该班。
+ *
+ * embedded = true 时按右栏宽度排版（不画自己的标题栏、申请列表改卡片式）；
+ * 整页使用时不用传，保持原来的表格版。
  */
-const props = defineProps<{ initialClassCode?: string }>()
+const props = defineProps<{ initialClassCode?: string; embedded?: boolean }>()
 const emit = defineEmits<{ back: [] }>()
 
 const PAGE_SIZE = 10
@@ -115,22 +156,33 @@ const PAGE_SIZE = 10
 const classOptions = ref<ClassItem[]>([])
 const selectedClass = ref('')
 
-onMounted(async () => {
+/**
+ * 拉班级下拉，再加载当前班的申请列表。
+ *
+ * 选班优先级：props.initialClassCode（刚从列表某一行点进来，用户要的就是它）>
+ * 面板里已经选中的班 > 第一个班。
+ */
+async function initAudit(): Promise<void> {
   try {
     classOptions.value = await fetchClassOptions()
-    const wanted = props.initialClassCode ?? ''
-    if (wanted && classOptions.value.some((item) => item.classCode === wanted)) {
-      // 从列表某一行点「审核」进来：直接选中那个班
-      selectedClass.value = wanted
+    const preferred = props.initialClassCode || selectedClass.value
+    if (preferred && classOptions.value.some((item) => item.classCode === preferred)) {
+      selectedClass.value = preferred
     } else if (classOptions.value.length > 0) {
       // 没有指定就默认第一个班，页面打开即可直接看，不用每次手动点一遍
       selectedClass.value = classOptions.value[0].classCode
+    } else {
+      selectedClass.value = ''
     }
     if (selectedClass.value) await loadPage()
   } catch (error) {
     showError(describeError(error))
   }
-})
+}
+
+// 外层每次「审核加入」都会重新挂载本组件（v-if + :key），onMounted 里拉一次就够；
+// 换班级走下拉 + 确定，申请列表被别的老师处理掉时点「确定」重查。
+onMounted(() => { void initAudit() })
 
 // ── 申请列表 + 分页 ───────────────────────────────────────────────────────
 
@@ -228,8 +280,158 @@ async function submitConfirm(): Promise<void> {
 
 <style scoped>
 .ad-panel {
-  /* 外层页面（创建班级）已经给了 max-width 和内边距 */
+  /* 整页使用时：外层页面已经给了 max-width 和内边距 */
   width: 100%;
+}
+
+/* ── 嵌在右栏（创建班级页）时的紧凑版 ─────────────────────────────────── */
+
+.ad-panel.is-embedded {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 14px 14px;
+  box-sizing: border-box;
+}
+
+.is-embedded .top-bar {
+  flex: none;
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.is-embedded .field {
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.is-embedded .field-label {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--admin-text-weak, #8492a6);
+  white-space: nowrap;
+}
+
+.is-embedded .ctl {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 28px;
+  font-size: 12.5px;
+}
+
+.is-embedded .btn.confirm {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+/* 申请列表：一行一个，卡片式；超长时在这一块里滚，顶部「班级 + 确定」不动 */
+.apply-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  margin: 0;
+  padding: 0 2px 0 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.apply-empty {
+  padding: 28px 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--admin-text-weak, #8492a6);
+}
+
+.apply-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--admin-border, #d8dee6);
+  border-radius: 8px;
+}
+
+.apply-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.apply-name {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--admin-text, #1f2d3d);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 审核状态：三种结果各一个浅色底，扫一眼就能分出待审和已处理 */
+.apply-status {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 11.5px;
+  border-radius: 999px;
+  color: var(--admin-text-weak, #8492a6);
+  background: var(--admin-nav-hover, #eef2f7);
+}
+
+.apply-status.is-agree {
+  color: #0f9d58;
+  background: rgba(25, 190, 107, 0.12);
+}
+
+.apply-status.is-refused {
+  color: #d63510;
+  background: rgba(237, 64, 20, 0.1);
+}
+
+.apply-status.is-wait {
+  color: #b8860b;
+  background: #fff8e1;
+}
+
+.apply-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.apply-type {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--admin-text-weak, #8492a6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apply-ops {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+/* 表格版给「通过」留的右间距在卡片版里由 gap 接管 */
+.is-embedded .btn.small.pass {
+  margin-right: 0;
+}
+
+.apply-pager {
+  flex: none;
+  padding-top: 2px;
 }
 
 .panel-head {
@@ -380,13 +582,14 @@ async function submitConfirm(): Promise<void> {
   cursor: not-allowed;
 }
 
-/* 拒绝按钮（表格行内与确认框共用红色） */
+/* 「移除班级」按钮（表格行内与确认框共用）：中性灰，别跟「通过」抢视觉，
+   但仍是可点的实心按钮（比禁用态的浅灰更显眼） */
 .btn.refuse {
-  background: #ed4014;
+  background: #909399;
 }
 
 .btn.refuse:hover {
-  background: #d63510;
+  background: #7d8189;
 }
 
 /* ── 模态框 ─────────────────────────────────────────────────────────── */

@@ -13,14 +13,14 @@ index c5c5d4a..84c829a 100644
 -    inConstruct: 'phrasing',
 -    notInConstruct: fullPhrasingSpans
 -  },
-+  // ColaMD patch: removed the rule `{before: '\\]', character: '(', …}`.
++  // Teyoo patch: removed the rule `{before: '\\]', character: '(', …}`.
 +  //
 +  // It escaped `(` whenever preceded by `]` (e.g. `x ]\( y`, `[a](b) ]\(c`),
 +  // to guard against the sequence joining an earlier unmatched `[` into a
 +  // link. But the `[` rule above already unconditionally escapes every
 +  // literal `[` in phrasing output, so a stray unmatched `[` can never occur
 +  // in this package's own output — the guard was dead weight and added
-+  // backslash noise that broke ColaMD's character-fidelity round-trip.
++  // backslash noise that broke Teyoo's character-fidelity round-trip.
    // A right paren could start a list item or break out of a destination
    // raw.
    {atBreak: true, before: '\\d+', character: ')'},

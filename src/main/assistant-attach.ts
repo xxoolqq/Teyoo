@@ -129,6 +129,35 @@ async function mineruImageToMarkdown(
   }
 }
 
+/**
+ * 图片 → 整篇 Markdown（MinerU 版式解析，**不抽公式**）。
+ *
+ * 与 ocrImageToLatex 的分工：那边只要一行 LaTeX（选中一张公式图问模型），这边要的是
+ * 排版好的全文 —— 题目录入的 OCR 页把结果整段填进题干 / 解析编辑框，公式、表格、
+ * 列表都按 MinerU 给的 full.md 原样保留。
+ */
+export async function imageToMarkdown(
+  filePath: string,
+  options: { mineruToken?: string; insecureDownload?: boolean } = {}
+): Promise<{ ok: boolean; text?: string; error?: string }> {
+  const ext = extOf(filePath)
+  if (!IMAGE_EXTS.has(ext)) return { ok: false, error: 'NOT_AN_IMAGE' }
+  const token = (options.mineruToken ?? '').trim()
+  // 整篇识别没有本地降级：本地 OCR 契约只认单张公式图，读不了整页版面
+  if (!token) return { ok: false, error: 'NO_MINERU_TOKEN' }
+  const result = await mineruImageToMarkdown(filePath, token, options.insecureDownload === true)
+  if (!result.text) return { ok: false, error: result.error ?? 'MINERU_FAILED' }
+  // full.md 里的图片引用指向临时目录（MinerU 抽出的截图），目录随本次识别一起删掉了，
+  // 原样带出去只会是裂图。换成一行文字提示：用户知道原题这里有一张图，可以自己再上传。
+  const text = result.text
+    .replace(
+      /!\[([^\]]*)\]\((?!https?:|data:|file:)[^)]*\)/g,
+      (_match, alt: string) => `*[原题此处有一张图片${alt ? `：${alt}` : ''}]*`
+    )
+    .trim()
+  return { ok: true, text }
+}
+
 export interface OcrResult {
   ok: boolean
   /** 识别出的 LaTeX（不含 $） */
@@ -143,7 +172,7 @@ export interface OcrResult {
  * 图片 → 公式。顺序：**① MinerU → ② 本地 SimpleTex 契约**。
  *
  * 为什么 MinerU 在前：真机上验过（手画公式 → `\mathrm{E} = \mathrm{mc} ^ {2}`），
- * 公式图它是真的读得对；而那个 SimpleTex 端点（`COLAMD_OCR_URL`，默认
+ * 公式图它是真的读得对；而那个 SimpleTex 端点（`TEYOO_OCR_URL`，默认
  * 127.0.0.1:8787）是给"以后自建 OCR"留的口子，没搭起来时只会白等一次连接失败。
  * ③ 大模型（视觉直传）不在这里 —— 它在渲染端，作为前两步都失败后的最后一步。
  */
@@ -260,6 +289,7 @@ export async function readAttachment(
   // 其它扩展名：当文本试一次（编码不对就算了）
   try {
     const content = await readFile(filePath, 'utf-8')
+    // eslint-disable-next-line no-control-regex -- 故意匹配 NUL：用它判断这个文件其实是二进制
     if (/\u0000/.test(content.slice(0, 4000))) {
       return { path: filePath, name, kind: 'unsupported', bytes, error: 'BINARY_FILE' }
     }

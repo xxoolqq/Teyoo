@@ -20,7 +20,7 @@ Source: `**bold**`, `*italic*`, `~~strikethrough~~`, and `==highlight==`.
 
 ## Links and images
 
-[ColaMD](https://github.com/marswaveai/ColaMD)
+[Teyoo](https://github.com/xxoolqq/Teyoo)
 
 Hold Cmd / Ctrl while clicking a link to open it in your browser.
 

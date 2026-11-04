@@ -15,7 +15,7 @@
 // 即可（见 remark.ts，与 circled-sup 同模式）。
 //
 // token 结构：
-//   colamdSubscript        容器 token（enter/exit 之间夹一个 data）
+//   teyooSubscript        容器 token（enter/exit 之间夹一个 data）
 //     └ data               内容文本 token —— mdast-util-from-markdown 对
 //                          'data' 有内置 handler，自动成为 text 子节点
 //
@@ -34,7 +34,7 @@ function tokenizeSubscript(this: any, effects: any, ok: any, nok: any): any {
 
   // 此时代码指针在 `_` 上
   function start(code: number): any {
-    effects.enter('colamdSubscript')
+    effects.enter('teyooSubscript')
     effects.consume(code)
     return openBrace
   }
@@ -63,10 +63,10 @@ function tokenizeSubscript(this: any, effects: any, ok: any, nok: any): any {
       //      所以 `}` 由专用 marker token 覆盖消费；fromMarkdown 主循环
       //      对无 handler 的 token 直接跳过，marker 无副作用
       effects.exit('data')
-      effects.enter('colamdSubscriptMarker')
+      effects.enter('teyooSubscriptMarker')
       effects.consume(code)
-      effects.exit('colamdSubscriptMarker')
-      effects.exit('colamdSubscript')
+      effects.exit('teyooSubscriptMarker')
+      effects.exit('teyooSubscript')
       // 闭合符已消费，必须返回 ok 函数本体，由框架以「下一个字符」续跑；
       // 若写 ok(code) 会把已消费的 `}` 再喂给外层解析器（`}` 重复输出）
       return ok
@@ -86,22 +86,22 @@ export const micromarkSubscript: Extension = {
   text: {
     95: [
       {
-        name: 'colamdSubscript',
+        name: 'teyooSubscript',
         tokenize: tokenizeSubscript,
       },
     ],
   },
 }
 
-/** mdast-util 扩展：colamdSubscript token → { type: 'subscript', children } */
+/** mdast-util 扩展：teyooSubscript token → { type: 'subscript', children } */
 export const subscriptFromMarkdown = {
   enter: {
-    colamdSubscript(this: any, token: any): void {
+    teyooSubscript(this: any, token: any): void {
       this.enter({ type: 'subscript', children: [] }, token)
     },
   },
   exit: {
-    colamdSubscript(this: any, token: any): void {
+    teyooSubscript(this: any, token: any): void {
       this.exit(token)
     },
   },

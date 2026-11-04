@@ -49,10 +49,11 @@
       </section>
     </div>
 
-    <!-- 元信息与题目、答案同属一次提交，但值放在这一层持有：打包和校验顺序都由这里定 -->
-    <TopicMetaForm v-model="meta" />
-
     <footer class="put-foot">
+      <!-- 元信息与题目、答案同属一次提交，值放在这一层持有：打包和校验顺序都由这里定。
+           表单本体收进右侧抽屉，提交条上只留一个「附加信息」按钮。 -->
+      <TopicMetaForm v-model="meta" />
+
       <!-- 与标题栏「提交」按钮（main.ts 的 uploadGlyph）一模一样：文字 + 上传图标 -->
       <button
         class="btn is-primary is-block"
@@ -103,7 +104,7 @@ import { session } from '../stores/session'
 import { describeError, showError, showInfo, showSuccess } from '../stores/toast'
 import { bumpTopicsVersion } from '../stores/topic-events'
 import { classLevelCode } from '../utils/class-level'
-import { checkPhotoLimits, extractEmbeddedImages, type ExtractResult } from '../utils/topic-images'
+import { checkPhotoLimits, extractEmbeddedImagesAsync, type ExtractResult } from '../utils/topic-images'
 import {
   applyHeading,
   applyInlineFont,
@@ -260,7 +261,7 @@ async function bootEditors(): Promise<void> {
     try {
       // 经 utils/readonly-preview 的全局串行队列挂载（内部 createEditor +
       // lockPreview + setMarkdown 一条龙）：内核里每个实例的插件是逐个注册的，
-      // 并发会交错；现在「我录入的题 / 检索 / 详情 / 纠错」几处的只读预览都
+      // 并发会交错；现在「题库管理 / 检索 / 详情 / 纠错」几处的只读预览都
       // 排同一条队，跨页面也不会撞。
       await mountReadonlyPreview(entry.root, entry.text.value)
     } catch (error) {
@@ -447,30 +448,33 @@ async function onSubmit(): Promise<void> {
     return
   }
 
-  // 提交前把内嵌的 base64 图片拆成「ctbimg:// 占位符 + 文件」（后端
-  // addSubjectWithImages 的约定）；题目和答案共用一个 usedIds，保证 id 不重复。
-  // 拆完文本变短、alt 保留样式参数，预览不受影响 —— 预览渲染的还是编辑中的原文。
-  let topic: ExtractResult
-  let answer: ExtractResult
-  try {
-    const usedIds = new Set<string>()
-    topic = extractEmbeddedImages(topicText, usedIds)
-    answer = extractEmbeddedImages(answerText, usedIds)
-  } catch (error) {
-    showError(describeError(error))
-    return
-  }
-  const photos = [...topic.files, ...answer.files]
-
-  // 张数 / 大小的前置校验（后端同样的规则，先拦下来省一次上传）
-  const limitProblem = checkPhotoLimits(photos)
-  if (limitProblem) {
-    showError(limitProblem)
-    return
-  }
-
+  // 读本地图片可能要几百毫秒到一两秒，从这里就锁住按钮，避免连点重复读盘 / 重复提交
   submitting.value = true
   try {
+    // 提交前把图片拆成「ctbimg:// 占位符 + 文件」（后端 addSubjectWithImages 的约定）：
+    //   - 本地路径引用（D:\a.png / images/a.png）先读成 data URL —— 后端读不到磁盘；
+    //   - 内嵌 base64 直接拆。
+    // 题目和答案共用一个 usedIds，保证 id 不重复；拆完文本变短、alt 保留样式参数，
+    // 预览不受影响 —— 预览渲染的还是编辑中的原文。
+    let topic: ExtractResult
+    let answer: ExtractResult
+    try {
+      const usedIds = new Set<string>()
+      topic = await extractEmbeddedImagesAsync(topicText, usedIds)
+      answer = await extractEmbeddedImagesAsync(answerText, usedIds)
+    } catch (error) {
+      showError(describeError(error))
+      return
+    }
+    const photos = [...topic.files, ...answer.files]
+
+    // 张数 / 大小的前置校验（后端同样的规则，先拦下来省一次上传）
+    const limitProblem = checkPhotoLimits(photos)
+    if (limitProblem) {
+      showError(limitProblem)
+      return
+    }
+
     const base = {
       course: meta.value.course,
       userCode: session.userCode,
@@ -495,7 +499,7 @@ async function onSubmit(): Promise<void> {
             subjectAnswer: answerText
           })
     showSuccess(msg || '提交成功')
-    // 通知「我录入的题」：数据变了，它自己重拉（人此刻可能在别的标签页）
+    // 通知「题库管理」：数据变了，它自己重拉（人此刻可能在别的标签页）
     bumpTopicsVersion()
     // 只清题目与答案：元信息留着，接着录同一章节的下一题时不用重选一遍
     for (const entry of ENTRY_LIST) entry.text.value = ''
@@ -509,11 +513,18 @@ async function onSubmit(): Promise<void> {
 </script>
 
 <style scoped>
+/* 页面自己留出呼吸：四周一圈底色的空隙，题目与答案各是一张浮在底色上的白卡片。
+   position: relative 是给「附加信息」抽屉定位用的（组件内是 absolute）。 */
 .put-topic-page {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 620px;
+  gap: 12px;
+  padding: 14px 18px 0;
+  background: var(--admin-bg);
+  box-sizing: border-box;
 }
 
 /* 编辑区。这一层同时管三件事：flex 布局、把显示权从宿主那条
@@ -527,31 +538,31 @@ async function onSubmit(): Promise<void> {
 #admin-panel .put-topic-page #editor.put-body {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 12px;
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
-  /* 通栏：不留外边距、不套卡片，节奏照本项目自己的标签页 —— 工具条一行、
-     编辑面一行，一条压一条往下铺 */
+  /* 两栏各是一张卡片，间距交给 gap；外层不再通栏贴边 */
   margin: 0;
   padding: 0;
   overflow: hidden;
 }
 
-/* 一栏 = 一条工具条 + 一块左右分栏的编辑面，通栏、无圆角。
-   题目与答案之间只靠「工具条那条灰带 + 1px 分线」分开。 */
+/* 一栏 = 一条工具条 + 一块左右分栏的编辑面，包成一张白卡片。
+   卡片靠 1px 淡边 + 极轻的投影浮在灰色页面底上，层次只靠这两层，
+   不用加深边框或大阴影。 */
 .entry {
   display: flex;
   flex-direction: column;
   flex: 1 1 0;
   min-height: 190px;
   overflow: hidden;
-  background: var(--bg-color, var(--admin-surface));
-  border-bottom: 1px solid var(--shell-line, var(--admin-border));
-}
-
-.entry:last-child {
-  border-bottom: none;
+  /* 必须跟 --admin-surface 走：宿主主题里的 --bg-color 在深色下是纯黑，
+     会和右边白色/深灰的预览面、以及灰色页面底割裂成三块 */
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .entry-split {
@@ -581,14 +592,16 @@ async function onSubmit(): Promise<void> {
    --admin-border：这页的观感对齐的是标签页，不是后台表单。
    字号/行高取右手边预览那一档（主题 #editor .ProseMirror，base.css:1192），
    不是另找一个数：两栏并排，同一行行距不同会一路错位下去。 */
+/* 左：源文本。底色比右侧预览浅一档，一眼分得清"写的地方"和"看的结果"；
+   等宽字体保留 —— markdown 的标记对齐靠它。 */
 .md-input {
   flex: 1 1 50%;
   min-width: 0;
   min-height: 0;
-  padding: 14px 18px;
+  padding: 16px 20px;
   border: none;
-  border-right: 1px solid var(--shell-line, var(--admin-border));
-  background: transparent;
+  border-right: 1px solid var(--admin-border);
+  background: var(--admin-bg-soft);
   color: var(--text-color, var(--admin-text));
   font-family: Consolas, 'Courier New', monospace;
   font-size: 16px;
@@ -602,12 +615,25 @@ async function onSubmit(): Promise<void> {
   color: var(--text-muted, var(--admin-text-weak));
 }
 
-/* 右：预览。滚动在这一层，预览本身交出滚动（与宿主提交页同一手法） */
+/* 右：预览。滚动在这一层，预览本身交出滚动（与宿主提交页同一手法）。
+   白底：与左边浅灰的源文本形成"纸 vs 台面"的对照。 */
 .preview-pane {
   flex: 1 1 50%;
   min-width: 0;
-  padding: 14px 18px;
+  padding: 16px 20px;
+  background: var(--admin-surface);
   overflow-y: auto;
+}
+
+/* 提交条：「附加信息」在前，「提交」紧跟在它右侧并排靠左 —— 两个都是这一屏的
+   收尾动作，挨着放比一头一个、中间空一整行更好扫。 */
+.put-foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 14px;
 }
 
 /* 纯预览，不可交互 —— 鼠标归这里管，Tab 键由 lockPreview 的 tabIndex 管。
@@ -634,11 +660,6 @@ async function onSubmit(): Promise<void> {
 }
 
 
-
-.put-foot {
-  flex: none;
-  padding: 12px 20px 16px;
-}
 
 .btn {
   height: 30px;

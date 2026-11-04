@@ -7,7 +7,7 @@
 export function pinyinInlineStringifyHandler(node: any, _parent: any, state: any, info: any): string {
   const exit = state.enter('pinyinInline')
   const tracker = state.createTracker(info)
-  let value = tracker.move(`${node.text ?? ''}[${node.pinyin ?? ''}]`)
+  const value = tracker.move(`${node.text ?? ''}[${node.pinyin ?? ''}]`)
   exit()
   return value
 }

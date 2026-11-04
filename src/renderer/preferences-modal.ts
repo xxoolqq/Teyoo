@@ -10,6 +10,7 @@
 
 import { getPrefs, setPrefsPath } from './preferences-store'
 import { getActiveMathEngineId, listMathEngines, setMathEngine } from './math-engine'
+import { applyTheme, loadSavedTheme, THEME_OPTIONS } from './themes/theme-manager'
 
 type TabKey = 'general' | 'appearance' | 'image' | 'markdown' | 'export' | 'assistant' | 'docx' | 'mineru'
 
@@ -183,6 +184,15 @@ class PreferencesModal {
       this.radioRow('打开新建文件', 'general.launchOnOpen', 'new'),
     ]))
 
+    // 启动页：只影响「应用启动」那一次，命令行 / 双击文件打开的窗口不受影响
+    //（见 main/index.ts 的 createWindow 第四个参数）。后台管理系统要连服务器，
+    // 未登录时落到登录页，所以默认仍是编辑器。
+    root.append(this.group('启动页', [
+      this.radioRow('编辑器', 'general.startPage', 'editor'),
+      this.radioRow('后台管理系统', 'general.startPage', 'admin'),
+      this.hint('选「后台管理系统」时，启动后会切到该标签页；上次的文档仍在后台标签里打开。下次启动生效。'),
+    ]))
+
     // 自动保存间隔：0 = 不自动保存，1–5 分钟、每次步进 1 分钟（越界值夹取后回写）
     const intervalInput = this.input('number', {
       value: String(readPref<number>('general.autoSaveIntervalMinutes') ?? 0),
@@ -237,6 +247,11 @@ class PreferencesModal {
     const root = document.createElement('section')
     root.className = 'prefs-panel'
 
+    // 主题：三个内置主题，选中即生效 —— applyTheme 会切 body class、写
+    // localStorage（teyoo-theme）、同步 MathLive 键盘的明暗和 Windows 标题栏
+    // 按钮配色。菜单栏那条「主题」已经撤掉，这里是唯一入口。
+    root.append(this.themeGroup())
+
     // 「窗口样式」已移除：窗口样式固定（不再提供经典/一体化切换）。
 
     // 字体大小（Typora 式）：自动 = 沿用主题自带字号；自定义 = 指定正文字号（px）。
@@ -285,9 +300,39 @@ class PreferencesModal {
       this.checkRow('允许折叠和展开侧边栏的大纲视图', { key: 'appearance.allowCollapseOutline' }),
     ]))
 
-    // 「主题」分组已移除：主题改由菜单栏「主题」切换，偏好设置不再提供入口。
-
     return root
+  }
+
+  /**
+   * 主题单选项。
+   *
+   * 不再是 prefs store 里的键（主题历来只存 localStorage 的 teyoo-theme），
+   * 所以不能用 radioRow：那个工厂会去 store 读写。选中即 applyTheme，没有「确定」。
+   */
+  private themeGroup(): HTMLElement {
+    const saved = loadSavedTheme()
+    const rows = THEME_OPTIONS.map((option) => {
+      const row = document.createElement('label')
+      row.className = 'prefs-row prefs-radio'
+      const radio = document.createElement('input')
+      radio.type = 'radio'
+      radio.name = 'prefs-theme'
+      radio.value = option.id
+      // loadSavedTheme 已把已下线的主题名兜底成 elegant，所以这里只会命中三项之一；
+      // 导入的自定义主题（custom:…）不在列表里，此时三项都不选中。
+      radio.checked = saved === option.id
+      radio.addEventListener('change', () => {
+        if (radio.checked) applyTheme(option.id)
+      })
+      const span = document.createElement('span')
+      span.textContent = option.label
+      row.append(radio, span)
+      return row
+    })
+    return this.group('主题', [
+      ...rows,
+      this.hint('雅致 / 简白 / 深色三选一，切换立即生效。'),
+    ])
   }
 
   // 文档助手 ──────────────────────────────────────────────────────────────
@@ -480,11 +525,24 @@ class PreferencesModal {
     workDirRow.append(workDirLine, this.hint('插入或导入的图片会备份到这里；解析 PDF 时也从这里找图片'))
     root.append(this.group('工作目录', [workDirRow]))
 
-    // 解析 PDF 时的图片落地方式：内嵌 base64 还是只记路径。默认内嵌 —— Markdown
-    // 自包含，拷到哪儿都能显示；代价是文件随图片体积涨。
+    // 解析 PDF 时的图片落地方式：内嵌 base64 还是只记路径。默认只记路径 ——
+    // 内嵌会把 Markdown 撑大几十倍（一张截图就是几万字符），项目内不再默认内嵌；
+    // 想要自包含（拷走也能显示）的人再勾上。
     root.append(this.group('解析 PDF 时的图片', [
       this.checkRow('图片内嵌为 base64', { key: 'image.embedImages' }),
       this.hint('不勾选则 Markdown 里只写图片的绝对路径：文件小得多，但离开本机就显示不出来'),
+    ]))
+
+    // 导入 .docx 时的图片落地方式。默认落盘：内嵌 base64 会让 Markdown 涨几十倍
+    // （一张几百 KB 的图），而模型只能看到纯文本，那些 base64 对它毫无意义。
+    const imagesDirHint = this.hint(
+      `落盘目录：${(readPref<string>('image.workDir') || DEFAULT_WORK_DIR).replace(/\/+$/, '')}/images`,
+    )
+    root.append(this.group('导入 docx 时的图片', [
+      this.radioRow('存到工作目录下的 images 目录', 'image.docxImageMode', 'directory'),
+      this.radioRow('内嵌为 base64（Markdown 自包含）', 'image.docxImageMode', 'datauri'),
+      imagesDirHint,
+      this.hint('选目录方式时，Markdown 里写图片的绝对路径：文本小得多，图片也能被题库复用'),
     ]))
 
     // 「插入图片时…」「上传服务设定」分组与「优先使用相对路径」勾选项已移除。

@@ -179,6 +179,7 @@ function runDoc2Pdf(exe: string, input: string, outDir: string): Promise<DocxPdf
       let buffer = ''
       stream.setEncoding('utf16le' as BufferEncoding)
       stream.on('data', (chunk: string) => {
+        // eslint-disable-next-line no-control-regex -- 故意匹配 NUL：UTF-16 输出里混着的空字符要去掉
         buffer += chunk.replace(/\u0000/g, '')
         let index = buffer.indexOf('\n')
         while (index >= 0) {

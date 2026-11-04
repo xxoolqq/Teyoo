@@ -141,14 +141,13 @@
               <td>{{ child.studentName }}</td>
               <td>{{ levelText(child.classLevel) }}</td>
               <td class="class-cell">
-                <template v-if="child.className">
-                  <span class="class-name">{{ child.className }}</span>
-                </template>
-                <button v-else class="btn small" type="button" @click="openApply(child)">
-                  加入班级
-                </button>
+                <span v-if="child.className" class="class-name">{{ child.className }}</span>
+                <!-- 顺序：先看「已加入班级」，再申请加入其它班级 -->
                 <button class="btn small ghost" type="button" @click="openJoined(child)">
                   已加入班级
+                </button>
+                <button class="btn small" type="button" @click="openApply(child)">
+                  加入其它班级
                 </button>
               </td>
             </tr>

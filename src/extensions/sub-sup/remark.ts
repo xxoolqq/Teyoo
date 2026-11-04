@@ -69,9 +69,17 @@ function splitSuperscript(value: string, allowAtStart: boolean): any[] | null {
 export function remarkSubSup(this: any): any {
   // attacher 阶段：挂 tokenize 层（下标）与 mdast 层（token→节点）扩展。
   // data key 与 remark-gfm 同名：'micromarkExtensions' / 'fromMarkdownExtensions'。
-  // 注意必须以方法调用（this.data(...)）保持 this 绑定，解构后会丢 this。
-  this.data('micromarkExtensions', [micromarkSubscript])
-  this.data('fromMarkdownExtensions', [subscriptFromMarkdown])
+  //
+  // ⚠️ 必须用「取整份数据 → push」的写法（remark-gfm 同款），不能用
+  // this.data(key, value) 两参形式：unified v11 的两参 data 是**整值替换**
+  // （v9/v10 才是数组 concat），会把 remark-math / remark-gfm / 分栏等
+  // 先前注册的 micromark 扩展整个覆盖掉 —— 症状是同文档里 `$...$` 不再
+  // 被解析成公式（mdast 里只剩裸文本）。
+  const data = this.data()
+  const micromarkExtensions = data.micromarkExtensions || (data.micromarkExtensions = [])
+  micromarkExtensions.push(micromarkSubscript)
+  const fromMarkdownExtensions = data.fromMarkdownExtensions || (data.fromMarkdownExtensions = [])
+  fromMarkdownExtensions.push(subscriptFromMarkdown)
 
   // transformer 阶段：后置扫描上标 `^{x}`
   return (tree: unknown) => {

@@ -78,3 +78,31 @@ export async function addChild(payload: AddChildPayload): Promise<string> {
   })
   return typeof data.data === 'string' ? data.data : ''
 }
+
+/**
+ * 孩子详情（后端 Child 实体）。
+ * 列表接口不带 city，而提交错题必须给 6 位城市码，只能从这里取；
+ * classLevel 也一并带出，省得让家长重选年级。
+ */
+export interface ChildDetail {
+  childCode?: string
+  studentName?: string
+  /** 两位年级码 */
+  classLevel?: string
+  /** 省 / 市 / 区县都是 6 位行政区划代码 */
+  province?: string
+  city?: string
+  country?: string
+  gender?: string
+  cardId?: string
+}
+
+/** 查某个孩子的详情（后端只允许查自己名下的孩子） */
+export async function fetchChildDetail(childCode: string): Promise<ChildDetail | null> {
+  const { data } = await client.post<ApiEnvelope<ChildDetail | null>>(endpoints.childDetail, {
+    token: session.token,
+    userCode: session.userCode,
+    childCode
+  })
+  return data.data ?? null
+}

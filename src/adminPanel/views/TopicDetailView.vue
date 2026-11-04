@@ -97,7 +97,7 @@ async function bootRender(rootId: string, md: string, failed: { value: boolean }
   }
 }
 
-// 回来源列表页（「我录入的题」或检索页），不是固定回检索页
+// 回来源列表页（「题库管理」或检索页），不是固定回检索页
 function goBack(): void {
   void router.push(listPathOf(route))
 }

@@ -1,8 +1,8 @@
-// docx-import.ts — 将 .docx 文件转换为 Markdown（支持 ColaMD 扩展语法）
+// docx-import.ts — 将 .docx 文件转换为 Markdown（支持 Teyoo 扩展语法）
 //
 // 三阶段管线：
 //   阶段 1 — OOXML 预处理
-//     用 JSZip 解压 .docx，从 word/document.xml 中提取 ColaMD 扩展对应的
+//     用 JSZip 解压 .docx，从 word/document.xml 中提取 Teyoo 扩展对应的
 //     OOXML 元素（OMML 公式、EQ 域公式、MathType OLE 公式、ruby 拼音、
 //     着重号、下划线、田字格、带圈序号），替换为占位符文本。
 //     另有 zip 级媒体修复：WMF/EMF 图片（MathType 转图片型公式）经
@@ -18,12 +18,12 @@
 //     原样通过 mammoth，不会被转义。
 //
 //   阶段 3 — 占位符回填
-//     将 mammoth 输出中的占位符替换为 ColaMD 扩展语法：
+//     将 mammoth 输出中的占位符替换为 Teyoo 扩展语法：
 //       公式   $…$ / $$…$$      （OMML 由 dwml-ts 转换；EQ 域由
 //                                  eq-field/eq-to-latex 转换；MathType
 //                                  OLE 由 mtef/oleToLatex 转换）
-//       拼音   汉字(pinyin)     （w:ruby → ColaMD ruby 语法）
-//       着重号 @.内容.@         （w:em w:val="dot" → ColaMD emphDot 语法）
+//       拼音   汉字(pinyin)     （w:ruby → Teyoo ruby 语法）
+//       着重号 @.内容.@         （w:em w:val="dot" → Teyoo emphDot 语法）
 //
 // 对应 docx-export.ts 的逆向映射（完整可逆）。
 
@@ -39,6 +39,7 @@ import { parseMetafile, renderToContext } from 'wmf-emf-renderer'
 import { ommlToLatex } from 'dwml-ts'
 import { eqToLatex } from './eq-field/eq-to-latex'
 import { oleToLatex } from './mtef'
+import { storeDocxImage } from './docx-image-store'
 
 // Cambria Math（Word 原生公式字体）藏在 Windows 的 TTC 集合文件里，
 // @napi-rs/canvas 的系统扫描不含 TTC → 手动注册一次供 WMF 渲染使用。
@@ -82,7 +83,7 @@ export interface DocxImportResult {
 export interface DocxImportOptions {
   /** 行内公式图片 OCR：true 时把行内图片提交识别，用返回的 LaTeX 替换图片 */
   imageFormulaOcr?: boolean
-  /** 公式 OCR 地址（SimpleTex 契约）；缺省走环境变量 COLAMD_OCR_URL 或默认本地端点 */
+  /** 公式 OCR 地址（SimpleTex 契约）；缺省走环境变量 TEYOO_OCR_URL 或默认本地端点 */
   formulaOcrUrl?: string
   /**
    * 本地识别器（图片 data URL → LaTeX）：提供时取代 formulaOcrUrl 的 HTTP 端点，
@@ -90,6 +91,53 @@ export interface DocxImportOptions {
    * 也不该把 onnxruntime 打进它的 bundle，所以那边留空继续走 HTTP。
    */
   recognizeFormula?: (dataUrl: string) => Promise<string | null>
+  /**
+   * 覆盖默认的图片落盘目录（可选）。
+   *
+   * 正常不需要给：图片默认写进「工作目录/images」（见 docx-image-store.ts，
+   * 偏好 image.docxImageMode / image.workDir 控制）。给这个字段的场景只有
+   * 「调用方自己知道该放哪儿」——比如临时预览、不希望污染工作目录。
+   * 给 null 则强制内嵌 base64。
+   */
+  imageDir?: string | null
+}
+
+// ─── 图片转换：默认落盘到「工作目录/images」，失败退回内嵌 ────────────────
+//
+// mammoth 的 images.dataUri 是它自己的默认（也是本模块的历史行为）：图片字节
+// 编成 base64 直接嵌进 Markdown。文本自包含，但一张几百 KB 的图就把 Markdown
+// 涨几十倍 —— 拆题时这些 base64 会原样发给模型，纯属噪声（实测一份 347KB 的
+// 试卷：249,425 字符 → 落盘后 4,519）。
+//
+// 所以默认走 storeDocxImage：把字节写盘，Markdown 里只留路径。
+// 落盘失败（目录不可写 / 浏览器环境 / mammoth 缺 imgElement）一律**退回内嵌**，
+// 宁可文本变大，也不能让图片凭空消失。
+
+interface MammothImageElement {
+  contentType: string
+  /** 不给编码 → 字节；给 'base64' → base64 字符串 */
+  read(encoding?: string): Promise<Uint8Array | string>
+}
+
+function buildImageConverter(imageDir?: string | null): unknown {
+  const imgElement = (mammothAny.images as { imgElement?: unknown }).imgElement
+  // 少数 mammoth 构建里没有 images.imgElement：退回默认内嵌，功能不受影响
+  if (typeof imgElement !== 'function') return mammothAny.images.dataUri
+  return imgElement(async (element: MammothImageElement) => {
+    const mime = element.contentType || 'application/octet-stream'
+    try {
+      const raw = await element.read()
+      const src =
+        imageDir === null
+          ? null
+          : await storeDocxImage(mime, new Uint8Array(raw as Uint8Array), imageDir)
+      if (src) return { src }
+    } catch {
+      /* 落盘失败 → 走下面的内嵌兜底 */
+    }
+    const base64 = await element.read('base64')
+    return { src: `data:${mime};base64,${base64}` }
+  })
 }
 
 // ─── 占位符 ────────────────────────────────────────────────────────────
@@ -130,7 +178,7 @@ interface Extracted {
  * 这样本模块两侧通用。
  *
  * @param docx      .docx 文件字节（Uint8Array / ArrayBuffer 均可）
- * @returns         转换后的 Markdown（含 ColaMD 扩展语法）+ warnings
+ * @returns         转换后的 Markdown（含 Teyoo 扩展语法）+ warnings
  * @throws          文件无法解析时抛出 Error
  */
 export async function docxToMarkdown(
@@ -154,7 +202,7 @@ export async function docxToMarkdown(
   // 必须在交给 mammoth 前完成
   const wmfPatchedXml = await convertWmfEmfImages(zip, docXml, warnings)
 
-  // 按顺序提取 ColaMD 扩展元素（顺序重要：oMathPara 先于 oMath）
+  // 按顺序提取 Teyoo 扩展元素（顺序重要：oMathPara 先于 oMath）
   let processedXml = wmfPatchedXml
   processedXml = extractOmmlBlock(processedXml, extracted, warnings)
   processedXml = extractOmmlInline(processedXml, extracted, warnings)
@@ -188,7 +236,7 @@ export async function docxToMarkdown(
   // 子块居中标记注入（先执行：标记段落无字体信息，天然打断 fontBlock 序列，
   // 确保 fontBlock 不跨越 subBlock 边界，避免嵌套重叠）。
   // 标记文本经占位符回填（阶段 3）：mammoth 会无条件转义 # 等字符
-  // （@#center → @\#center），直接写字面标记会导致 ColaMD 词法层无法识别。
+  // （@#center → @\#center），直接写字面标记会导致 Teyoo 词法层无法识别。
   processedXml = injectSubBlockMarkers(processedXml, extracted)
   // 字体解析（fontBlock 整段换字体 + fontSpan 段内部分换字体）
   // 在子块标记注入之后执行：subBlock 标记段落（@#center/@）无 w:rFonts，
@@ -205,10 +253,10 @@ export async function docxToMarkdown(
   // ── 阶段 2：mammoth 转换标准格式 ──────────────────────────────────
   const mammothResult = await mammothAny.convertToMarkdown(
     { buffer: modifiedBuffer, arrayBuffer: modifiedBuffer },
-    { convertImage: mammothAny.images.dataUri },
+    { convertImage: buildImageConverter(options?.imageDir) },
   )
 
-  // ── 阶段 3：占位符 → ColaMD 扩展语法 ──────────────────────────────
+  // ── 阶段 3：占位符 → Teyoo 扩展语法 ──────────────────────────────
   let markdown = mammothResult.value
   // 3-0) mammoth strong 语法归一：mammoth 的 markdown writer 用 __ 包裹
   // 加粗（node_modules/mammoth/lib/writers/markdown-writer.js），有两类问题：
@@ -217,7 +265,7 @@ export async function docxToMarkdown(
   //      规则，无法解析为加粗；
   //   b) 「__2017__年」——下划线有词内限制（intraword emphasis 禁止），
   //      关闭侧后跟 CJK 字符时无法闭合 → 字面 __ 残留。
-  // 统一转换为 **…**（无词内限制，亦是 ColaMD stringify 的标准形式），
+  // 统一转换为 **…**（无词内限制，亦是 Teyoo stringify 的标准形式），
   // 同时把 span 首尾空格移到标记外；纯空格加粗（不可见格式）丢弃标记。
   markdown = normalizeMammothStrong(markdown)
   // 3a) 田字格：先按连续占位符序列重组为 ++…++ 语法单元
@@ -636,7 +684,7 @@ function restoreInvisiblePhantomBase(latex: string): string {
 
 // ─── OMML 块级公式提取（m:oMathPara） ──────────────────────────────────
 //
-// ColaMD 导出：块级公式 → <m:oMathPara><m:oMath>…</m:oMath></m:oMathPara>
+// Teyoo 导出：块级公式 → <m:oMathPara><m:oMath>…</m:oMath></m:oMathPara>
 // mammoth 对 m:oMathPara 无处理逻辑 → 整个公式（含文字）被丢弃。
 // 预处理阶段用 dwml-ts 的 ommlToLatex 转为 LaTeX，替换为占位符。
 function extractOmmlBlock(
@@ -978,7 +1026,7 @@ function extractEqFields(
 
 // ─── 田字格提取（DrawingML 行内形状组合） ─────────────────────────────
 //
-// ColaMD 导出（规约G）：每个格子一个独立 <w:r><w:drawing><wp:inline>…
+// Teyoo 导出（规约G）：每个格子一个独立 <w:r><w:drawing><wp:inline>…
 // <a:graphicData uri=…wordprocessingGroup><wpg:wgp>…</wpg:wgp> 组合，
 // wp:docPr 的 name 固定为「田字格 N」（识别标记）。组内：
 //   - 汉字格：rect 形状 + KaiTi 文本框（w:txbxContent）装字
@@ -995,7 +1043,7 @@ function extractEqFields(
 function extractTianziGrid(xml: string, extracted: Extracted[]): string {
   const drawingPattern = /<w:drawing\b[^>]*>([\s\S]*?)<\/w:drawing>/g
   return xml.replace(drawingPattern, (fullMatch) => {
-    // 只处理 ColaMD 田字格形状（docPr name 以「田字格」开头）
+    // 只处理 Teyoo 田字格形状（docPr name 以「田字格」开头）
     if (!/<wp:docPr\b[^>]*\bname="田字格/.test(fullMatch)) return fullMatch
 
     // 从各文本框提取格子内容：Segoe UI → 拼音；其余（KaiTi 等）→ 汉字
@@ -1065,7 +1113,7 @@ function rebuildTianziSequences(markdown: string, extracted: Extracted[]): strin
 
 // ─── 带圈序号提取（上标 Run） ──────────────────────────────────────────
 //
-// ColaMD 导出（规约E）：字^{n} → 汉字 Run + 上标 Run（vertAlign=superscript）：
+// Teyoo 导出（规约E）：字^{n} → 汉字 Run + 上标 Run（vertAlign=superscript）：
 //   n 1–20  → U+2460…U+2473（①…⑳）
 //   n 21–35 → U+3251…U+325F（㉑…㉟）
 //   n 36–50 → U+32B1…U+32BF（㊱…㊿）
@@ -1107,7 +1155,7 @@ function extractCircledSup(xml: string, extracted: Extracted[]): string {
 
 // ─── Ruby 拼音提取（w:ruby） ───────────────────────────────────────────
 //
-// ColaMD 导出：拼音 ruby → <w:ruby><w:rt>…拼音…</w:rt><w:rubyBase>…汉字…</w:rubyBase></w:ruby>
+// Teyoo 导出：拼音 ruby → <w:ruby><w:rt>…拼音…</w:rt><w:rubyBase>…汉字…</w:rubyBase></w:ruby>
 // mammoth 对 w:ruby 无处理逻辑 → 整个 ruby（含汉字和拼音）被丢弃。
 // 预处理阶段提取基字和拼音，将带声调符号的拼音转为数字声调格式。
 //
@@ -1133,7 +1181,7 @@ function extractRuby(xml: string, extracted: Extracted[]): string {
 
 // ─── 下划线提取（w:u） ─────────────────────────────────────────────────
 //
-// ColaMD 导出：underline <u>内容</u> → <w:r><w:rPr><w:u w:val="single"/>…
+// Teyoo 导出：underline <u>内容</u> → <w:r><w:rPr><w:u w:val="single"/>…
 // mammoth 读取 run 时不识别 w:u → 文字保留但下划线丢失。
 //
 // 处理：把 run 的文本就地包成 <u>…</u>（写进 w:t 需转义为 XML 实体，
@@ -1179,7 +1227,7 @@ function wrapRunText(inner: string, open: string, close: string): string {
 
 // ─── 着重号提取（w:em w:val="dot"） ───────────────────────────────────
 //
-// ColaMD 导出：emphDot @.内容.@ → <w:r><w:rPr><w:em w:val="dot"/></w:rPr><w:t>内容</w:t></w:r>
+// Teyoo 导出：emphDot @.内容.@ → <w:r><w:rPr><w:em w:val="dot"/></w:rPr><w:t>内容</w:t></w:r>
 // mammoth 读取 run 时不识别 w:em → 文字保留但着重号丢失。
 // 预处理阶段检测含 w:em w:val="dot" 的 run，将其文本包装为 @.….@。
 function extractEmphasis(xml: string, extracted: Extracted[]): string {
@@ -1203,7 +1251,7 @@ function extractEmphasis(xml: string, extracted: Extracted[]): string {
 
 // ─── 通用上下标提取（vertAlign run） ──────────────────────────────────
 //
-// ColaMD 导出：下标 _{x} / 上标 ^{x} → <w:vertAlign w:val="subscript|
+// Teyoo 导出：下标 _{x} / 上标 ^{x} → <w:vertAlign w:val="subscript|
 // superscript"> run。Word 原生化学式（CO₂、SO₄²⁻、H₃O⁺）同样以 vertAlign
 // run 表示——mammoth 不识别 vertAlign，输出时拍平为普通文本（CO2、SO42-），
 // 格式语义丢失。
@@ -1212,9 +1260,9 @@ function extractEmphasis(xml: string, extracted: Extracted[]): string {
 //   - 带圈序号上标已被 extractCircledSup 提前提取（run 已替换为占位符文本
 //     run，不再含 vertAlign），此处不冲突；
 //   - 回填后占位符紧贴前后 run 文本（run 相邻性由 mammoth 按 run 顺序拼接
-//     保持），满足 ColaMD 语法的紧贴约束（前一字符非空白）。
+//     保持），满足 Teyoo 语法的紧贴约束（前一字符非空白）。
 //
-// 内容约束：ColaMD 语法要求上下标内容为非空白、非花括号的连续字符
+// 内容约束：Teyoo 语法要求上下标内容为非空白、非花括号的连续字符
 // （[^{}\s]+），含空白/花括号的 run 不提取，交由 mammoth 拍平为普通文本
 // （降级保文本，格式丢失与 mammoth 现状一致）。
 function extractVertAlign(xml: string, extracted: Extracted[]): string {
@@ -1237,7 +1285,7 @@ function extractVertAlign(xml: string, extracted: Extracted[]): string {
 
 // ─── 表格提取（w:tbl → GFM 管道表格） ─────────────────────────────────
 //
-// ColaMD 使用 GFM 管道表格。Word 的 w:tbl 交给 mammoth 处理时，markdown
+// Teyoo 使用 GFM 管道表格。Word 的 w:tbl 交给 mammoth 处理时，markdown
 // writer 不支持表格结构 → 单元格文本被拍平成连续段落，行列信息全丢。
 // 预处理：整表解析为行列文本矩阵，替换为占位符段落 ⟦TBL:n⟧，阶段 3 回填
 // 为 GFM 管道表格（多行文本）。
@@ -1334,7 +1382,7 @@ function buildGfmTable(rows: string[][]): string {
 
 // ─── 字体解析（fontBlock / fontSpan，规约H） ──────────────────────────
 //
-// ColaMD 导出（规约H）：
+// Teyoo 导出（规约H）：
 //   块级 fontBlock:  :::font{family=楷体 size=12pt} … :::  → 段落对齐+字体字号（子树继承）
 //   行内 fontSpan:   {= family=楷体 size=12pt : 目标文本}  → Run 字体/字号覆盖
 //
@@ -1512,17 +1560,17 @@ function formatFamilyAttr(name: string): string {
 
 // ─── 子块居中标记注入（w:jc="center" 连续段落） ───────────────────────
 //
-// ColaMD 导出（规约F）：无框居中子块 @#center ... @ → 直接展开为连续的
+// Teyoo 导出（规约F）：无框居中子块 @#center ... @ → 直接展开为连续的
 // 居中段落（w:jc="center"），无表格/DrawingML 包裹。导入时需逆向还原：
 // 检测 2+ 个连续居中段落，在前后插入 @#center / @ 标记段落。
 //
 // mammoth 不保留对齐信息（markdown 输出中 center 全部丢失）→ 必须在
 // OOXML 预处理阶段注入标记。标记文本经占位符在阶段 3 回填（mammoth 会
-// 转义 # 等字符，不能直接写 @#center），ColaMD 词法层识别 @#center（行首）
+// 转义 # 等字符，不能直接写 @#center），Teyoo 词法层识别 @#center（行首）
 // → @（行尾）的子块语法。
 function injectSubBlockMarkers(xml: string, extracted: Extracted[]): string {
   // 起止标记不能直接写 @#center 文本：mammoth 的 markdown writer 会对文本
-  // 无条件转义 Markdown 特殊字符（# → \# 等），产出 @\#center 后 ColaMD
+  // 无条件转义 Markdown 特殊字符（# → \# 等），产出 @\#center 后 Teyoo
   // 词法层（lexer.ts RE_SUB_START）无法识别。因此标记段落里放占位符，
   // 阶段 3 回填真实的 @#center / @ 文本（此时已脱离 mammoth，不会再转义）。
   const SUBBLOCK_START = (idx: number) => `<w:p>${placeholderRun(T_SBS, idx)}</w:p>`
@@ -1583,7 +1631,7 @@ function injectSubBlockMarkers(xml: string, extracted: Extracted[]): string {
 // 解析缺陷：开启侧紧跟空格（__  2017__）不满足 CommonMark 左侧翼规则；
 // 关闭侧后跟 CJK 字符（__2017__年）受下划线词内限制无法闭合。两者都会
 // 让字面 __ 残留在正文里。
-// 处理：__…__ → **…**（星号无词内限制，且与 ColaMD stringify 输出一致），
+// 处理：__…__ → **…**（星号无词内限制，且与 Teyoo stringify 输出一致），
 // span 首尾的空格/制表符移到标记外（字符数不变，行尾硬换行双空格不受
 // 影响），纯空格加粗直接丢弃标记仅保留空格。mammoth 输出中的字面下划线
 // 均已转义为 \_，未转义的 __ 只可能是 strong 定界符，正则处理安全。
@@ -1646,11 +1694,11 @@ function decodeXml(str: string): string {
 /**
  * 将带 Unicode 声调符号的拼音转换为数字声调格式。
  *
- * ColaMD 导出时用 pinyin-pro 的 convert() 把 'tian1qi4' 转成 'tiān qì'
+ * Teyoo 导出时用 pinyin-pro 的 convert() 把 'tian1qi4' 转成 'tiān qì'
  * 写入 w:ruby 的 w:rt。导入时需逆向还原：'tiān qì' → 'tian1qi4'。
  *
  * 声调符号映射：macron(¯)→1, acute(´)→2, caron(ˇ)→3, grave(`)→4
- * ü/ǖ/ǘ/ǚ/ǜ 映射为 v（ColaMD 拼音正则 [a-z] 接受 v）
+ * ü/ǖ/ǘ/ǚ/ǜ 映射为 v（Teyoo 拼音正则 [a-z] 接受 v）
  * 声调数字在音节末尾追加（you2 而非 yo2u）——拼音声调标在韵母上但数字
  * 声调格式规定数字收尾整个音节。音节边界判定：空格/非字母分隔符、
  * 下一个带调元音、字符串结束。
@@ -1729,13 +1777,13 @@ function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
 }
 
 const DEFAULT_OCR_URL = 'http://127.0.0.1:8787/api/latex_ocr'
-const OCR_API_TOKEN = nodeEnv('COLAMD_OCR_TOKEN') || 'test-token'
+const OCR_API_TOKEN = nodeEnv('TEYOO_OCR_TOKEN') || 'test-token'
 const OCR_CONCURRENCY = 4
 const OCR_TIMEOUT_MS = 15000
 
-/** 公式 OCR 地址：调用方显式传入 > 环境变量 COLAMD_OCR_URL > 默认本地端点 */
+/** 公式 OCR 地址：调用方显式传入 > 环境变量 TEYOO_OCR_URL > 默认本地端点 */
 function resolveOcrUrl(url?: string): string {
-  return url?.trim() || nodeEnv('COLAMD_OCR_URL') || DEFAULT_OCR_URL
+  return url?.trim() || nodeEnv('TEYOO_OCR_URL') || DEFAULT_OCR_URL
 }
 
 // data URI 图片：base64 字符表不含 ')'，可安全用 [^)\s]+ 截断

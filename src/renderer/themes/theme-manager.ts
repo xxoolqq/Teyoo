@@ -1,3 +1,8 @@
+// 全量映射：applyTheme 认识的主题都在这里。
+//
+// 桌面端只有 THEME_OPTIONS 里的三个对外可选（菜单栏的「主题」已撤，入口在
+// 偏好设置「外观 → 主题」），但映射本身不能跟着裁 —— vite.web 那个主题演示页
+// （src/web/main.ts）复用同一个 applyTheme，裁掉会让它那十二个主题点不动。
 const themes: Record<string, string> = {
   light: 'theme-light',
   dark: 'theme-dark',
@@ -14,9 +19,20 @@ const themes: Record<string, string> = {
 }
 
 /**
- * 深色系主题的 body class。浅色系是 light / elegant / sepia / notion / bear /
- * writer。需要「跟着主题切深色配色」的地方按它判断：Mermaid 图（见
- * editor/mermaid-bridge.ts），以及 MathLive 的虚拟键盘（见 applyTheme 末段）。
+ * 偏好设置「外观 → 主题」里的可选项 = 桌面端允许切换的全部主题。
+ * 顺序即展示顺序，第一条是默认值。菜单栏那份列表已经撤掉，这里是唯一入口，
+ * loadSavedTheme() 也按它校验（换过已下线主题的老用户兜底回「雅致」）。
+ */
+export const THEME_OPTIONS: Array<{ id: string; label: string }> = [
+  { id: 'elegant', label: '雅致' },
+  { id: 'notion', label: '简白' },
+  { id: 'dark', label: '深色' }
+]
+
+/**
+ * 深色系主题的 body class。需要「跟着主题切深色配色」的地方按它判断：Mermaid 图
+ * （见 editor/mermaid-bridge.ts），以及 MathLive 的虚拟键盘（见 applyTheme 末段）。
+ * 桌面端只会用到 theme-dark，其余几个留给网页演示页。
  */
 export const DARK_THEME_CLASSES = new Set([
   'theme-dark',
@@ -60,7 +76,7 @@ export function applyTheme(name: string, customCSS?: string): void {
   body.setAttribute('theme', DARK_THEME_CLASSES.has(themes[name] ?? '') ? 'dark' : 'light')
 
   // Persist theme choice
-  localStorage.setItem('colamd-theme', name)
+  localStorage.setItem('teyoo-theme', name)
 
   // Tell the main process so the theme menu can show the selected state
   window.electronAPI?.reportTheme?.(name)
@@ -115,10 +131,13 @@ function painted(color: string, background: string): string {
 }
 
 export function loadSavedTheme(): string {
-  const saved = localStorage.getItem('colamd-theme')
+  const saved = localStorage.getItem('teyoo-theme')
   if (!saved) return 'elegant'
   // Custom themes are stored as "custom:<file>.css". Preserve the name so a
   // newly opened window can reload its stylesheet instead of falling back.
-  if (themes[saved] || saved.startsWith('custom:')) return saved
+  if (saved.startsWith('custom:')) return saved
+  // 按 THEME_OPTIONS 校验而不是 themes：映射里还留着网页演示页用的主题，
+  // 但桌面端已经不让选了，老用户存过的 sepia / midnight 之类要落到「雅致」。
+  if (THEME_OPTIONS.some((option) => option.id === saved)) return saved
   return 'elegant'
 }

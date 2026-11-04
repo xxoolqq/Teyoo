@@ -49,9 +49,10 @@
         </section>
       </div>
 
-      <TopicMetaForm v-model="meta" />
-
       <footer class="fix-foot">
+        <!-- 元信息收进右侧抽屉，这里只留入口（与录入页一致） -->
+        <TopicMetaForm v-model="meta" />
+
         <button
           class="btn is-primary is-block"
           type="button"
@@ -116,7 +117,12 @@ import { describeError, showError, showSuccess } from '../stores/toast'
 import { bumpTopicsVersion } from '../stores/topic-events'
 import { getCachedTopic, rememberTopics } from '../stores/topic-detail'
 import { listPathOf } from '../utils/topic-actions'
-import { classLevelCode, classLevelName } from '../utils/class-level'
+import {
+  classLevelCode,
+  classLevelName,
+  isStageCode,
+  stageByClassName
+} from '../utils/class-level'
 import { COURSE_OPTIONS } from '../utils/course'
 import { blankProblem, createMeta, firstMetaProblem, type TopicMeta } from '../utils/topic-meta'
 
@@ -166,6 +172,7 @@ interface EditorSnapshot {
   topic: string
   answer: string
   course: string
+  stage: string
   classLevelName: string
   easy: string
   knowledgePoints: string
@@ -176,6 +183,7 @@ function snapshot(): EditorSnapshot {
     topic: topicEntry.text.value,
     answer: answerEntry.text.value,
     course: meta.course,
+    stage: meta.stage,
     classLevelName: meta.classLevelName,
     easy: meta.easy,
     knowledgePoints: meta.knowledgePoints
@@ -235,7 +243,11 @@ async function load(): Promise<void> {
     topicEntry.text.value = String(item.value.subjectSelf ?? '')
     answerEntry.text.value = String(item.value.answerSelf ?? '')
     meta.course = courseCodeToName(String(item.value.course ?? ''))
-    meta.classLevelName = classLevelName(String(item.value.classLevel ?? ''))
+    const rawLevel = String(item.value.classLevel ?? '')
+    meta.classLevelName = classLevelName(rawLevel)
+    // 老题目没有学段这一栏：本来存的就是学段码（跨年级题）就直接用，否则按年级反推
+    // （都认不出来就留空，让人自己选，不猜）
+    meta.stage = isStageCode(rawLevel) ? rawLevel.trim() : stageByClassName(meta.classLevelName)
     meta.easy = String(item.value.easy ?? '')
     meta.knowledgePoints = String(item.value.testPoints ?? '')
   }
@@ -382,8 +394,8 @@ async function onSubmit(): Promise<void> {
   }
 }
 
-// 回来源列表页（「我录入的题」或检索页），不是固定回检索页
-// 回来源列表页（「我录入的题」或检索页），有未提交修改时先确认
+// 回来源列表页（「题库管理」或检索页），不是固定回检索页
+// 回来源列表页（「题库管理」或检索页），有未提交修改时先确认
 async function goBack(): Promise<void> {
   if (isDirty()) {
     const ok = await askConfirm('当前题目有未提交的修改，返回列表后这些修改会丢失。', '返回列表')
@@ -447,6 +459,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .fix-page {
+  /* 给「附加信息」抽屉定位（组件内是 absolute） */
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -562,8 +576,13 @@ onBeforeUnmount(() => {
   display: none;
 }
 
+/* 左「附加信息」、右「提交」，与录入页同一条规则 */
 .fix-foot {
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 12px 20px 16px;
 }
 

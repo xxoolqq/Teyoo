@@ -1,5 +1,5 @@
 {
-  // ColaMD（electron-vite + Electron 44）调试配置
+  // Teyoo（electron-vite + Electron 44）调试配置
   "version": "0.2.0",
   "configurations": [
     {

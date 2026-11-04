@@ -1,5 +1,5 @@
 // 题卡上的四个操作里，除了「收藏」原版就没绑事件，其余三个的逻辑
-// 「我录入的题」和「检索题目」两页一模一样，抽在这里免得两边各写一份、
+// 「题库管理」和「检索题目」两页一模一样，抽在这里免得两边各写一份、
 // 哪天改下载格式只改了一处。
 //
 // 跳转仍然是面板内开新标签页（路由 + query.id=题号），不是 window.open ——
@@ -13,16 +13,21 @@ import { showSuccess } from '../stores/toast'
 /** 管理员账号（ctbapp 里硬编码的同一个值）：可以改任何人的题 */
 const ADMIN_USER_CODE = '10028'
 
-/** 「返回列表」能去的地方：检索页（入口页）、「我录入的题」和「我的收藏」 */
+/**
+ * 「返回列表」能去的地方：检索视图（入口页）、线上习题视图和「我的收藏」。
+ *
+ * 线上习题已经并进检索页当第二个视图，所以它的地址不是独立路由，而是带
+ * query.view 的入口页 —— 这样「返回列表」回去时能停在原来那个视图上。
+ */
 export const LIST_PAGE_SEARCH = '/home'
-export const LIST_PAGE_MY_TOPIC = '/home/my_topic'
+export const LIST_PAGE_MY_TOPIC = '/home?view=mine'
 export const LIST_PAGE_MY_FAVORITES = '/home/my_favorites'
 
 /**
  * 详情 / 纠错页的「返回列表」该回哪。
  *
- * 来源页把自己记在 query.from 里（见下面两个跳转函数）—— 从「我录入的题」
- * 点进来的就回「我录入的题」，从检索点进来的回检索。白名单校验：只认这三个，
+ * 来源页把自己记在 query.from 里（见下面两个跳转函数）—— 从线上习题视图
+ * 点进来的就回线上习题视图，从检索点进来的回检索。白名单校验：只认这几个，
  * 别的一律回检索页，免得 URL 里写个路径就能把人带到任意页面。
  */
 export function listPathOf(route: RouteLocationNormalizedLoaded): string {

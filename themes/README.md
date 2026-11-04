@@ -1,8 +1,8 @@
 # Teyoo Themes
 
-Teyoo ships with 12 built-in themes. Every theme below is available as a standalone `.css` file — download it and place it in `~/.colamd/themes/`, or use **Theme > Import Theme** in Teyoo to import directly.
+Teyoo ships with 12 built-in themes. Every theme below is available as a standalone `.css` file — download it and place it in `~/.teyoo/themes/`, or use **Theme > Import Theme** in Teyoo to import directly.
 
-See the [theme swatches](https://raw.githubusercontent.com/marswaveai/ColaMD/main/docs/images/theme-swatches.svg) for a visual preview.
+See the [theme swatches](https://raw.githubusercontent.com/xxoolqq/Teyoo/main/docs/images/theme-swatches.svg) for a visual preview.
 
 ## Light Themes
 

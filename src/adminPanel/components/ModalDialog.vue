@@ -12,7 +12,9 @@
       <h3 class="title">{{ title }}</h3>
       <div class="body"><slot /></div>
       <div class="actions">
-        <button class="btn" type="button" @click="onCancel">{{ cancelText }}</button>
+        <button v-if="!hideCancel" class="btn" type="button" @click="onCancel">
+          {{ cancelText }}
+        </button>
         <button class="btn is-primary" type="button" :disabled="confirmDisabled" @click="onConfirm">
           {{ confirmText }}
         </button>
@@ -39,8 +41,13 @@ const props = withDefaults(
      * 高度不跟着变：正文区有 max-height，内容多时在弹窗内部滚动，弹窗本身不会被撑高。
      */
     width?: string
+    /**
+     * 只读弹窗（例如「查看详情」）不需要「取消」，只留一个关闭动作。
+     * 默认 false，表单弹窗仍是取消 + 确定两个按钮。
+     */
+    hideCancel?: boolean
   }>(),
-  { confirmText: '确定', cancelText: '取消', confirmDisabled: false, width: '380px' }
+  { confirmText: '确定', cancelText: '取消', confirmDisabled: false, width: '380px', hideCancel: false }
 )
 
 const emit = defineEmits<{ confirm: []; cancel: [] }>()

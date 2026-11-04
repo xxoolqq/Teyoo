@@ -9,7 +9,7 @@ export interface EditorFontPrefs {
   size: number
 }
 
-const STORE_KEY = 'colamd-editor-font'
+const STORE_KEY = 'teyoo-editor-font'
 
 function isZh(): boolean {
   return isChinese()

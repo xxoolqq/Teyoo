@@ -136,6 +136,7 @@ import {
   fileToEmbeddableDataUrl,
   urlToDataUrl
 } from '../../renderer/editor/image-embed'
+import { readLocalImageAsDataUrl } from '../utils/topic-images'
 
 /**
  * 「插入图片」弹出框 —— 字段与交互照宿主那个（src/renderer/editor/image-modal.ts）：
@@ -262,8 +263,13 @@ async function convertToBase64(): Promise<void> {
   converting.value = true
   convertText.value = '转换中…'
   try {
-    // 本地路径（D:\… / 相对）在浏览器里取不到字节，先转 file:// 再取
-    const dataUrl = await urlToDataUrl(toFileUrl(url)).catch(() => null)
+    // 本地路径（D:\… / 相对）先走主进程读盘：渲染端的 file:// 页面 fetch 不到本地文件，
+    // 这条桥在 Web 宿主里没有，会返回 null 再退回原来的 file:// 取法（网络 URL 也走那里）
+    const remote = /^https?:/i.test(url)
+    const dataUrl = remote
+      ? await urlToDataUrl(url).catch(() => null)
+      : (await readLocalImageAsDataUrl(url)) ??
+        (await urlToDataUrl(toFileUrl(url)).catch(() => null))
     if (!dataUrl) {
       flash('转换失败', 'convert', 3000)
       return

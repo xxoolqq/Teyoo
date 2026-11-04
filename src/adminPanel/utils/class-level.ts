@@ -36,6 +36,69 @@ export function classLevelName(code: string): string {
   return NAME_BY_CODE[String(code ?? '').trim()] ?? ''
 }
 
+// ── 跨年级：学段码直接当年级值 ────────────────────────────────────────────────
+//
+// 本地题库里，class_level 除了年级码还接受学段码：
+//   senior → 跨年级，整个高中；junior → 整个初中；primary → 整个小学
+// 导入中心选了哪个学段，审查卡的「跨年级」就写哪个值。空串保留给「未指定学段」
+// 的历史数据 —— 两种都要能显示成人话。
+
+export const STAGE_CODES = ['primary', 'junior', 'senior', 'other'] as const
+
+/**
+ * 学段下拉的选项（录入弹窗用）。值就是库里 key_points.class_level 的取值，
+ * 与导入中心的学段选择同一口径；「其它」= other。
+ */
+export const STAGE_OPTIONS = [
+  { value: 'primary', label: '小学' },
+  { value: 'junior', label: '初中' },
+  { value: 'senior', label: '高中' },
+  { value: 'other', label: '其它' }
+] as const
+
+const STAGE_LABELS: Record<string, string> = {
+  primary: '小学',
+  junior: '初中',
+  senior: '高中',
+  other: '其它'
+}
+
+/** 这个年级值是不是学段码（= 跨年级写法） */
+export function isStageCode(value: string): boolean {
+  return (STAGE_CODES as readonly string[]).includes(String(value ?? '').trim())
+}
+
+/**
+ * 年级值 → 界面文字：年级码给年级名，学段码给「跨年级（高中）」，
+ * 其余原样返回（不认识的码别吞掉，否则界面看着像没填）。
+ */
+export function classLevelLabel(code: string): string {
+  const value = String(code ?? '').trim()
+  if (!value) return ''
+  if (isStageCode(value)) return `跨年级（${STAGE_LABELS[value] ?? value}）`
+  return NAME_BY_CODE[value] ?? value
+}
+
+/** 学段码 → 「高中」这类短标签（给下拉选项文案拼「跨年级（高中）」用） */
+export function stageLabelOf(code: string): string {
+  return STAGE_LABELS[String(code ?? '').trim()] ?? ''
+}
+
+/**
+ * 年级名称 → 学段码。
+ *
+ * 「纠错」页回显历史题目时只有年级（甚至只有年级码），没有学段；而知识点候选
+ * 必须按学段取，回显后得先补一个，否则一打开抽屉就是「请先选学段」。
+ * 认不出来返回空串（调用方按「没选」处理，让人自己选，不猜）。
+ */
+export function stageByClassName(name: string): string {
+  const index = CLASS_LEVEL_NAMES.indexOf(String(name ?? '').trim())
+  if (index < 0) return ''
+  if (index <= 5) return 'primary'
+  if (index <= 8) return 'junior'
+  return 'senior'
+}
+
 /**
  * 年级下拉的统一数据源（题海拾贝、创建班级等页面的 <select> 都用它，
  * 不在各页里各抄一份）。value 是两位码，label 是界面写法「七年级（初一）」，

@@ -52,7 +52,7 @@
       <button class="menubar-item" type="button" role="menuitem" data-menu="font">字体</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="fontSize">字号</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="view">视图</button>
-      <button class="menubar-item" type="button" role="menuitem" data-menu="theme">主题</button>
+      <!-- 「主题」不再是一级菜单：三个主题（雅致 / 简白 / 深色）在偏好设置「外观 → 主题」里 -->
       <button class="menubar-item" type="button" role="menuitem" data-menu="print">打印</button>
       <button class="menubar-item" type="button" role="menuitem" data-menu="help">帮助</button>
     </div>
@@ -63,6 +63,26 @@
          在提交左侧。hidden 与菜单栏同款：只在 Windows/Linux 由 setupMenubar 去掉 -->
     <button id="snip-capture-btn" type="button" aria-label="截屏识别公式" title="截屏识别公式" hidden>
       <img src="./assets/snip-camera.png" alt="" />
+    </button>
+    <!-- 检查更新：云 + 下箭头，图标取自 DBX（@lucide/vue 的 CloudDownload，路径原样
+         抄成内联 SVG，免得为一个图标再引一个图标库）。紧挨相机图标右侧，同样由 JS
+         去掉 hidden —— 只在这条自绘标题栏存在的平台露出。 -->
+    <button id="check-update-btn" type="button" aria-label="检查更新" title="检查更新" hidden>
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M12 13v8l-4-4" />
+        <path d="m12 21 4-4" />
+        <path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284" />
+      </svg>
     </button>
     <button id="file-toggle-btn" aria-label="显示 / 隐藏文件列表">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
@@ -233,7 +253,7 @@
     </div>
     <span class="toolbar-sep" aria-hidden="true"></span>
     <div class="toolbar-group">
-      <button type="button" class="toolbar-btn" data-tb-cmd="longBlank" title="插入长空白（10 个全角空格）">
+      <button type="button" class="toolbar-btn" data-tb-cmd="longBlank" title="插入长空白（4 个全角空格）">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 6H5v12h4"/>
           <path d="M15 6h4v12h-4"/>
@@ -602,7 +622,7 @@
     </div>
     <p id="solver-status" class="solver-status" aria-live="polite" hidden></p>
   </aside>
-  <!-- 工具箱标签页（菜单「帮助 → 工具箱」）：整页工具界面，铺满编辑区（不显示
+  <!-- 工具标签页（菜单「帮助 → PDF拆分」）：整页工具界面，铺满编辑区（不显示
        编辑器与工具栏，见 base.css 的 body.tool-view）。默认隐藏，tool-view.ts 在
        切进该标签页时显示。目前只有一个工具：PDF拆分。 -->
   <div id="tool-panel" hidden>
@@ -696,6 +716,10 @@
                   stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </button>
+    <!-- 批量录入：右边这份 Markdown 的下一步就是拆题，直接把人送去后台管理系统的
+         「导入中心」，顺手把这份 Markdown 也带过去。PDF 对照 / 图片转md / docx转md
+         三个视图都出现（base.css 的 .doc-batch-btn 可见性）。 -->
+    <button id="doc-batch-entry-btn" class="doc-batch-btn" type="button">批量录入</button>
   </div>
   <!-- 宿主自己的编辑器外壳。#editor 这个 id 是主题排版规则的锚点（base.css /
        premium.css 里一百多处 `#editor .ProseMirror …`），后台管理系统那一页里也有一块
@@ -714,20 +738,6 @@
       <p id="json-empty-text" class="json-empty-text"></p>
       <button id="json-open-btn" class="json-open-btn" type="button">打开 JSON…</button>
     </div>
-  </div>
-  <!-- 提交标签页：非编辑器的表单视图（输入框 + 提交按钮），由 main.ts
-       在「提交」标签页激活时显示。整页铺满编辑区：左侧表单列、右侧预览区
-       （主编辑器 #editor 的 DOM 被移入此处，只读渲染输入内容）。 -->
-  <div id="submit-panel" hidden>
-    <div class="submit-form">
-      <textarea id="submit-input" autocomplete="off" spellcheck="false"
-                aria-label="提交内容"></textarea>
-      <textarea id="submit-input-secondary" autocomplete="off" spellcheck="false"
-                aria-label="附加内容"></textarea>
-      <button id="submit-btn" type="button">提交</button>
-      <p id="submit-feedback" aria-live="polite"></p>
-    </div>
-    <div id="submit-preview"></div>
   </div>
   <!-- 打印预览：Electron 的打印对话框自带的预览区在 Electron 里永远是
        「此应用不支持打印预览」（Chromium 的预览渲染器没实现），所以预览由应用

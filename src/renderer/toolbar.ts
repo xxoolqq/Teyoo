@@ -37,7 +37,7 @@ import {
 } from './editor/editor'
 import { showFontStyleModal } from './editor/font-style-modal'
 
-const STORAGE_KEY = 'colamd-toolbar-visible'
+const STORAGE_KEY = 'teyoo-toolbar-visible'
 
 const BLOCK_LABELS: Record<ToolbarBlockKind, string> = {
   paragraph: '标题',

@@ -1,4 +1,4 @@
-// ColaMD 图片公式识别模拟 HTTP 服务（对齐 SimpleTex /api/latex_ocr 契约）
+// Teyoo 图片公式识别模拟 HTTP 服务（对齐 SimpleTex /api/latex_ocr 契约）
 //
 // 零依赖，仅使用 Node.js 内置模块。启动方式：
 //   node http/server.mjs
@@ -28,7 +28,7 @@ const PORT = Number(process.env.PORT) || 8787
 const VALID_TOKEN = process.env.MOCK_TOKEN || 'test-token'
 const MAX_BODY_SIZE = 10 * 1024 * 1024 // 10 MB
 
-// 模拟识别结果池（数学 + 化学，化学式沿用 ColaMD 的 _{} / ^{} 语法）
+// 模拟识别结果池（数学 + 化学，化学式沿用 Teyoo 的 _{} / ^{} 语法）
 const SAMPLE_LATEX = [
   'x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}',
   '\\tan \\alpha = \\frac{4}{3}',
@@ -237,7 +237,7 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`ColaMD 图片公式识别模拟服务（SimpleTex 契约）：http://127.0.0.1:${PORT}`)
+  console.log(`Teyoo 图片公式识别模拟服务（SimpleTex 契约）：http://127.0.0.1:${PORT}`)
   console.log('接口：POST /api/latex_ocr，请求头 token，表单字段 file')
   console.log(`鉴权 token：${VALID_TOKEN}（可用 MOCK_TOKEN 环境变量覆盖）`)
 })

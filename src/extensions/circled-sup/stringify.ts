@@ -5,7 +5,7 @@
 export function circledSupStringifyHandler(node: any, _parent: any, state: any, info: any): string {
   const exit = state.enter('circledSup')
   const tracker = state.createTracker(info)
-  let value = tracker.move(`${node.char ?? ''}^{${node.num ?? ''}}`)
+  const value = tracker.move(`${node.char ?? ''}^{${node.num ?? ''}}`)
   exit()
   return value
 }

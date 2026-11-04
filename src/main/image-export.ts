@@ -138,10 +138,10 @@ async function captureSlice(
   clip: { x: number; y: number; width: number; height: number },
   fallbackSpentMs: { value: number }
 ): Promise<Buffer> {
-  // Test hook, in the spirit of COLAMD_STARTUP_TRACE: force the fallback so the
+  // Test hook, in the spirit of TEYOO_STARTUP_TRACE: force the fallback so the
   // path that only Windows takes can be exercised on a machine where the normal
   // route works.
-  if (process.env.COLAMD_FORCE_CAPTURE_FALLBACK === '1') {
+  if (process.env.TEYOO_FORCE_CAPTURE_FALLBACK === '1') {
     return captureSliceByScroll(win, offset, clip)
   }
   try {
@@ -185,7 +185,7 @@ export async function renderDocumentPNGs(snapshot: ImageExportSnapshot, preset: 
 
   let tempDir: string | undefined
   try {
-    tempDir = await mkdtemp(join(tmpdir(), 'colamd-image-export-'))
+    tempDir = await mkdtemp(join(tmpdir(), 'teyoo-image-export-'))
     const exportPath = join(tempDir, 'document.html')
     await writeFile(exportPath, exportHTML(snapshot, preset), 'utf8')
     await win.loadFile(exportPath)

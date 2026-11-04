@@ -51,13 +51,46 @@ function hasElectronChannel(): boolean {
   return !!api && typeof api.pickImageFile === 'function'
 }
 
-// 插入模式使用的默认 attrs（全空）
+/**
+ * 「转本地」是否有磁盘通道：桌面版有 storeImageToLocal（主进程下载 + 落盘）；
+ * WebView2 任务窗格 / 纯浏览器没有文件系统，这条通道不存在。
+ */
+function hasStoreChannel(): boolean {
+  const api = window.electronAPI
+  return !!api && typeof api.storeImageToLocal === 'function'
+}
+
+/** 主进程的错误码 → 按钮上的一行提示 */
+function localizeErrorText(code: string | undefined, zh: boolean): string {
+  switch (code) {
+    case 'EMPTY':
+    case 'BAD_SRC':
+      return zh ? '没有可转换的地址' : 'Nothing to convert'
+    case 'NOT_IMAGE':
+      return zh ? '内容不是图片' : 'Not an image'
+    case 'TOO_LARGE':
+      return zh ? '图片超过 20MB' : 'Image over 20MB'
+    case 'TIMEOUT':
+      return zh ? '下载超时' : 'Download timed out'
+    case 'UNSUPPORTED':
+      return zh ? '不支持这种图片地址' : 'Unsupported image source'
+    case 'WRITE_FAILED':
+      return zh ? '工作目录不可写' : 'Work dir not writable'
+    default:
+      return code ? code : zh ? '未知错误' : 'Unknown error'
+  }
+}
+
+// 插入模式使用的默认 attrs：
+//   · 尺寸留空 = 按原图显示；
+//   · 对齐默认右对齐（项目里的插图习惯贴在右侧，插入后想改再在面板里选）；
+//   · 边框/阴影/圆角一律不带（面板里已没有这三个开关）。
 const DEFAULT_IMAGE_ATTRS: ImageAttrs = {
   src: '',
   alt: '',
   width: '',
   height: '',
-  align: '',
+  align: 'right',
   border: false,
   shadow: false,
   radius: false,
@@ -72,14 +105,16 @@ export class ImageModal {
   private browseButton: HTMLButtonElement
   // 没有 Electron 通道时（WebView2 / 纯浏览器）用来弹系统文件对话框的隐藏 input
   private fileInput: HTMLInputElement
+  // 把 base64 / 网络图片存到工作目录并改用本地路径（桌面版才有）
+  private localizeButton: HTMLButtonElement
   private convertButton: HTMLButtonElement
   private altInput: HTMLInputElement
   private widthInput: HTMLInputElement
   private heightInput: HTMLInputElement
   private alignSelect: HTMLSelectElement
-  private borderCheckbox: HTMLInputElement
-  private shadowCheckbox: HTMLInputElement
-  private radiusCheckbox: HTMLInputElement
+  // 编辑模式下的节点原 attrs：边框/阴影/圆角已从面板移除，保存时按原值保留，
+  // 不能因为界面上没有这两个开关就把用户已有的样式悄悄清掉
+  private baseAttrs: ImageAttrs | null = null
   private cancelButton: HTMLButtonElement
   private saveButton: HTMLButtonElement
   // 当前编辑目标节点位置；null 表示插入模式
@@ -90,8 +125,18 @@ export class ImageModal {
   private isInsertMode = false
   // Base64 转换进行中标记（防止重复点击）
   private converting = false
+  // 「转本地」（下载 + 落盘）进行中标记（防止重复点击）
+  private localizing = false
   // 浏览本地文件对话框打开中标记（防止重复点击）
   private browsing = false
+  // 关闭回调：宿主用它把「活跃实例」还回去（只读预览借这个面板改图片尺寸）
+  private onClose: (() => void) | null = null
+  // 预览图的加载序号：换 src 时 ++，回调里对不上号就丢弃（连续输入时的旧图）
+  private previewToken = 0
+  // 当前预览图的原图尺寸（加载出来才有），用于宽/高输入框的提示
+  private naturalSize: { width: number; height: number } | null = null
+  // 宽/高下方那行「原图实际尺寸」提示
+  private sizeHint: HTMLDivElement
 
   constructor() {
     this.container = document.createElement('div')
@@ -137,12 +182,19 @@ export class ImageModal {
     this.fileInput.style.display = 'none'
     this.fileInput.addEventListener('change', () => void this.onFilePicked())
     document.body.appendChild(this.fileInput)
+    // 「转本地」：把当前 base64 / 网络图片存进工作目录，src 换成绝对路径。
+    // 下载与落盘都在主进程（渲染端 CSP 不放行跨域请求），没有文件系统时禁用。
+    this.localizeButton = document.createElement('button')
+    this.localizeButton.type = 'button'
+    this.localizeButton.className = 'image-modal-convert-btn'
+    this.localizeButton.textContent = 'To Local'
+    this.localizeButton.addEventListener('click', () => void this.localizeCurrent())
     this.convertButton = document.createElement('button')
     this.convertButton.type = 'button'
     this.convertButton.className = 'image-modal-convert-btn'
     this.convertButton.textContent = 'To Base64'
     this.convertButton.addEventListener('click', () => this.convertToBase64())
-    srcFlex.append(this.srcInput, this.browseButton, this.convertButton)
+    srcFlex.append(this.srcInput, this.browseButton, this.localizeButton, this.convertButton)
     srcRow.col.appendChild(srcFlex)
     modal.appendChild(srcRow.row)
 
@@ -177,6 +229,10 @@ export class ImageModal {
     heightCol.append(heightLabel, this.heightInput)
     sizeRow.append(widthCol, heightCol)
     modal.appendChild(sizeRow)
+    // 原图实际尺寸提示（图片加载出来才有值；空着就占一行高度，避免弹框跳动）
+    this.sizeHint = document.createElement('div')
+    this.sizeHint.className = 'image-modal-hint'
+    modal.appendChild(this.sizeHint)
 
     // 字段：align（下拉选择）
     const alignRow = document.createElement('div')
@@ -197,13 +253,7 @@ export class ImageModal {
     alignRow.appendChild(alignCol)
     modal.appendChild(alignRow)
 
-    // 字段：border / shadow / radius 复选框
-    const styleRow = document.createElement('div')
-    styleRow.className = 'image-modal-options'
-    this.borderCheckbox = this.makeCheckbox('image-border', 'Border', '边框', styleRow)
-    this.shadowCheckbox = this.makeCheckbox('image-shadow', 'Shadow', '阴影', styleRow)
-    this.radiusCheckbox = this.makeCheckbox('image-radius', 'Radius', '圆角', styleRow)
-    modal.appendChild(styleRow)
+    // 边框 / 阴影 / 圆角：已按要求从面板移除（插入的图片一律不带这三种样式）
 
     // 底部按钮
     const footer = document.createElement('div')
@@ -272,21 +322,6 @@ export class ImageModal {
     return label
   }
 
-  /** 构造一个复选框 + 文案，挂到 parent */
-  private makeCheckbox(id: string, enLabel: string, zhLabel: string, parent: HTMLElement): HTMLInputElement {
-    const cb = document.createElement('input')
-    cb.type = 'checkbox'
-    cb.id = id
-    const label = document.createElement('label')
-    label.htmlFor = id
-    label.className = 'image-modal-cb-label'
-    label.textContent = ' ' + enLabel
-    label.dataset.en = ' ' + enLabel
-    label.dataset.zh = ' ' + zhLabel
-    parent.append(cb, label)
-    return cb
-  }
-
   setLanguage(language: UiLanguage): void {
     this.currentLanguage = language
     const zh = language === 'zh'
@@ -301,9 +336,21 @@ export class ImageModal {
     if (!this.converting) {
       this.convertButton.textContent = zh ? '转 Base64' : 'To Base64'
     }
+    if (!this.localizing) {
+      this.localizeButton.textContent = zh ? '转本地' : 'To Local'
+      // 没有磁盘通道时这条能力不存在：直接禁用并说明原因，而不是点了才报错
+      this.localizeButton.disabled = !hasStoreChannel()
+      this.localizeButton.title = hasStoreChannel()
+        ? (zh
+            ? '把 base64 / 网络图片存到工作目录，并把 src 换成绝对路径'
+            : 'Save the base64 / remote image into the work directory and use its path')
+        : (zh
+            ? '当前环境没有文件系统（Word 任务窗格 / 浏览器），无法存本地'
+            : 'No file system here (Word task pane / browser)')
+    }
     this.altInput.placeholder = zh ? '图片描述（用于无障碍/粘贴纯文本）' : 'Description (alt text)'
-    this.widthInput.placeholder = zh ? 'auto / 100px / 50%' : 'auto / 100px / 50%'
-    this.heightInput.placeholder = zh ? 'auto / 100px / 50%' : 'auto / 100px / 50%'
+    // 宽/高提示由 refreshSizeHints 统一给：原图尺寸已经量到就带上（见 updatePreview）
+    this.refreshSizeHints()
     this.cancelButton.textContent = zh ? '取消' : 'Cancel'
     this.saveButton.textContent = this.isInsertMode
       ? (zh ? '插入' : 'Insert')
@@ -324,22 +371,26 @@ export class ImageModal {
    * 显示模态框。
    * - 编辑模式：传入 attrs + targetPos（图片节点位置）。
    * - 插入模式：无参或 attrs=null，光标处插入新节点。
+   * - onClose：保存/取消后回调，宿主用它恢复被临时改掉的「活跃实例」。
    */
-  show(attrs: ImageAttrs | null = null, targetPos: number | null = null): void {
+  show(
+    attrs: ImageAttrs | null = null,
+    targetPos: number | null = null,
+    onClose?: () => void
+  ): void {
+    this.onClose = onClose ?? null
     this.currentTarget = targetPos !== null ? { pos: targetPos } : null
     this.isInsertMode = this.currentTarget === null
     // 刷新头部/保存按钮文案以反映模式
     this.setLanguage(this.currentLanguage)
 
     const a = attrs ?? DEFAULT_IMAGE_ATTRS
+    this.baseAttrs = attrs
     this.srcInput.value = a.src
     this.altInput.value = a.alt
     this.widthInput.value = a.width
     this.heightInput.value = a.height
     this.alignSelect.value = a.align || ''
-    this.borderCheckbox.checked = a.border
-    this.shadowCheckbox.checked = a.shadow
-    this.radiusCheckbox.checked = a.radius
     this.updatePreview()
 
     this.container.style.display = 'flex'
@@ -358,17 +409,65 @@ export class ImageModal {
     this.isInsertMode = false
     const view = getEditorView()
     if (view) view.focus()
+    const done = this.onClose
+    this.onClose = null
+    done?.()
   }
 
   private updatePreview(): void {
     const src = this.srcInput.value.trim()
+    // 每次换 src 都作废上一次的 load 回调：连续输入时旧图可能后到，
+    // 拿它的尺寸会显示成另一张图的宽高
+    const token = ++this.previewToken
     if (!src) {
       this.preview.style.display = 'none'
+      this.naturalSize = null
+      this.refreshSizeHints()
       return
     }
     this.preview.style.display = ''
+    this.naturalSize = null
+    this.refreshSizeHints()
+    this.preview.onload = () => {
+      if (token !== this.previewToken) return
+      const width = this.preview.naturalWidth
+      const height = this.preview.naturalHeight
+      if (!width || !height) return
+      this.naturalSize = { width, height }
+      this.refreshSizeHints()
+    }
+    this.preview.onerror = () => {
+      if (token !== this.previewToken) return
+      this.naturalSize = null
+      this.refreshSizeHints()
+    }
     // 本地绝对路径（C:\… 或相对路径）在 <img> 里加载不了，统一转成 file:// URL
     this.preview.src = toFileUrl(src)
+  }
+
+  /**
+   * 宽/高的提示里带上原图尺寸。
+   *
+   * width/height 为空 = 按原图显示（尺寸由 alt 里的规约 D 参数表达，没写参数就是
+   * 浏览器按原尺寸渲染），所以真实宽高**只做提示、不自动填值** —— 一填就变成
+   * 显式的 px，等于把这张图锁死在当前尺寸，换图后不会自适应。
+   *
+   * 图片加载不出来（文件被挪走、跨域、路径写错）时自然拿不到尺寸，退回默认提示。
+   */
+  private refreshSizeHints(): void {
+    const zh = this.currentLanguage === 'zh'
+    const size = this.naturalSize
+    const fallback = 'auto / 100px / 50%'
+    this.widthInput.placeholder = size ? `auto（原图 ${size.width}px）` : fallback
+    this.heightInput.placeholder = size ? `auto（原图 ${size.height}px）` : fallback
+    this.widthInput.title = size ? (zh ? `原图实际宽度：${size.width}px` : `Natural width: ${size.width}px`) : ''
+    this.heightInput.title = size ? (zh ? `原图实际高度：${size.height}px` : `Natural height: ${size.height}px`) : ''
+    // 可见的那行提示：留空不填值也能一眼看到真实尺寸；加载失败则留空（占位高度不变）
+    this.sizeHint.textContent = size
+      ? (zh
+          ? `原图实际尺寸：${size.width} × ${size.height} px（留空即按原图显示）`
+          : `Natural size: ${size.width} × ${size.height} px (leave blank to use it)`)
+      : ''
   }
 
   /**
@@ -504,14 +603,69 @@ export class ImageModal {
     }
   }
 
+  /**
+   * 「转本地」：把当前 src 里的 base64 或网络图片落到工作目录，src 换成绝对路径。
+   *
+   * 只改表单，不直接写文档 —— 与「浏览」「转 Base64」一致，仍要点「更新/插入」
+   * 才落进编辑器，随时可以取消。已是本地路径时提示一句就返回，不改写既有引用。
+   * 下载与落盘都在主进程（渲染端 CSP 不放行跨域请求，见 main/image-localize.ts）。
+   */
+  private async localizeCurrent(): Promise<void> {
+    if (this.localizing) return
+    const src = this.srcInput.value.trim()
+    if (!src) return
+    const zh = this.currentLanguage === 'zh'
+    const api = window.electronAPI
+    if (typeof api?.storeImageToLocal !== 'function') {
+      this.flashButton(zh ? '没有文件系统' : 'No file system', 2000, this.localizeButton)
+      return
+    }
+    // 本地路径 / file:// / 相对路径：不需要（也不应该）复制一份新文件
+    if (!/^(https?:|data:)/i.test(src)) {
+      this.flashButton(zh ? '已是本地图片' : 'Already local', 1500, this.localizeButton)
+      return
+    }
+
+    this.localizing = true
+    this.localizeButton.disabled = true
+    this.localizeButton.textContent = zh ? '下载中…' : 'Saving…'
+    try {
+      const result = await api.storeImageToLocal({ src })
+      if (result?.ok && result.path) {
+        this.srcInput.value = result.path
+        this.updatePreview()
+        this.flashButton(zh ? '已存为本地' : 'Saved locally', 1800, this.localizeButton)
+      } else {
+        const reason = localizeErrorText(result?.error, zh)
+        console.warn('[image] 转本地失败：', result?.error)
+        this.flashButton(
+          zh ? `失败: ${reason}` : `Failed: ${reason}`,
+          3000,
+          this.localizeButton
+        )
+      }
+    } catch (error) {
+      console.error('[image] 转本地异常：', error)
+      this.flashButton(zh ? '转本地失败' : 'Failed', 3000, this.localizeButton)
+    } finally {
+      this.localizing = false
+      this.localizeButton.disabled = !hasStoreChannel()
+    }
+  }
+
   /** 短暂更改按钮文案，超时后恢复为当前语言对应文案（默认作用于转 Base64 按钮）。 */
   private flashButton(text: string, duration = 1500, btn: HTMLButtonElement = this.convertButton): void {
     btn.textContent = text
     setTimeout(() => {
       const zh = this.currentLanguage === 'zh'
-      btn.textContent = btn === this.convertButton
-        ? (zh ? '转 Base64' : 'To Base64')
-        : (zh ? '浏览' : 'Browse')
+      if (btn === this.convertButton) {
+        btn.textContent = zh ? '转 Base64' : 'To Base64'
+      } else if (btn === this.localizeButton) {
+        if (this.localizing) return // 仍在下载，别把「下载中…」盖掉
+        btn.textContent = zh ? '转本地' : 'To Local'
+      } else {
+        btn.textContent = zh ? '浏览' : 'Browse'
+      }
     }, duration)
   }
 
@@ -542,9 +696,11 @@ export class ImageModal {
       width: sizeRe.test(width) ? width : '',
       height: sizeRe.test(height) ? height : '',
       align: this.alignSelect.value,
-      border: this.borderCheckbox.checked,
-      shadow: this.shadowCheckbox.checked,
-      radius: this.radiusCheckbox.checked,
+      // 边框/阴影/圆角已从面板移除：插入一律不写这三种样式；
+      // 编辑时沿用节点原值（界面上看不到，但也不能因为面板没有开关就清掉）
+      border: this.baseAttrs?.border ?? false,
+      shadow: this.baseAttrs?.shadow ?? false,
+      radius: this.baseAttrs?.radius ?? false,
     }
 
     if (this.currentTarget !== null) {

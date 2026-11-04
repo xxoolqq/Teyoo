@@ -214,7 +214,7 @@ export function scanContext(markdown: string): ContextScan {
   if (/@@cols\s/.test(markdown)) flags.add('columns')
   if (/@box#/.test(markdown)) flags.add('subBlock')
   if (/\+\+/.test(markdown)) flags.add('tianzi')
-  if (/[\u4e00-\u9fa5][\(\[]([a-z]+\d)[\)\]]/.test(markdown)) flags.add('pinyin')
+  if (/[\u4e00-\u9fa5](?:\(|\[)([a-z]+\d)(?:\)|\])/.test(markdown)) flags.add('pinyin')
   if (/:::font|{=\s*family=/.test(markdown)) flags.add('font')
   if (/==[^=]+==/.test(markdown)) flags.add('highlight')
   return { flags, imageUrls, imageAlts }
@@ -436,7 +436,7 @@ export function analyzeAnswer(markdown: string, scan: ContextScan, zh: boolean):
   const repairs: string[] = []
   const warnings: string[] = []
   const images = repairImages(markdown, scan, zh, repairs, warnings)
-  let text = images.text
+  const text = images.text
 
   // 未知的块指令：模型很容易自造（:::columns / :::note …）
   for (const match of text.matchAll(/^:::([a-zA-Z][\w-]*)/gm)) {

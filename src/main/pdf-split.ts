@@ -1,4 +1,4 @@
-// PDF 按页数拆分（帮助 → 工具箱 → PDF拆分）。
+// PDF 按页数拆分（帮助 → PDF拆分）。
 //
 // 用 @cantoo/pdf-lib（pdf-lib 的社区维护分支，Node 里直接可用）：项目里已有的
 // pdfjs-dist 只读不写，生成不了新 PDF。

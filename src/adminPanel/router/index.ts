@@ -56,11 +56,23 @@ const routes: RouteRecordRaw[] = [
     path: '/home',
     component: () => import('../views/MainView.vue'),
     children: [
+      // 「检索题目」= 走 7088 后端的那份题库，一页两视图：检索全库 / 线上习题（我录的题）。
+      // 线上习题原先是一个独立菜单页，现在收进这里当第二个视图（见 SearchView 顶部注释），
+      // 所以菜单只剩这一项。
+      //
+      // singleton：视图状态记在 query.view 上（/home?view=mine），标记单例后切换视图
+      // 只改写入口标签的地址，不会在标签栏里多开一个「检索题目」。
       {
         path: '',
         name: 'Search',
         component: () => import('../views/SearchView.vue'),
-        meta: { group: '题目', label: '检索题目', icon: iconTimu, keepAlive: 'SearchView' }
+        meta: {
+          group: '题目',
+          label: '检索题目',
+          icon: iconTimu,
+          keepAlive: 'SearchView',
+          singleton: true
+        }
       },
       {
         path: 'put_topic',
@@ -68,11 +80,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/PutTopicView.vue'),
         meta: { group: '题目', label: '录入题目', icon: iconTimu, keepAlive: 'PutTopicView' }
       },
+      // 旧的「线上习题」地址重定向到检索页的线上习题视图：外部若还点着这条路径
+      // （或历史标签），落到空白页就难看了。不给 meta，免得它再进菜单。
       {
         path: 'my_topic',
-        name: 'MyTopic',
-        component: () => import('../views/MyTopicsView.vue'),
-        meta: { group: '题目', label: '我录入的题', icon: iconTimu, keepAlive: 'MyTopicsView' }
+        redirect: { path: '/home', query: { view: 'mine' } }
       },
       {
         path: 'my_favorites',
@@ -92,7 +104,39 @@ const routes: RouteRecordRaw[] = [
           keepAlive: 'CorrectionReviewView'
         }
       },
-      // 「我录入的题」卡片上的「解析 / 纠错」：各开一个新标签页（带 query.id=题号）。
+      // ── 本地题目（与上面的「题目」同级） ──────────────────────────────────
+      // 三个页面共用 userData/question-bank.db（离线、不经过 7088），与「线上习题」
+      // 是两个不同的库，所以单独成组、排在同一层级；组内顺序即工作流：
+      // 拆卷入库（导入中心）→ 到库里核对（本地题库）→ 挑题组卷（智能组卷）。
+      // 菜单顺序 = 这里的定义顺序，调整请挪路由块。
+      //
+      // 导入中心：UI 照 MathBank 的导入工作区还原，样式自成一套（见
+      // styles/daoru-center.css），不受本站主题影响；保活是为了拖进来的文件、
+      // 填了一半的标题在切标签页后还在。
+      {
+        path: 'dao_ru',
+        name: 'DaoRu',
+        component: () => import('../views/DaoRuCenter.vue'),
+        meta: { group: '本地题目', label: '导入中心', icon: iconTimu, keepAlive: 'DaoRuCenter' }
+      },
+      // 「本地题库」= userData/question-bank.db，导入中心「导入此题」写进去的那些题。
+      // 与「线上习题」是两个不同的库：前者离线可用、不经过 7088，后者要登录后端账号。
+      {
+        path: 'local_bank',
+        name: 'LocalBank',
+        component: () => import('../views/LocalBankView.vue'),
+        meta: { group: '本地题目', label: '本地题库', icon: iconTimu, keepAlive: 'LocalBankView' }
+      },
+      // 智能组卷：左边从本地题库挑题、右边实时成卷，出三种文件（Markdown 卷面 /
+      // Word / PDF），见 views/PaperView.vue 顶部注释。保活是为了挑了一半的卷面
+      // 在切标签页后还在。
+      {
+        path: 'paper',
+        name: 'Paper',
+        component: () => import('../views/PaperView.vue'),
+        meta: { group: '本地题目', label: '智能组卷', icon: iconTimu, keepAlive: 'PaperView' }
+      },
+      // 「线上习题」卡片上的「解析 / 纠错」：各开一个新标签页（带 query.id=题号）。
       // 故意不给 group —— 它们是详情页，不该出现在左侧菜单里，只在顶部标签栏出现。
       //
       // singleton：同一路由只保留一个标签页 —— 点不同题目的「解析」，复用的是
@@ -130,17 +174,32 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/CodeMappingView.vue'),
         meta: { group: '班级管理', label: '编码映射', icon: iconBanji }
       },
+      // 班级映射：某个班收到的全部编码映射（谁创建 / 谁加入都算），只读，只有查看 + 统计。
+      // 与上面「编码映射」（我创建的、能新建修改发布）是两种视角，别混。
+      // 入口已并进「创建班级」右栏（点卡片上的「查看编码映射」，右栏内左右分栏）：
+      // 不带 meta.group 就不进侧边栏菜单，路由本身留着，路径直连仍能打开整页版。
+      {
+        path: 'class_mapping',
+        name: 'ClassMapping',
+        component: () => import('../views/ClassMappingView.vue'),
+        meta: {
+          label: '班级映射',
+          icon: iconBanji,
+          keepAlive: 'ClassMappingView'
+        }
+      },
       {
         path: 'new_class',
         name: 'NewClass',
         component: () => import('../views/NewClassView.vue'),
         meta: { group: '班级管理', label: '创建班级', icon: iconBanji, keepAlive: 'NewClassView' }
       },
+      // 成绩录入同理：入口在「创建班级」右栏（卡片上的「成绩管理」），不进侧边栏
       {
         path: 'put_score',
         name: 'PutScore',
         component: () => import('../views/PutScoreView.vue'),
-        meta: { group: '班级管理', label: '成绩录入', icon: iconBanji, keepAlive: 'PutScoreView' }
+        meta: { label: '成绩录入', icon: iconBanji, keepAlive: 'PutScoreView' }
       },
       // 分组「我的」：家长账号下管理自己的孩子。加子项只在这里加一条，
       // 侧边栏与标签页都从 meta 推导（见 MainView 的 groups）
@@ -149,6 +208,14 @@ const routes: RouteRecordRaw[] = [
         name: 'MyChild',
         component: () => import('../views/MyChildView.vue'),
         meta: { group: '我的', label: '关联孩子', icon: iconWode }
+      },
+      // 提交错题：家长账号替名下的孩子批量提交（后端 /background/submit/subjects/sq.do），
+      // 排在「关联孩子」后面 —— 得先有关联好的孩子才能提交
+      {
+        path: 'submit_error',
+        name: 'SubmitError',
+        component: () => import('../views/SubmitErrorView.vue'),
+        meta: { group: '我的', label: '提交错题', icon: iconWode }
       }
     ]
   }

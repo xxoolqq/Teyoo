@@ -803,12 +803,18 @@ function enhanceClipboard(e: ClipboardEvent): void {
   // 语义保真的正确形态，外部目标再粘贴回来不变形。
 }
 
-// ─── 粘贴图片 → base64 内嵌 ──────────────────────────────────────────────────
+// ─── 粘贴图片 → 落盘写本地路径 ───────────────────────────────────────────────
 // 用户从剪贴板粘贴截图/复制的图片时，浏览器 ClipboardEvent 的 clipboardData.items
-// 里会有一条 type: "image/xxx" 的条目。经 image-embed 读成 base64 data URL
-// （超过长边 1600px / 1MB 才等比压缩，小图一个字节不动），直接作为 image 节点
-// 的 src 插入编辑器——Markdown 文本里以 ![image](data:image/png;base64,...)
-// 形式存在，保存/导出/源码模式折叠均已支持。
+// 里会有一条 type: "image/xxx" 的条目。
+//
+// **不默认内嵌 base64**：一张截图内嵌进 Markdown 就是几万字符，源码模式、保存、
+// 提交全线变重。桌面版把字节交给主进程写进「工作目录/images」（内容哈希命名，
+// 同图只落一份），Markdown 里只留绝对路径 —— 与打开 .md 时的路径约定一致：
+// 渲染走 toFileUrl，保存时 main 的 restoreImagePaths 再转回路径，导出 Word 的
+// docx-export 也能按路径读字节。
+//
+// 只有拿不到磁盘通道（WebView2 任务窗格 / 纯浏览器）或落盘失败时才退回内嵌，
+// 此时才走 image-embed 的压缩（长边 1600px / 1MB），宁可变大也不能丢图。
 //
 // 如果剪贴板同时带文本（如从网页复制的图文混排），优先让 milkdown 的内置 paste
 // 处理文本/HTML；仅当没有文本 flavour 时才走图片分支。
@@ -834,30 +840,50 @@ function handlePasteImage(e: ClipboardEvent): void {
   e.preventDefault()
   e.stopPropagation()
 
-  // 与工具栏「图片」按钮同一套内嵌规则（压缩阈值见 image-embed.ts）
   const ext = file.type.split('/')[1] || 'png'
   const alt = `image-${ext}`
-  void fileToEmbeddableDataUrl(file)
-    .then((result) => insertImageAtCursor(result.dataUrl, alt))
-    .catch(async (err: unknown) => {
-      // 压缩环节失败（比如 canvas 不可用）时退回「原样内嵌」，别把图丢了
-      console.error('粘贴图片处理失败，退回原样内嵌:', err)
-      insertImageAtCursor(await readFileAsDataUrl(file), alt)
-    })
+  void insertPastedImage(file, alt)
 }
 
-// 在当前光标处插入一个 image 节点（base64 data URL 作为 src）。
+/** 粘贴的图片：优先落盘取路径，没有磁盘通道才退回 base64 内嵌 */
+async function insertPastedImage(file: File, alt: string): Promise<void> {
+  const api = window.electronAPI
+  if (typeof api?.storeEditorImage === 'function') {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const stored = await api.storeEditorImage({ mime: file.type || 'image/png', bytes })
+      if (stored?.ok && stored.path) {
+        insertImageAtCursor(stored.path, alt)
+        return
+      }
+    } catch (err) {
+      console.error('粘贴图片落盘失败，退回内嵌:', err)
+    }
+  }
+  try {
+    const result = await fileToEmbeddableDataUrl(file)
+    insertImageAtCursor(result.dataUrl, alt)
+  } catch (err) {
+    // 压缩环节失败（比如 canvas 不可用）时退回「原样内嵌」，别把图丢了
+    console.error('粘贴图片处理失败，退回原样内嵌:', err)
+    insertImageAtCursor(await readFileAsDataUrl(file), alt)
+  }
+}
+
+// 在当前光标处插入一个 image 节点（src 多为本地路径，无磁盘通道时为 data URL）。
 // 若选区非空则替换选区内容；插入后将光标移到图片之后。
+// 与图片模态框的插入默认一致：右对齐、不带边框/阴影/圆角。
 function insertImageAtCursor(src: string, alt: string): void {
   activeEditor()?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const imageType = view.state.schema.nodes.image
     if (!imageType) return
+    const attrs = { src, alt, align: 'right' }
     const { from, to, empty } = view.state.selection
     if (!empty) {
-      view.dispatch(view.state.tr.replaceWith(from, to, imageType.create({ src, alt })))
+      view.dispatch(view.state.tr.replaceWith(from, to, imageType.create(attrs)))
     } else {
-      view.dispatch(view.state.tr.insert(from, imageType.create({ src, alt })))
+      view.dispatch(view.state.tr.insert(from, imageType.create(attrs)))
     }
     // 光标移到图片之后
     const newPos = empty ? from + 1 : to
@@ -1343,12 +1369,13 @@ export function insertLongUnderscore(): void {
   })
 }
 
-// 长空白宽度：10 个全角空格（U+3000）≈ 10 个汉字宽。
+// 长空白宽度：4 个全角空格（U+3000）≈ 4 个汉字宽（原 10 个，按用户要求改 4，
+// 与 adminPanel/utils/md-syntax.ts 的 LONG_BLANK 保持一致）。
 // 必须用全角空格而非半角空格（U+0020）：连续半角空格会被 HTML 渲染折叠、
 // 且可能被 Markdown 序列化规整；全角空格是普通 CJK 字符，不参与 Markdown
 // 语法（不会被 trim/转义）、浏览器不折叠、源码原样保存、docx 也是普通字符，
 // 与长下划线同一套无损策略。
-const LONG_BLANK = '　'.repeat(10)
+const LONG_BLANK = '　'.repeat(4)
 
 // 在光标处插入长空白（留空）。选区非空时替换选区，语义同 insertLongUnderscore。
 export function insertLongBlank(): void {
@@ -2440,7 +2467,7 @@ function toggleTaskListItem(e: MouseEvent): void {
 // 去掉 * 和 ~ 前的反斜杠转义：仅供显示口径（源码模式）。序列化输出
 // （getMarkdown / clipboard）与解析输入
 // （setMarkdown）一律不做还原——\* / \~ 转义是语义保真的正确形态，
-// 历史上「ColaMD 残留格式标记被错误转义」的场景已由 remarkResidualEmphasis
+// 历史上「Teyoo 残留格式标记被错误转义」的场景已由 remarkResidualEmphasis
 // 在解析层修复（residual-emphasis.ts），全局还原反而会把用户书写的
 // 真转义（\*普通星号\*）吃掉，字面 * 重新解析变成斜体。
 

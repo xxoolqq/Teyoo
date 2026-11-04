@@ -1,27 +1,50 @@
 /* adminPanel 的样式根。
  *
  * 两条硬规矩：
- *   1. 所有规则都写在 .admin-app 下面。这套界面要挂进 ColaMD 的标签页，跟宿主
+ *   1. 所有规则都写在 .admin-app 下面。这套界面要挂进 Teyoo 的标签页，跟宿主
  *      共用同一个 document，选择器漏出去就会改到宿主身上。
  *   2. 颜色一律走 --admin-* 变量。宿主想让它跟主题走，改这几个变量就够了，
  *      不用碰组件。
  */
+
+/* 填空横线专用字形（只接管 U+FF3F 全角下划线这一个码位）。
+ *
+ * 微软雅黑的「＿」左右各留一点空隙，连写七八个就断成一截截小横线；衬线中文
+ * 字体（Noto Serif SC / 宋体）同一码位的字形前后不缩进，连起来是一条直线
+ * —— 导入中心「渲染预览」之所以连贯，就是它的字体栈落到 ui-serif 上。
+ *
+ * 用 unicode-range 只切这一个字符，其余汉字/标点仍走各页面自己的字体栈，
+ * 字号、行高、颜色一概不变。这是一条 @font-face 注册（不是选择器），放在
+ * 全局样式里让「本地题库」「智能组卷」等所有要显示题面 md 的页面共用；
+ * 页面里再用 font-family: 'BankFillRule', <原栈> 把正文挂上去。 */
+@font-face {
+  font-family: 'BankFillRule';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: local('Noto Serif SC'), local('Source Han Serif SC'), local('Noto Serif CJK SC'),
+    local('SimSun'), local('宋体'), local('Songti SC');
+  unicode-range: U+FF3F;
+}
+
 .admin-app {
-  --admin-bg: #f4f6f9;
+  /* 三级层次：侧栏 / 顶栏是「面」（surface），页面底是「底」（bg），
+     卡片再回到「面」。三个值必须拉开距离，否则整屏糊成一片灰。 */
+  --admin-bg: #f1f4f9;
   --admin-surface: #ffffff;
-  --admin-text: #1f2d3d;
-  --admin-text-weak: #8492a6;
-  --admin-border: #d8dee6;
-  --admin-primary: #2d8cf0;
-  --admin-nav-bg: #eef1f6;
-  --admin-nav-hover: #e0e6ee;
-  --admin-nav-active: #dce8f7;
+  --admin-text: #1e293b;
+  --admin-text-weak: #7c8aa0;
+  --admin-border: #e3e8ef;
+  --admin-primary: #2f6fed;
+  --admin-nav-bg: #ffffff;
+  --admin-nav-hover: #f1f4f9;
+  --admin-nav-active: #e8f0fe;
   --admin-input-bg: #ffffff;
   /* 派生色：编辑区背景、悬停底色、主色浅底。主题里只给"基色"，这三个由基色派生，
      统一放这里，组件里就不必到处写 color-mix */
-  --admin-bg-soft: #eef1f6;
-  --admin-hover: #e6ebf2;
-  --admin-primary-weak: #e4eefa;
+  --admin-bg-soft: #f7f9fc;
+  --admin-hover: #eef2f7;
+  --admin-primary-weak: #e8f0fe;
 
   width: 100%;
   height: 100%;
@@ -30,9 +53,55 @@
   line-height: 1.5;
   color: var(--admin-text);
   background: var(--admin-bg);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* 挂进 ColaMD 时自动跟随宿主的深色主题（body.theme-* 是 Teyoo 自己的类名），
+/* 细滚动条：默认那条 15px 的灰槽在浅色面板里非常抢眼，尤其是侧栏和预览区。
+   只缩到 8px + 圆角透明轨道，拖动区域仍然够大（Chromium 的 ::-webkit-scrollbar
+   最小可拖宽度 8px）。 */
+.admin-app ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.admin-app ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 两行同一个属性：color-mix 是主写法，上一行给老内核兜底 —— 整条规则失效的话
+   把手会变透明，滚动条直接"消失"，比颜色不准更难用。 */
+.admin-app ::-webkit-scrollbar-thumb {
+  background: rgba(124, 138, 160, 0.3);
+  background: color-mix(in srgb, var(--admin-text-weak) 32%, transparent);
+  border-radius: 8px;
+}
+
+.admin-app ::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 138, 160, 0.5);
+  background: color-mix(in srgb, var(--admin-text-weak) 52%, transparent);
+}
+
+.admin-app ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 只读预览里的代码块「复制」按钮：整块面板都要藏掉。
+ *
+ * renderer/editor/editor.ts 给每个编辑器实例都 append 一个 .code-copy-btn（悬停跟随
+ * 代码块的悬浮按钮）。它的样式只写在 renderer/themes/base.css 里（默认 opacity:0，
+ * 悬停才显形），而 adminPanel 不加载那份主题 —— 于是它变成一个没有任何样式的裸
+ * <button>，left/top 还没被赋值时停在静态位置，正文左侧凭空多出一行「复制」并挤占布局。
+ *
+ * 影响面是全部 5 个用了 mountReadonlyPreview 的地方（审查题卡 / 题库卡 / 录入预览 /
+ * 详情页 / 纠错页），所以放这里而不是各页面各写一份。
+ *
+ * 只藏不删：按钮由共享内核创建，改内核会波及正文编辑器；而这些预览都是只读的，
+ * 复制代码在那里本来也没有使用场景。 */
+.admin-app .code-copy-btn {
+  display: none !important;
+}
+
+/* 挂进 Teyoo 时自动跟随宿主的深色主题（body.theme-* 是 Teyoo 自己的类名），
    不需要 JS 参与 */
 body.theme-dark .admin-app,
 body.theme-solarized-dark .admin-app,
@@ -40,19 +109,20 @@ body.theme-nord .admin-app,
 body.theme-gruvbox .admin-app,
 body.theme-dracula .admin-app,
 body.theme-midnight .admin-app {
-  --admin-bg: #1b1e23;
-  --admin-surface: #23272e;
-  --admin-text: #d7dbe0;
-  --admin-text-weak: #8b949e;
-  --admin-border: #363b42;
-  --admin-primary: #4b9bf4;
-  --admin-nav-bg: #20242a;
-  --admin-nav-hover: #2a2f36;
-  --admin-nav-active: #2c3a4b;
-  --admin-input-bg: #1b1e23;
-  --admin-bg-soft: #20242a;
-  --admin-hover: #2c313a;
-  --admin-primary-weak: #26374b;
+  /* 深色下同样是三级：侧栏/顶栏最亮，页面底最暗，卡片居中 */
+  --admin-bg: #16191d;
+  --admin-surface: #1e2228;
+  --admin-text: #dde3ea;
+  --admin-text-weak: #8b95a3;
+  --admin-border: #2c323a;
+  --admin-primary: #5b9bf8;
+  --admin-nav-bg: #1a1e24;
+  --admin-nav-hover: #232830;
+  --admin-nav-active: #253143;
+  --admin-input-bg: #16191d;
+  --admin-bg-soft: #22262d;
+  --admin-hover: #262b33;
+  --admin-primary-weak: #22314a;
 }
 
 /* 原本这里还有一段 @media (prefers-color-scheme: dark)：那是给独立 Web 站用的

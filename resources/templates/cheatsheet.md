@@ -20,7 +20,7 @@ Teyoo 支持下面这些 Markdown 格式。每个示例下方是它的源码写�
 
 ## 链接与图片
 
-[ColaMD](https://github.com/marswaveai/ColaMD)
+[Teyoo](https://github.com/xxoolqq/Teyoo)
 
 Cmd/⌘+点击链接会在浏览器中打开。
 

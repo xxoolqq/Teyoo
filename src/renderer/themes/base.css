@@ -394,35 +394,6 @@ body.platform-win #titlebar {
   cursor: default;
 }
 
-/* 「提交」：「显示/隐藏文件列表」按钮左侧的文字按钮（打开提交表单标签页）。
-   特异性必须带上 #titlebar > button，否则共享规则的 width: 28px 胜出——
-   28px 里塞下左右各 10px 内边距后只剩 8px，中文逐字换行成了竖排。
-   外观按设计稿：蓝色实心、圆角、白字 + 上传图标（仅此按钮有填充色，
-   其余标题栏按钮保持无底色）。 */
-#titlebar > button.tab-submit-btn,
-#titlebar > button.tab-submitted-btn {
-  /* 主题色：整条按钮的蓝色（含 hover 加深）都由这里派生，换色只改一处 */
-  --submit-bg: #3b82f6;
-  --submit-bg-hover: #2f74e0;
-  width: auto;
-  min-width: 28px;
-  padding: 0 12px;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  color: #fff;
-  background: var(--submit-bg);
-  border: none;
-  border-radius: 8px;
-  transition: background .12s ease;
-}
-
-#titlebar > button.tab-submit-btn:hover,
-#titlebar > button.tab-submitted-btn:hover {
-  background: var(--submit-bg-hover);
-}
-
 /* ─── Typora 式顶部菜单栏 ───────────────────────────────────────────────────
    一行五个一级标签（文件/编辑/视图/主题/帮助），位于行首、标签页之前。
    二级菜单是原生弹出菜单（main 进程控制），这里只负责标签的静态外观与
@@ -496,6 +467,44 @@ body.theme-midnight .menubar-item {
 
 #snip-capture-btn:hover {
   background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
+/* 标题栏右侧的「检查更新」云图标（紧挨相机图标右侧）：尺寸、圆角、hover 与相机
+   那颗完全一致，只是图形改成内联 SVG（DBX 的 lucide CloudDownload），所以颜色
+   跟着文字色走，不像相机那样是固定红图。
+   有新版待装时加 .has-update 换成主色高亮 —— DBX 那边也是「只变色、不放动画」。 */
+#check-update-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+#check-update-btn svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+#check-update-btn:hover {
+  background: color-mix(in srgb, var(--text-color) 9%, transparent);
+}
+
+/* 检查中 / 有新版：前者压暗表示请求在跑，后者用主色（与「发现新版本」横幅同一档） */
+#check-update-btn.is-checking {
+  opacity: 0.45;
+}
+
+#check-update-btn.has-update {
+  color: rgb(124, 92, 255);
 }
 
 /* ─── 第二行格式工具栏 ──────────────────────────────────────────────────────
@@ -1426,7 +1435,7 @@ body.show-file-panel #source-editor {
 }
 
 /* Table floating toolbar (P1): 光标进入表格时浮现，提供增删行列/对齐/删表 */
-.colamd-table-toolbar {
+.teyoo-table-toolbar {
   position: fixed;
   z-index: 9999;
   display: flex;
@@ -1441,7 +1450,7 @@ body.show-file-panel #source-editor {
   line-height: 1;
 }
 
-.colamd-table-toolbar .colamd-tb-btn {
+.teyoo-table-toolbar .teyoo-tb-btn {
   min-width: 24px;
   height: 26px;
   padding: 0 6px;
@@ -1457,11 +1466,11 @@ body.show-file-panel #source-editor {
   justify-content: center;
 }
 
-.colamd-table-toolbar .colamd-tb-btn:hover {
+.teyoo-table-toolbar .teyoo-tb-btn:hover {
   background: var(--hover-bg, rgba(0, 0, 0, 0.06));
 }
 
-.colamd-table-toolbar .colamd-tb-sep {
+.teyoo-table-toolbar .teyoo-tb-sep {
   width: 1px;
   height: 16px;
   margin: 0 2px;
@@ -1754,7 +1763,7 @@ mjx-container[jax='SVG'] > svg a {
 /* ─── 图片 NodeView（extensions/image-style/node-view.ts）──────────────────
    单击选中出现定位框，8 手柄拖拽调整尺寸。框画在节点包裹层内部，
    天然跟随滚动/重排；pointer-events none 不挡点击，仅手柄可交互 */
-.colamd-image-view {
+.teyoo-image-view {
   /* inline-block：包裹层必须是「实心」包含块。span 默认 inline，内部再放
      块级 frame 会触发 block-in-inline 分裂，绝对定位的 frame 的包含块退化成
      span 的空碎片，表现为定位框塌缩在图片下方一角、8 手柄全部挤在一起 */
@@ -1767,31 +1776,31 @@ mjx-container[jax='SVG'] > svg a {
   vertical-align: middle;
 }
 /* img 转块级：消除 inline 基线造成的下行字母空隙，让包裹层矩形 == 图片矩形 */
-.colamd-image-view img {
+.teyoo-image-view img {
   display: block;
 }
 /* 块级对齐（left/center/right）由包裹层承担：display:block 脱离行内流，
    fit-content 让盒子收缩到图片宽度，margin:auto 才有居中/靠右的效果。
    双 class 优先级高于 image-style/style.css 的单 class 规则，免受加载顺序影响 */
-.colamd-image-view.img-align-left,
-.colamd-image-view.img-align-center,
-.colamd-image-view.img-align-right {
+.teyoo-image-view.img-align-left,
+.teyoo-image-view.img-align-center,
+.teyoo-image-view.img-align-right {
   display: block;
   width: fit-content;
 }
-.colamd-image-view.img-align-left {
+.teyoo-image-view.img-align-left {
   margin-left: 0;
   margin-right: auto;
 }
-.colamd-image-view.img-align-center {
+.teyoo-image-view.img-align-center {
   margin-left: auto;
   margin-right: auto;
 }
-.colamd-image-view.img-align-right {
+.teyoo-image-view.img-align-right {
   margin-left: auto;
   margin-right: 0;
 }
-.colamd-image-frame {
+.teyoo-image-frame {
   display: none;
   position: absolute;
   inset: 0;
@@ -1799,10 +1808,10 @@ mjx-container[jax='SVG'] > svg a {
   pointer-events: none;
   z-index: 5;
 }
-.colamd-image-view.is-selected .colamd-image-frame {
+.teyoo-image-view.is-selected .teyoo-image-frame {
   display: block;
 }
-.colamd-image-handle {
+.teyoo-image-handle {
   position: absolute;
   width: 10px;
   height: 10px;
@@ -1813,14 +1822,14 @@ mjx-container[jax='SVG'] > svg a {
   pointer-events: auto;
   z-index: 6;
 }
-.colamd-image-handle[data-dir='nw'] { top: -5px; left: -5px; }
-.colamd-image-handle[data-dir='n']  { top: -5px; left: 50%; margin-left: -5px; }
-.colamd-image-handle[data-dir='ne'] { top: -5px; right: -5px; }
-.colamd-image-handle[data-dir='e']  { top: 50%; margin-top: -5px; right: -5px; }
-.colamd-image-handle[data-dir='se'] { bottom: -5px; right: -5px; }
-.colamd-image-handle[data-dir='s']  { bottom: -5px; left: 50%; margin-left: -5px; }
-.colamd-image-handle[data-dir='sw'] { bottom: -5px; left: -5px; }
-.colamd-image-handle[data-dir='w']  { top: 50%; margin-top: -5px; left: -5px; }
+.teyoo-image-handle[data-dir='nw'] { top: -5px; left: -5px; }
+.teyoo-image-handle[data-dir='n']  { top: -5px; left: 50%; margin-left: -5px; }
+.teyoo-image-handle[data-dir='ne'] { top: -5px; right: -5px; }
+.teyoo-image-handle[data-dir='e']  { top: 50%; margin-top: -5px; right: -5px; }
+.teyoo-image-handle[data-dir='se'] { bottom: -5px; right: -5px; }
+.teyoo-image-handle[data-dir='s']  { bottom: -5px; left: 50%; margin-left: -5px; }
+.teyoo-image-handle[data-dir='sw'] { bottom: -5px; left: -5px; }
+.teyoo-image-handle[data-dir='w']  { top: 50%; margin-top: -5px; left: -5px; }
 
 /* 公式渲染失败（math-engine/ 各引擎共用）：红字展示 LaTeX 源码 */
 .math-render-error {
@@ -2000,6 +2009,15 @@ mjx-container[jax='SVG'] > svg a {
 .image-modal-label {
   font-size: 12px;
   color: var(--text-secondary, var(--text-muted));
+}
+
+/* 宽/高下方那行原图尺寸提示（图片加载出来才有文字） */
+.image-modal-hint {
+  margin-top: -2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary, var(--text-muted));
+  min-height: 15px;
 }
 
 .image-modal-input {
@@ -2456,56 +2474,6 @@ mjx-container[jax='SVG'] > svg a {
   font-size: 12px;
   line-height: 1;
   color: #666666;
-}
-
-/* ─── 提交标签页（表单视图） ───────────────────────────────────────────────
-   与源码模式同一手法：body class 收起工具栏并让出高度，编辑面
-   （#editor / #source-editor）由 main.ts 直接隐藏，表单视图接管编辑区。 */
-body.submit-view {
-  --toolbar-height: 0px;
-}
-
-body.submit-view #toolbar {
-  display: none;
-}
-
-/* 提交页铺满标题行以下的整个编辑区（与 #editor 同一高度算式），
-   左侧表单 + 右侧预览分栏；文件面板可见时同样让位。 */
-#submit-panel {
-  height: calc(100vh - 40px - var(--tab-bar-height, 0px));
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  padding: 40px;
-  background: var(--bg-color);
-}
-
-#submit-panel[hidden] {
-  display: none;
-}
-
-body.show-file-panel #submit-panel {
-  margin-left: var(--file-panel-width, 220px);
-}
-
-/* 左侧表单列：固定宽（容纳 700px 输入框），输入框 700px × 500px，
-   提交按钮在其下方；右分隔线区分两栏。 */
-.submit-form {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-right: 1px solid var(--border-color);
-  padding-right: 20px;
-}
-
-/* 右侧预览区：#editor 的 DOM 被移入此处（main.ts），只读渲染输入内容。
-   固定高 700px，内容超出在栏内滚动。 */
-#submit-preview {
-  flex: 1;
-  min-width: 0;
-  height: 700px;
-  overflow-y: auto;
 }
 
 /* ─── PDF 对照视图（导入 PDF 文档） ────────────────────────────────────────
@@ -3455,6 +3423,17 @@ body.admin-panel-view #assistant-panel {
   display: none;
 }
 
+/* 后台管理系统挂载失败时贴在面板上的那句提示（见 adminPanel/host.ts）。
+   Vue 那几个 chunk 没拉下来 / 应用抛错时才有，正常情况不出现。 */
+.admin-panel-error {
+  margin: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
 .texo-head {
   flex: none;
   display: flex;
@@ -4134,7 +4113,6 @@ body.show-file-panel.assistant-open #source-editor {
   width: calc(100% - var(--file-panel-width, 220px) - var(--assistant-width, 360px));
 }
 
-body.submit-view #assistant-panel,
 body.canvas-doc-view #assistant-panel,
 body.pdf-view #assistant-panel,
 body.image-view #assistant-panel,
@@ -4813,6 +4791,39 @@ body.docx-view .doc-mode-switch {
   display: block;
 }
 
+/* 「批量录入」：PDF 对照 / 图片转md / docx转md 三个标签页右上角那个文字按钮 ——
+   右边这份 Markdown 的下一步就是拆题，点它直接开后台管理系统的「导入中心」，
+   并把当前 Markdown 一起带过去（见 renderer/main.ts 的 openImportCenter）。
+   与保存 / 复制同一组，只是带文字（链接色做底）。 */
+.doc-batch-btn {
+  flex: none;
+  display: none;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--link-color);
+  color: var(--bg-color);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 三个「XX 转 md」视图都露出：它们的右侧都是 Markdown，下一步都能拿去拆题 */
+body.pdf-view .doc-batch-btn,
+body.image-view .doc-batch-btn,
+body.docx-view .doc-batch-btn {
+  display: inline-flex;
+}
+
+.doc-batch-btn:hover {
+  filter: brightness(1.08);
+}
+
 body.pdf-view #editor,
 body.pdf-view #source-editor {
   margin-left: var(--pdf-panel-width, 50%);
@@ -4823,72 +4834,6 @@ body.pdf-view #source-editor {
 /* 源码视图有显式宽度，和文件面板那一侧同理，要把让出的宽度减掉。 */
 body.pdf-view #source-editor {
   width: calc(100% - var(--pdf-panel-width, 50%));
-}
-
-/* 预览态编辑器：高度随内容自适应、交出内部滚动（常规态是固定高度 +
-   内部 overflow-y: auto，其滚动条在 pointer-events: none 下点不到），
-   由外层 #submit-preview（固定 700px）统一滚动；不可交互（纯预览）。 */
-body.submit-view #editor {
-  height: auto;
-  overflow-y: visible;
-  pointer-events: none;
-  cursor: default;
-  /* 预览与左侧表单同起点：去掉编辑器自身的 40px 上留白（含 editor-top-gap
-     偏好），首行紧贴面板内边距，与左侧输入框外壳顶边齐平。 */
-  padding-top: 0;
-}
-
-/* 多行输入框（textarea）：700px × 250px（高度减半），文字从左上角开始、
-   可换行；两个输入框同尺寸，主输入框 #submit-input 预览，附加框独立。
-   禁用拖拽手柄（尺寸由布局固定），字体继承界面设置。 */
-#submit-input,
-#submit-input-secondary {
-  width: 700px;
-  max-width: 100%;
-  height: 250px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-color);
-  color: var(--text-color);
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 1.5;
-  outline: none;
-  resize: none;
-  box-sizing: border-box;
-}
-
-#submit-input:focus,
-#submit-input-secondary:focus {
-  border-color: var(--link-color);
-}
-
-#submit-btn {
-  align-self: flex-start;
-  flex: none;
-  padding: 6px 20px;
-  border: none;
-  border-radius: 6px;
-  background: var(--link-color);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-#submit-btn:hover {
-  opacity: 0.9;
-}
-
-#submit-feedback {
-  margin: 12px 0 0;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-#submit-feedback:empty {
-  display: none;
 }
 
 /* ─── 打印预览 ────────────────────────────────────────────────────────────

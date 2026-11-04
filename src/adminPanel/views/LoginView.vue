@@ -29,7 +29,9 @@
         />
       </label>
 
-      <label class="field">
+      <!-- TODO 测试期临时关闭验证码：恢复时把下面这段取消注释，
+           并同步解开 script 里的 codeMa / uuid 相关代码（后端 login2 也要恢复校验） -->
+      <!-- <label class="field">
         <span class="field-label">验证码</span>
         <div class="code-row">
           <input
@@ -41,7 +43,7 @@
           />
           <img class="code-img" :src="codeSrc" alt="验证码" title="点击换一张" @click="refreshCode" />
         </div>
-      </label>
+      </label> -->
 
       <p v-if="error" class="error">{{ error }}</p>
 
@@ -59,41 +61,43 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { codeMaUrl, login, newCodeMaToken } from '../api/auth'
+import { login } from '../api/auth'
 import { API_BASE } from '../api/endpoints'
 import { saveSession } from '../stores/session'
 
 const router = useRouter()
 
-const form = reactive({ phone: '', passwd: '', codeMa: '' })
-const uuid = ref(newCodeMaToken())
+const form = reactive({ phone: '', passwd: '' })
 const loading = ref(false)
 const error = ref('')
 
-const codeSrc = computed(() => codeMaUrl(uuid.value))
-
-function refreshCode(): void {
-  uuid.value = newCodeMaToken()
-}
+// TODO 测试期临时关闭验证码：恢复时把下面这段取消注释，并同步解开模板里的验证码字段、
+// onSubmit 里的验证码校验与 login 传参（后端 login2 的校验也要恢复）
+// const uuid = ref(newCodeMaToken())
+// const codeSrc = computed(() => codeMaUrl(uuid.value))
+// function refreshCode(): void {
+//   uuid.value = newCodeMaToken()
+// }
 
 async function onSubmit(): Promise<void> {
   if (loading.value) return
   error.value = ''
 
-  if (!form.phone || !form.passwd || !form.codeMa) {
-    error.value = '手机号、密码、验证码都要填'
+  if (!form.phone || !form.passwd) {
+    error.value = '手机号和密码都要填'
     return
   }
   if (!/^1\d{10}$/.test(form.phone)) {
     error.value = '手机号格式不正确'
     return
   }
-  if (!/^[A-Za-z0-9]{4}$/.test(form.codeMa)) {
-    error.value = '验证码为 4 位字母或数字'
-    return
-  }
+  // TODO 测试期临时关闭验证码：恢复时解开下面这段
+  // if (!/^[A-Za-z0-9]{4}$/.test(form.codeMa)) {
+  //   error.value = '验证码为 4 位字母或数字'
+  //   return
+  // }
 
   loading.value = true
   try {
@@ -101,15 +105,15 @@ async function onSubmit(): Promise<void> {
     const data = await login({
       phone: form.phone,
       passwd: form.passwd,
-      codeMa: form.codeMa,
-      uuid: uuid.value
+      // TODO 测试期临时关闭验证码：后端 login2 已不校验，这里传空串占位
+      codeMa: '',
+      uuid: ''
     })
     saveSession(data)
     await router.push('/home')
   } catch (err) {
     // 桌面端最常见的一种：主窗口 CSP 没放行 connect-src，请求根本没发出去
     error.value = `登录请求失败：${err instanceof Error ? err.message : String(err)}`
-    refreshCode()
   } finally {
     loading.value = false
   }

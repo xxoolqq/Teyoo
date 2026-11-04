@@ -1,150 +1,161 @@
 <template>
+  <!-- 题海拾贝：版式与「错题统计」页一致 —— 整页左右两栏，查询条件与结果表都在左栏，
+       右栏预留给后续的图表 / 明细。 -->
   <div class="shell-page">
-    <h1 class="page-title">题海拾贝</h1>
+    <div class="shell-main">
+      <!-- ── 第一步：按名字查 ID（ctbapp 里这一步跳 Name2ID 页，这里本页出结果）── -->
+      <section class="card">
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label">领域：</span>
+            <select v-model="nameType" class="ctl">
+              <option v-for="t in FIELD_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+            </select>
+          </label>
+          <label class="field grow">
+            <span class="field-label">名字：</span>
+            <input
+              v-model="nameInput"
+              class="ctl"
+              placeholder="个人、班级、学校或城市的名字"
+              @keyup.enter="searchId"
+            />
+          </label>
+          <button class="btn" type="button" :disabled="idSearching" @click="searchId">确定</button>
+        </div>
 
-    <!-- ── 第一步：按名字查 ID（ctbapp 里这一步跳 Name2ID 页，这里本页出结果）── -->
-    <section class="card">
-      <div class="field-row">
-        <label class="field">
-          <span class="field-label">领域：</span>
-          <select v-model="nameType" class="ctl">
-            <option v-for="t in FIELD_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
-          </select>
-        </label>
-        <label class="field grow">
-          <span class="field-label">名字：</span>
-          <input
-            v-model="nameInput"
-            class="ctl"
-            placeholder="个人、班级、学校或城市的名字"
-            @keyup.enter="searchId"
-          />
-        </label>
-        <button class="btn" type="button" :disabled="idSearching" @click="searchId">确定</button>
-      </div>
+        <table v-if="idRows.length" class="table mini">
+          <thead>
+            <tr>
+              <th>名字</th>
+              <th>ID</th>
+              <th>类型</th>
+              <th class="col-op"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in idRows" :key="row.codeID">
+              <td>{{ row.name }}</td>
+              <td>{{ row.codeID }}</td>
+              <td>{{ nameTypeLabel(row.nameType) }}</td>
+              <td class="col-op">
+                <button
+                  class="btn small"
+                  type="button"
+                  title="把该 ID 填进第二步的 ID 号"
+                  @click="useId(row.codeID)"
+                >
+                  填入 ID
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
 
-      <table v-if="idRows.length" class="table mini">
-        <thead>
-          <tr>
-            <th>名字</th>
-            <th>ID</th>
-            <th>类型</th>
-            <th class="col-op"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in idRows" :key="row.codeID">
-            <td>{{ row.name }}</td>
-            <td>{{ row.codeID }}</td>
-            <td>{{ nameTypeLabel(row.nameType) }}</td>
-            <td class="col-op">
-              <button class="btn small" type="button" title="把该 ID 填进第二步的 ID 号" @click="useId(row.codeID)">
-                填入 ID
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+      <!-- ── 第二步：条件统计 ──────────────────────────────────────────────── -->
+      <section class="card">
+        <div class="grid">
+          <label class="field">
+            <span class="field-label">年级：</span>
+            <select v-model="classLevel" class="ctl">
+              <option v-for="c in CLASS_LEVEL_OPTIONS" :key="c.value" :value="c.value">
+                {{ c.label }}
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">科目：</span>
+            <select v-model="course" class="ctl">
+              <option v-for="c in COURSE_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">领域：</span>
+            <select v-model="field" class="ctl">
+              <option v-for="t in FIELD_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">ID号：</span>
+            <input
+              v-model="idno"
+              class="ctl"
+              type="number"
+              placeholder="学生、班级、学校、城市ID"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">最低分：</span>
+            <input v-model="lowScore" class="ctl" type="number" />
+          </label>
+          <label class="field">
+            <span class="field-label">最高分：</span>
+            <input v-model="highScore" class="ctl" type="number" />
+          </label>
+          <label class="field">
+            <span class="field-label">开始时间：</span>
+            <input v-model="beginDate" class="ctl" type="date" />
+          </label>
+          <label class="field">
+            <span class="field-label">截止时间：</span>
+            <input v-model="endDate" class="ctl" type="date" />
+          </label>
+        </div>
+        <p class="hint">按照满分150分计算</p>
+        <div class="actions">
+          <button class="btn wide" type="button" :disabled="searching" @click="doSearch">
+            查询
+          </button>
+          <button class="btn wide" type="button" :disabled="downloading" @click="doDownload">
+            下载
+          </button>
+        </div>
+      </section>
 
-    <!-- ── 第二步：条件统计 ──────────────────────────────────────────────── -->
-    <section class="card">
-      <div class="grid">
-        <label class="field">
-          <span class="field-label">年级：</span>
-          <select v-model="classLevel" class="ctl">
-            <option v-for="c in CLASS_LEVEL_OPTIONS" :key="c.value" :value="c.value">
-              {{ c.label }}
-            </option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">科目：</span>
-          <select v-model="course" class="ctl">
-            <option v-for="c in COURSE_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">领域：</span>
-          <select v-model="field" class="ctl">
-            <option v-for="t in FIELD_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">ID号：</span>
-          <input
-            v-model="idno"
-            class="ctl"
-            type="number"
-            placeholder="学生、班级、学校、城市ID"
-          />
-        </label>
-        <label class="field">
-          <span class="field-label">最低分：</span>
-          <input v-model="lowScore" class="ctl" type="number" />
-        </label>
-        <label class="field">
-          <span class="field-label">最高分：</span>
-          <input v-model="highScore" class="ctl" type="number" />
-        </label>
-        <label class="field">
-          <span class="field-label">开始时间：</span>
-          <input v-model="beginDate" class="ctl" type="date" />
-        </label>
-        <label class="field">
-          <span class="field-label">截止时间：</span>
-          <input v-model="endDate" class="ctl" type="date" />
-        </label>
-      </div>
-      <p class="hint">按照满分150分计算</p>
-      <div class="actions">
-        <button class="btn wide" type="button" :disabled="searching" @click="doSearch">查询</button>
-        <button class="btn wide" type="button" :disabled="downloading" @click="doDownload">
-          下载
-        </button>
-      </div>
-    </section>
+      <!-- ── 查询结果：本页内嵌表格 + 分页 ──────────────────────────────────── -->
+      <section v-if="searched" class="card">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>题号</th>
+              <th>人数</th>
+              <th class="col-op">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="rows.length === 0">
+              <td colspan="3" class="empty">没有符合条件的记录</td>
+            </tr>
+            <tr v-for="row in rows" :key="row.exerciseCode">
+              <td class="mono">{{ row.exerciseCode }}</td>
+              <td>{{ row.exCount }}</td>
+              <td class="col-op">
+                <button
+                  class="btn small"
+                  type="button"
+                  :disabled="viewerCode === row.exerciseCode && viewerLoading"
+                  @click="openViewer(row.exerciseCode)"
+                >
+                  查看
+                </button>
+                <button class="btn small" type="button" @click="downloadRow(row.exerciseCode)">
+                  下载
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <Pagination
+          :total="total"
+          :page-num="pageNum"
+          :page-size="PAGE_SIZE"
+          @change="onPage"
+        />
+      </section>
+    </div>
 
-    <!-- ── 查询结果：本页内嵌表格 + 分页 ──────────────────────────────────── -->
-    <section v-if="searched" class="card">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>题号</th>
-            <th>人数</th>
-            <th class="col-op">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="rows.length === 0">
-            <td colspan="3" class="empty">没有符合条件的记录</td>
-          </tr>
-          <tr v-for="row in rows" :key="row.exerciseCode">
-            <td class="mono">{{ row.exerciseCode }}</td>
-            <td>{{ row.exCount }}</td>
-            <td class="col-op">
-              <button
-                class="btn small"
-                type="button"
-                :disabled="viewerCode === row.exerciseCode && viewerLoading"
-                @click="openViewer(row.exerciseCode)"
-              >
-                查看
-              </button>
-              <button class="btn small" type="button" @click="downloadRow(row.exerciseCode)">
-                下载
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <Pagination
-        :total="total"
-        :page-num="pageNum"
-        :page-size="PAGE_SIZE"
-        @change="onPage"
-      />
-    </section>
+    <aside class="shell-side">右侧栏位预留</aside>
 
     <!-- ── 查看弹层：只读渲染题目 + 答案（v-show：关掉后实例和 DOM 都留着复用）── -->
     <div v-show="viewerOpen" class="viewer-mask" @click.self="closeViewer">
@@ -383,16 +394,64 @@ function closeViewer(): void {
 </script>
 
 <style scoped>
+/* 整页左右两栏：对半分，中间一条淡灰竖线（右栏的 border-left）分隔。
+   页面自己撑满可视高度，滚动收在左栏里 —— 右栏的白底才能一直铺到页脚。
+   版式与「错题统计」页（ClassTJView）保持同一套。 */
 .shell-page {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 20px 24px 32px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
-.page-title {
-  margin: 0 0 16px;
-  font-size: 20px;
-  color: var(--admin-text, #1f2d3d);
+/* 窄屏（<900px）再并排会把左栏的表格挤成一条，改成上下叠：上查询、下预留区 */
+@media (max-width: 900px) {
+  .shell-page {
+    grid-template-columns: minmax(0, 1fr);
+    /* 单列时高度交给内容，滚动还给外层 */
+    height: auto;
+    overflow: visible;
+  }
+}
+
+.shell-main {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 20px 24px;
+  overflow-y: auto;
+}
+
+@media (max-width: 900px) {
+  .shell-main {
+    overflow: visible;
+  }
+}
+
+/* 右栏：纯白底，左侧一条淡灰分割线，高度跟页面一致 */
+.shell-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 16px 20px;
+  box-sizing: border-box;
+  font-size: 13px;
+  color: var(--admin-text-weak, #8492a6);
+  background: var(--admin-surface, #fff);
+  border-left: 1px solid var(--admin-border, #d8dee6);
+}
+
+/* 单列时竖线改到上边，并留出可视高度 */
+@media (max-width: 900px) {
+  .shell-side {
+    min-height: 180px;
+    border-left: none;
+    border-top: 1px solid var(--admin-border, #d8dee6);
+  }
 }
 
 .card {

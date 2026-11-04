@@ -2,8 +2,8 @@
 // ────────────────────────────────────────────────────────────────────────────
 //
 // 职责：
-//   1. 启动时从主进程拉全量偏好 + 迁移 localStorage 旧 key（colamd-latex-engine
-//      → markdown.latexEngine, colamd-export-formula-engine → export.formulaEngine）
+//   1. 启动时从主进程拉全量偏好 + 迁移 localStorage 旧 key（teyoo-latex-engine
+//      → markdown.latexEngine, teyoo-export-formula-engine → export.formulaEngine）
 //   2. get(keyPath) / set(keyPath, value) 封装点号路径读写；set 同时写主进程
 //   3. 订阅主进程 preferences-changed 多窗口同步
 //   4. 提供 markdown.latexEngine 的 localStorage 兼容层（math-engine/registry.ts
@@ -21,8 +21,8 @@
 //   prefsStore.set('markdown.latexEngine', 'mathjax')
 
 // localStorage 旧 key（迁移用）
-const LS_LATEX_ENGINE_KEY = 'colamd-latex-engine'
-const LS_EXPORT_FORMULA_ENGINE_KEY = 'colamd-export-formula-engine'
+const LS_LATEX_ENGINE_KEY = 'teyoo-latex-engine'
+const LS_EXPORT_FORMULA_ENGINE_KEY = 'teyoo-export-formula-engine'
 
 // 渲染端快照（从主进程拉取后本地缓存，get 走快照，set 走主进程+快照）
 type SettingSnapshot = Record<string, unknown>

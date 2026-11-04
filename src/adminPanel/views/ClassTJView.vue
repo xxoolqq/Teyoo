@@ -1,75 +1,79 @@
 <template>
+  <!-- 错题统计（照 ctbapp ClassTJ）：整页左右两栏，查询条件与结果表都在左栏，
+       右栏预留给后续的图表 / 明细。 -->
   <div class="tj-page">
-    <h1 class="page-title">错题统计</h1>
+    <div class="tj-main">
+      <!-- ── 通用查询条件（科目 / 班级 / 起止时间，照 ctbapp ClassTJ 的排布）── -->
+      <section class="card">
+        <div class="grid">
+          <label class="field">
+            <span class="field-label">科目：</span>
+            <select v-model="course" class="ctl">
+              <option v-for="c in COURSE_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">班级：</span>
+            <select v-model="selectedClass" class="ctl">
+              <option v-for="item in classOptions" :key="item.classCode" :value="item.classCode">
+                {{ item.className }}
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">开始时间：</span>
+            <input v-model="beginDate" class="ctl" type="date" />
+          </label>
+          <label class="field">
+            <span class="field-label">截止时间：</span>
+            <input v-model="endDate" class="ctl" type="date" />
+          </label>
+        </div>
+        <div class="actions">
+          <button class="btn confirm" type="button" :disabled="searching" @click="doSearch">
+            确定
+          </button>
+          <button class="btn confirm" type="button" :disabled="downloading" @click="doDownload">
+            导出MD
+          </button>
+        </div>
+      </section>
 
-    <!-- ── 通用查询条件（科目 / 班级 / 起止时间，照 ctbapp ClassTJ 的排布）── -->
-    <section class="card">
-      <div class="grid">
-        <label class="field">
-          <span class="field-label">科目：</span>
-          <select v-model="course" class="ctl">
-            <option v-for="c in COURSE_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">班级：</span>
-          <select v-model="selectedClass" class="ctl">
-            <option v-for="item in classOptions" :key="item.classCode" :value="item.classCode">
-              {{ item.className }}
-            </option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">开始时间：</span>
-          <input v-model="beginDate" class="ctl" type="date" />
-        </label>
-        <label class="field">
-          <span class="field-label">截止时间：</span>
-          <input v-model="endDate" class="ctl" type="date" />
-        </label>
-      </div>
-      <div class="actions">
-        <button class="btn confirm" type="button" :disabled="searching" @click="doSearch">
-          确定
-        </button>
-        <button class="btn confirm" type="button" :disabled="downloading" @click="doDownload">
-          导出MD
-        </button>
-      </div>
-    </section>
+      <!-- ── 统计结果：题号 / 错误数 / 查看 ─────────────────────────────────── -->
+      <section v-if="searched" class="card">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>题号</th>
+              <th>错误数</th>
+              <th class="col-op">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="rows.length === 0">
+              <td colspan="3" class="empty">没有符合条件的记录</td>
+            </tr>
+            <tr v-for="row in rows" :key="row.exerciseCode">
+              <td class="mono name-cell">{{ row.exerciseCode }}</td>
+              <td>{{ row.exCount }}</td>
+              <td class="col-op">
+                <button
+                  class="btn small"
+                  type="button"
+                  :disabled="viewerCode === row.exerciseCode && viewerLoading"
+                  @click="openViewer(row.exerciseCode)"
+                >
+                  查看
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <Pagination :total="total" :page-num="pageNum" :page-size="PAGE_SIZE" @change="onPage" />
+      </section>
+    </div>
 
-    <!-- ── 统计结果：题号 / 错误数 / 查看 ─────────────────────────────────── -->
-    <section v-if="searched" class="card">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>题号</th>
-            <th>错误数</th>
-            <th class="col-op">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="rows.length === 0">
-            <td colspan="3" class="empty">没有符合条件的记录</td>
-          </tr>
-          <tr v-for="row in rows" :key="row.exerciseCode">
-            <td class="mono name-cell">{{ row.exerciseCode }}</td>
-            <td>{{ row.exCount }}</td>
-            <td class="col-op">
-              <button
-                class="btn small"
-                type="button"
-                :disabled="viewerCode === row.exerciseCode && viewerLoading"
-                @click="openViewer(row.exerciseCode)"
-              >
-                查看
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <Pagination :total="total" :page-num="pageNum" :page-size="PAGE_SIZE" @change="onPage" />
-    </section>
+    <aside class="tj-side">右侧栏位预留</aside>
 
     <!-- ── 查看弹层：只读渲染题目 + 答案（v-show：关掉后实例和 DOM 都留着复用）── -->
     <div v-show="viewerOpen" class="viewer-mask" @click.self="closeViewer">
@@ -248,16 +252,63 @@ function closeViewer(): void {
 </script>
 
 <style scoped>
+/* 整页左右两栏：对半分，中间一条淡灰竖线（右栏的 border-left）分隔。
+   页面自己撑满可视高度，滚动收在左栏里 —— 右栏的白底才能一直铺到页脚。 */
 .tj-page {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 20px 24px 32px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
-.page-title {
-  margin: 0 0 16px;
-  font-size: 20px;
-  color: var(--admin-text, #1f2d3d);
+/* 窄屏（<900px）再并排会把左栏的表格挤成一条，改成上下叠：上查询、下预留区 */
+@media (max-width: 900px) {
+  .tj-page {
+    grid-template-columns: minmax(0, 1fr);
+    /* 单列时高度交给内容，滚动还给外层 */
+    height: auto;
+    overflow: visible;
+  }
+}
+
+.tj-main {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 20px 24px;
+  overflow-y: auto;
+}
+
+@media (max-width: 900px) {
+  .tj-main {
+    overflow: visible;
+  }
+}
+
+/* 右栏：纯白底，左侧一条淡灰分割线，高度跟页面一致 */
+.tj-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 16px 20px;
+  box-sizing: border-box;
+  font-size: 13px;
+  color: var(--admin-text-weak, #8492a6);
+  background: var(--admin-surface, #fff);
+  border-left: 1px solid var(--admin-border, #d8dee6);
+}
+
+/* 单列时竖线改到上边，并留出可视高度 */
+@media (max-width: 900px) {
+  .tj-side {
+    min-height: 180px;
+    border-left: none;
+    border-top: 1px solid var(--admin-border, #d8dee6);
+  }
 }
 
 .card {

@@ -62,6 +62,10 @@ export interface DocBarOptions {
   // 保存按钮：和 ⌘S 同一条路径 —— 有落点静默覆盖，未命名才弹框（落工作目录）。
   // 返回是否写成功，决定要不要闪一下勾。
   onSave: () => Promise<boolean> | boolean
+  // 「批量录入」：切到后台管理系统的「导入中心」拆题，并把当前 Markdown 一起带过去。
+  // 可见性由 CSS 决定（body.pdf-view / body.image-view / body.docx-view 三个视图），
+  // 这里不做判断。
+  onBatchEntry: () => void
 }
 
 export function initDocBar(options: DocBarOptions): void {
@@ -98,6 +102,12 @@ export function initDocBar(options: DocBarOptions): void {
   }
 
   const copy = byId<HTMLButtonElement>('doc-copy-btn')
+  const batch = byId<HTMLButtonElement>('doc-batch-entry-btn')
+  if (batch) {
+    batch.title = zh ? '把这份 Markdown 拿去批量拆题（打开「导入中心」）' : 'Batch import in Admin Panel'
+    batch.setAttribute('aria-label', batch.title)
+    batch.addEventListener('click', () => options.onBatchEntry())
+  }
   if (!copy) return
   copy.title = zh ? '复制当前文档' : 'Copy document'
   copy.setAttribute('aria-label', copy.title)

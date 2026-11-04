@@ -22,25 +22,25 @@ The two items below are the ones actually blocking us. Everything else on this p
 
 ### Windows input stutter while typing
 
-**Sources:** [#78](https://github.com/marswaveai/ColaMD/issues/78)
+**Sources:** [#78](https://github.com/xxoolqq/Teyoo/issues/78)
 
 **Reported:** Windows 11, NVIDIA GPU, AMD CPU. Typing stalls roughly every six characters.
 
 **Needed:** reproduction and profiling on Windows: does the stall follow IME composition, autosave, Mermaid rendering, or the renderer's paint loop? Is it the editor, the file watcher, or the GPU process?
 
-**Why it is stuck:** the maintainer only has macOS hardware. Startup time is already instrumented (`COLAMD_STARTUP_TRACE=1`), so a Windows user can produce a comparable trace; nobody has been able to run it on a machine that shows the stall.
+**Why it is stuck:** the maintainer only has macOS hardware. Startup time is already instrumented (`TEYOO_STARTUP_TRACE=1`), so a Windows user can produce a comparable trace; nobody has been able to run it on a machine that shows the stall.
 
-**How to help:** comment on [#78](https://github.com/marswaveai/ColaMD/issues/78) (closed pending data; reopen with it) or open a new issue, with your GPU and driver version, input method, document size, and whether the stutter changes when the document contains no Mermaid block or when autosave is off.
+**How to help:** comment on [#78](https://github.com/xxoolqq/Teyoo/issues/78) (closed pending data; reopen with it) or open a new issue, with your GPU and driver version, input method, document size, and whether the stutter changes when the document contains no Mermaid block or when autosave is off.
 
 ### Image export failures
 
-**Sources:** [#88](https://github.com/marswaveai/ColaMD/issues/88)
+**Sources:** [#88](https://github.com/xxoolqq/Teyoo/issues/88)
 
 **Reported:** export to image fails for some users, on both desktop and mobile export modes.
 
 **Needed:** a document that reproduces it. Export shares one rendering path across the export options, so a failing file usually points straight at the cause.
 
-**How to help:** comment on [#88](https://github.com/marswaveai/ColaMD/issues/88) with the failing document (or a cut-down version), the platform, the export option used, and whether the current release still fails.
+**How to help:** comment on [#88](https://github.com/xxoolqq/Teyoo/issues/88) with the failing document (or a cut-down version), the platform, the export option used, and whether the current release still fails.
 
 ## Implemented On Main
 
@@ -48,73 +48,73 @@ These features are implemented on `main` and await release verification.
 
 ### Footnote hover preview
 
-**Source:** [#25](https://github.com/marswaveai/ColaMD/issues/25)
+**Source:** [#25](https://github.com/xxoolqq/Teyoo/issues/25)
 
 **Status:** hovering a footnote reference shows its definition in a floating card, read from the document itself. The card is part of the hover zone so a long definition can be scrolled, moving the pointer across the gap does not dismiss it, and multi-block definitions keep their paragraphs apart.
 
 ### Markdown formatting shortcuts
 
-**Source:** [#58](https://github.com/marswaveai/ColaMD/issues/58)
+**Source:** [#58](https://github.com/xxoolqq/Teyoo/issues/58)
 
 **Status:** the Edit menu carries a Format submenu with bold, italic, inline code, strikethrough, link (URL from the clipboard), bullet list and ordered list, so the shortcuts are discoverable from the menu rather than only from documentation. Commands apply only while the editor has focus. Customising or disabling them stays a candidate below.
 
 ### Remember window size and view zoom
 
-**Source:** [#95](https://github.com/marswaveai/ColaMD/issues/95)
+**Source:** [#95](https://github.com/xxoolqq/Teyoo/issues/95)
 
 **Status:** the window's position, size and view zoom are stored next to the other preferences and restored on the next launch. A stored position that no longer overlaps any attached display falls back to the default size, so unplugging a monitor cannot strand the window off screen.
 
 ### Themes as standalone files, with a guide for writing your own
 
-**Source:** [#91](https://github.com/marswaveai/ColaMD/issues/91)
+**Source:** [#91](https://github.com/xxoolqq/Teyoo/issues/91)
 
 All twelve built-in themes already ship as standalone, commented CSS files in [`themes/`](../themes), and [`themes/README.md`](../themes/README.md) documents the variables, direct selectors, and the rule that omitted variables inherit the Light defaults. The request was filed because nobody could find them: the README named twelve themes without linking the folder. README and README_CN now link both files. Nothing else is owed here, so the issue is closed.
 
 ### Export Word (.docx)
 
-**Sources:** [#31](https://github.com/marswaveai/ColaMD/issues/31)
+**Sources:** [#31](https://github.com/xxoolqq/Teyoo/issues/31)
 
 **Status:** Exports GFM document structure, common inline formatting, lists, tables, links, code blocks, and standalone local images to `.docx`. HTML and unsupported syntax degrade to text.
 
 ### Export shareable images
 
-**Sources:** [#35](https://github.com/marswaveai/ColaMD/issues/35)
+**Sources:** [#35](https://github.com/xxoolqq/Teyoo/issues/35)
 
 **Status:** Exports desktop and mobile reading pages as separate PNG files. Longer documents continue as numbered pages, with the final page trimmed to its content.
 
 ### Document outline
 
-**Sources:** [#21](https://github.com/marswaveai/ColaMD/issues/21), [#27](https://github.com/marswaveai/ColaMD/issues/27), [#64](https://github.com/marswaveai/ColaMD/issues/64)
+**Sources:** [#21](https://github.com/xxoolqq/Teyoo/issues/21), [#27](https://github.com/xxoolqq/Teyoo/issues/27), [#64](https://github.com/xxoolqq/Teyoo/issues/64)
 
 **Status:** Adds a Files / Outline switch in the existing sidebar. Headings navigate in both visual and Markdown source modes. The outline doubles as a reading-progress view: the entry for the section at the top of the viewport is highlighted while scrolling (both modes), the active entry stays revealed in long documents, and jumping from the outline or an anchor link flashes the landing heading once so the arrival is visible. Colors derive from each theme's link color. Long headings expose their full text through a hover tooltip.
 
 ### Resizable file panel
 
-**Sources:** [#64](https://github.com/marswaveai/ColaMD/issues/64)
+**Sources:** [#64](https://github.com/xxoolqq/Teyoo/issues/64)
 
 **Status:** The panel's right edge offers a lightweight drag hot zone (no permanent handle icon, hover stripe only, per design.md) to resize between 200px and 420px. The choice persists locally, the default stays 220px, and the hot zone hides with the panel. The floor is 200 because the window controls sit in this column's top row: at 180 the last button would land on the pixel where the tab strip starts.
 
 ### Windows startup performance
 
-**Sources:** [#32](https://github.com/marswaveai/ColaMD/issues/32)
+**Sources:** [#32](https://github.com/xxoolqq/Teyoo/issues/32)
 
-**Status:** Adds opt-in `COLAMD_STARTUP_TRACE=1` timing from main-process load through editor readiness. Export dependencies are dynamically loaded, reducing the main startup bundle from about 1.73 MB to 604 KB.
+**Status:** Adds opt-in `TEYOO_STARTUP_TRACE=1` timing from main-process load through editor readiness. Export dependencies are dynamically loaded, reducing the main startup bundle from about 1.73 MB to 604 KB.
 
 ### Diagram rendering (Mermaid)
 
-**Sources:** [#26](https://github.com/marswaveai/ColaMD/issues/26)
+**Sources:** [#26](https://github.com/xxoolqq/Teyoo/issues/26)
 
 **Status:** Mermaid blocks render through a lazily created hidden iframe, isolated from the main bundle (same-process iframe isolation, not a hardened browser sandbox). Includes 400ms debounce, click-to-edit source mode, and a 15s timeout recovery. The earlier CPU-storm removal (v1.8.1) is addressed by ignoring view-internal DOM mutations in the node view.
 
 ### Visible save status hint
 
-**Source:** [#49](https://github.com/marswaveai/ColaMD/issues/49)
+**Source:** [#49](https://github.com/xxoolqq/Teyoo/issues/49)
 
 **Status:** A quiet `未保存 / 已保存` hint sits beside the filename in the title bar. `未保存` shows while edits are pending; `已保存` flashes after autosave or manual save, then fades out. No timestamps, no toasts.
 
 ### Heading anchor navigation
 
-**Source:** [#50](https://github.com/marswaveai/ColaMD/issues/50)
+**Source:** [#50](https://github.com/xxoolqq/Teyoo/issues/50)
 
 **Status:** Plain clicks on `[text](#anchor)` links jump to the matching heading with a smooth scroll. Slug resolution follows GitHub rules: lowercase, punctuation stripped, CJK preserved, URL-encoded targets decoded, case-insensitive fallback, and `-1`/`-2` suffixes for repeated headings. External links keep the ⌘/Ctrl+click-to-open behavior; anchor clicks never move the caret.
 
@@ -124,9 +124,9 @@ All twelve built-in themes already ship as standalone, commented CSS files in [`
 
 ### Recent files and restore last session
 
-**Source:** [#28](https://github.com/marswaveai/ColaMD/issues/28), [#45](https://github.com/marswaveai/ColaMD/issues/45)
+**Source:** [#28](https://github.com/xxoolqq/Teyoo/issues/28), [#45](https://github.com/xxoolqq/Teyoo/issues/45)
 
-**Status:** File → Open Recent lists the last 10 documents (stale paths pruned). Opening or Save-As records the file in `~/.colamd/recent.json`. At launch the app reopens the most recent document by default; a checkbox in the same submenu turns restore off, and Clear Recent wipes the list. The startup restore policy is queued for redesign; the desired default is a blank launch unless the previous session ended unexpectedly or the system restarted.
+**Status:** File → Open Recent lists the last 10 documents (stale paths pruned). Opening or Save-As records the file in `~/.teyoo/recent.json`. At launch the app reopens the most recent document by default; a checkbox in the same submenu turns restore off, and Clear Recent wipes the list. The startup restore policy is queued for redesign; the desired default is a blank launch unless the previous session ended unexpectedly or the system restarted.
 
 ### Configurable editor font
 
@@ -136,7 +136,7 @@ All twelve built-in themes already ship as standalone, commented CSS files in [`
 
 ### Multiple windows
 
-**Source:** [#44](https://github.com/marswaveai/ColaMD/issues/44)
+**Source:** [#44](https://github.com/xxoolqq/Teyoo/issues/44)
 
 **Status:** File → New Window opens an independent editor window; opening a file that is already open focuses its window, and an empty window is reused before spawning a new one. Each window keeps its own file, save queue, watcher, and unsaved-changes guard.
 
@@ -152,7 +152,7 @@ All twelve built-in themes already ship as standalone, commented CSS files in [`
 
 ### Reveal in file manager (hover on the document title)
 
-**Sources:** [#83](https://github.com/marswaveai/ColaMD/issues/83), [#84](https://github.com/marswaveai/ColaMD/pull/84) by @moyu12-ae
+**Sources:** [#83](https://github.com/xxoolqq/Teyoo/issues/83), [#84](https://github.com/xxoolqq/Teyoo/pull/84) by @moyu12-ae
 
 The reveal button shipped in v2.0.4 and v2.0.5 was unreachable, but not because hover in the titlebar is unreliable. Commit `8dc5097` (stop undo from crossing documents) refactored `main.ts` and deleted every renderer hookup for the button: the element accessor, the `fileManagerName` state, `fileLocationLabel()`, `updateFileRevealButton()` and the click binding, while `index.html` kept its hardcoded `disabled`. The visibility rule is `#titlebar:hover #reveal-file-btn:not(:disabled)`, so a permanently disabled button can never match and stays at `opacity: 0`, which presents as a broken hover. The wiring is restored, and the button appears when the file name is hovered.
 
@@ -160,11 +160,11 @@ The reveal button shipped in v2.0.4 and v2.0.5 was unreachable, but not because 
 
 ### Tabs and multi-document workspace
 
-**Sources:** [#59](https://github.com/marswaveai/ColaMD/issues/59)
+**Sources:** [#59](https://github.com/xxoolqq/Teyoo/issues/59)
 
 **Status:** Shipped in `v2.1.0`. Keep several documents open in one window instead of replacing the current document. Each tab holds its own content, unsaved state, undo history and scroll position.
 
-**In progress (maintainer).** The tab strip itself is actively being refined — chrome height, the hover `⌘W` affordance, tab widths and the title-bar relationship are all still moving ([#90](https://github.com/marswaveai/ColaMD/issues/90)). Do not start a parallel tab implementation; comment on the issue or open a PR against the maintainer's current work instead.
+**In progress (maintainer).** The tab strip itself is actively being refined — chrome height, the hover `⌘W` affordance, tab widths and the title-bar relationship are all still moving ([#90](https://github.com/xxoolqq/Teyoo/issues/90)). Do not start a parallel tab implementation; comment on the issue or open a PR against the maintainer's current work instead.
 
 Re-opened as a candidate on 2026-09-11 instead of staying declined, then designed and built during 2026-09-13. The spec lives in `design.md` (section on tabs): user-created tabs only, no strip until there are two tabs, no persistence, no drag between windows. Creation entries are `⌘T`, File → New Tab, and the file panel's right-click Open in New Tab; there is deliberately no plus button in the chrome.
 
@@ -182,7 +182,7 @@ Re-opened as a candidate on 2026-09-11 instead of staying declined, then designe
 
 ## Website feature cards (positioning)
 
-**Decision (2026-09-13):** the nine cards on colamd.com are ordered by user demand, not by internal build order:
+**Decision (2026-09-13):** the nine cards on the website are ordered by user demand, not by internal build order:
 
 1. True WYSIWYG (真正的所见即所得)
 2. Always in Sync (文件永远是最新的)
@@ -209,30 +209,30 @@ Rule kept: exactly nine cards. The order is documented in an HTML comment above 
 
 ### One row title bar with tabs
 
-**Source:** [#90](https://github.com/marswaveai/ColaMD/issues/90)
+**Source:** [#90](https://github.com/xxoolqq/Teyoo/issues/90)
 
-Following the tab strip, the title bar and the strip cost two rows of vertical space. Chrome collapses them into one. ColaMD's title bar also carries a centred filename and three buttons on the right, so the merge needs a decision about where those go before it is a visual change.
+Following the tab strip, the title bar and the strip cost two rows of vertical space. Chrome collapses them into one. Teyoo's title bar also carries a centred filename and three buttons on the right, so the merge needs a decision about where those go before it is a visual change.
 
 ### Tab reordering by drag
 
-**Source:** [#59](https://github.com/marswaveai/ColaMD/issues/59)
+**Source:** [#59](https://github.com/xxoolqq/Teyoo/issues/59)
 
 Tabs can be opened and closed but not reordered. Not decided. Drag interactions have been declined elsewhere in the product (panel resize was replaced by fixed rules plus a narrow hot zone), so this needs the same question asked: does the value justify a drag affordance that appears nowhere else.
 
 ### Renderer costs found while measuring startup (#100)
 
-**Source:** [#100](https://github.com/marswaveai/ColaMD/issues/100)
+**Source:** [#100](https://github.com/xxoolqq/Teyoo/issues/100)
 
 Measured, not guessed, and cheap enough to be worth listing:
 
 - Word count runs three full-document regex passes about 200ms after typing stops, although the number is only shown on hover. Compute on demand or maintain incrementally.
 - KaTeX sits on the startup path: 473KB is parsed even for a document with no math. Lazy-load it the way mermaid already is.
-- `releaseMermaidRenderer()` destroys the sandbox iframe on every file open, so a document with diagrams rebuilds and recompiles them each time. Being checked together with [#94](https://github.com/marswaveai/ColaMD/issues/94).
+- `releaseMermaidRenderer()` destroys the sandbox iframe on every file open, so a document with diagrams rebuilds and recompiles them each time. Being checked together with [#94](https://github.com/xxoolqq/Teyoo/issues/94).
 - Windows-only compositing costs (`backdrop-filter`, several `box-shadow`) on integrated graphics, and documents between the source-mode threshold and "large". Measure before touching.
 
 ### Portable build (zip distribution)
 
-**Sources:** [#63](https://github.com/marswaveai/ColaMD/issues/63), user feedback again on 2026-09-13
+**Sources:** [#63](https://github.com/xxoolqq/Teyoo/issues/63), user feedback again on 2026-09-13
 
 Publish the existing mac zip artifact as a visible download alongside the dmg so the app can run unzipped without installation. The mac side is already published.
 
@@ -247,14 +247,14 @@ Both lose what the installer provides: `.md` file association, a Start Menu entr
 
 ### Slow second-file open
 
-**Sources:** [#63](https://github.com/marswaveai/ColaMD/issues/63)
+**Sources:** [#63](https://github.com/xxoolqq/Teyoo/issues/63)
 
 Bug report: opening the first .md is fast, but opening another file while one is already open stalls for a long time. Profile the second-open path (window reuse, watcher re-establish, editor re-init) before optimizing; measure first per the Windows startup performance precedent.
 
 
 ### Merge documents from different directories into one tab group
 
-**Sources:** [#59](https://github.com/marswaveai/ColaMD/issues/59)
+**Sources:** [#59](https://github.com/xxoolqq/Teyoo/issues/59)
 
 **Status:** partially addressed on `main` (#99): files arriving from the OS (double-click, second launch) now open as tabs of the existing window, and ⌘O / recent files open as tabs too. What remains is the in-app path: the file panel still browses only the active document's directory, so collecting documents from several folders into one window needs a panel-level decision (recents view, pinned folders, or a full picker). Not scheduled.
 
@@ -264,9 +264,9 @@ Bug report: opening the first .md is fast, but opening another file while one is
 
 **Raised:** 2026-09-11, by the maintainer.
 
-Let people write their own plugins, so ColaMD grows through an ecosystem instead of shipping every capability itself. Mermaid is the first candidate to be extracted into a plugin, which would prove the API and keep the core small.
+Let people write their own plugins, so Teyoo grows through an ecosystem instead of shipping every capability itself. Mermaid is the first candidate to be extracted into a plugin, which would prove the API and keep the core small.
 
-Requests already queued for this direction: image hosting such as PicGo ([#79](https://github.com/marswaveai/ColaMD/issues/79)), which is exactly the kind of integration that should not be built in.
+Requests already queued for this direction: image hosting such as PicGo ([#79](https://github.com/xxoolqq/Teyoo/issues/79)), which is exactly the kind of integration that should not be built in.
 
 Open questions before any implementation: what a plugin may touch (editor commands, menus, export pipeline, file I/O), how plugins are installed and updated, the security and permission model (plugins run in the renderer, so sandboxing matters), and how to keep a default install zero-configuration.
 
@@ -274,14 +274,14 @@ Open questions before any implementation: what a plugin may touch (editor comman
 
 **Raised:** 2026-09-11, after Obsidian's author released [Knap](https://github.com/obsidianmd/knap) (MIT, `obsidianmd/knap`), a template language that turns data into Markdown, shared by Obsidian Web Clipper and Importer.
 
-ColaMD's thesis is Markdown as a database: fixed fields in `.md`, many views on top. Knap is the mirror step, data into Markdown, so it is closer to an ingestion standard than a competitor. Two shapes worth considering, neither committed:
+Teyoo's thesis is Markdown as a database: fixed fields in `.md`, many views on top. Knap is the mirror step, data into Markdown, so it is closer to an ingestion standard than a competitor. Two shapes worth considering, neither committed:
 
-- Point users at Knap instead of inventing a template language: `npx knap render template.md --data article.json --output note.md` writes a file that ColaMD already hot-reloads, which makes ColaMD the live view for generated Markdown.
+- Point users at Knap instead of inventing a template language: `npx knap render template.md --data article.json --output note.md` writes a file that Teyoo already hot-reloads, which makes Teyoo the live view for generated Markdown.
 - Later, treat Knap as the structured-input path for the database workflow (fields in, Markdown out) and keep HTML templates as the view layer.
 
 Interop is cheap because Knap is an AST interpreter with no `eval` and ships a CLI; reimplementing a templating language would not be.
 
-The maintainer also raised the mirror idea on 2026-09-11: ColaMD itself could ship as a plugin for another host, so the product is both a host for templates and guests in other ecosystems. Tracked here as direction only, with no scope decided.
+The maintainer also raised the mirror idea on 2026-09-11: Teyoo itself could ship as a plugin for another host, so the product is both a host for templates and guests in other ecosystems. Tracked here as direction only, with no scope decided.
 
 
 ### Shortcut customization (keybinding preferences)
@@ -296,7 +296,7 @@ The maintainer also raised the mirror idea on 2026-09-11: ColaMD itself could sh
 
 ### Import local images
 
-**Source:** [#21](https://github.com/marswaveai/ColaMD/issues/21)
+**Source:** [#21](https://github.com/xxoolqq/Teyoo/issues/21)
 
 **Need:** Insert local images into Markdown without compromising editor stability or document content.
 
@@ -304,13 +304,13 @@ The maintainer also raised the mirror idea on 2026-09-11: ColaMD itself could sh
 
 **Scope constraint (2026-09-11):** two complete image pipelines were declined this day (see Declined → Rich image pipelines). If this is ever restarted it must stay minimal: zero configuration by default, images written next to the document as relative references, no new menu, settings panel, floating toolbar, or other persistent UI.
 
-### Publish ColaMD for iOS
+### Publish Teyoo for iOS
 
 **Source:** User request
 
-**Need:** Publish the iOS app under the unified `ColaMD` product name so anyone can install it from the App Store.
+**Need:** Publish the iOS app under the unified `Teyoo` product name so anyone can install it from the App Store.
 
-**Scope:** Publish the main ColaMD app first: create the App Store Connect record, configure Release distribution signing, upload an archive, run internal and external TestFlight verification, prepare screenshots and store metadata, complete privacy and export-compliance declarations, submit App Review, and verify public installation plus `.md` / `.txt` opening after release. Defer the Share Extension until it has a clear user need; it is an optional later update, not a prerequisite for the first release.
+**Scope:** Publish the main Teyoo app first: create the App Store Connect record, configure Release distribution signing, upload an archive, run internal and external TestFlight verification, prepare screenshots and store metadata, complete privacy and export-compliance declarations, submit App Review, and verify public installation plus `.md` / `.txt` opening after release. Defer the Share Extension until it has a clear user need; it is an optional later update, not a prerequisite for the first release.
 
 **Signing note:** Development signing is only for registered test devices. App Store distribution signing is a separate profile that Xcode can create and manage automatically from the company Apple Developer Program account. No manual profile editing is planned.
 
@@ -318,7 +318,7 @@ The maintainer also raised the mirror idea on 2026-09-11: ColaMD itself could sh
 
 ### Merge Windows menu bar into title bar
 
-**Source:** [#46](https://github.com/marswaveai/ColaMD/issues/46)
+**Source:** [#46](https://github.com/xxoolqq/Teyoo/issues/46)
 
 **Need:** On Windows, put menu items on the same row as the document title and window controls (like VS Code), reclaiming one row of vertical space.
 
@@ -336,7 +336,7 @@ No decision yet on which AI capabilities belong in the editor, and therefore no 
 
 ### Code block syntax highlighting
 
-**Sources:** [#54](https://github.com/marswaveai/ColaMD/issues/54)
+**Sources:** [#54](https://github.com/xxoolqq/Teyoo/issues/54)
 
 Fenced code blocks currently render as plain styled text with a copy button, without language-aware colouring. Adding it means shipping a highlighter and deciding which languages to support, so it stays tracked rather than committed. The issue remains open.
 
@@ -345,19 +345,19 @@ Fenced code blocks currently render as plain styled text with a copy button, wit
 
 ### Cross-directory file tree in the panel
 
-**Source:** [#96](https://github.com/marswaveai/ColaMD/issues/96)
+**Source:** [#96](https://github.com/xxoolqq/Teyoo/issues/96)
 
 Declined (2026-09-15), after re-examining it rather than on first instinct. An expanding tree would bring expansion state, cached directory reads, and level navigation into a panel whose single job is the current document's folder, and the edge cases are exactly where such a tree gets expensive (deep paths in a 220px panel, hover and renaming per level, right-click menus at every depth). The user-facing answer is that a hierarchy is not being introduced for now. Tabs already hold documents from any path in one window, so cross-folder work has an answer that costs no new structure.
 
 
 ### System WebView shell (Tauri) migration
 
-**Declined (2026-09-13).** On macOS a system-WebView shell would collapse the download from 82 MB to roughly Typora's 14 MB, because the OS supplies the browser. It does not pay off anywhere else: Typora's own Windows installer is 86 to 108 MB for the same reason ours is 115 MB, there is no dependable system WebView on Windows, and WebKitGTK on Linux carries real distro and rendering risk. A main-process rewrite for one of three platforms is not worth it. Revisit only if ColaMD ever becomes macOS-only.
+**Declined (2026-09-13).** On macOS a system-WebView shell would collapse the download from 82 MB to roughly Typora's 14 MB, because the OS supplies the browser. It does not pay off anywhere else: Typora's own Windows installer is 86 to 108 MB for the same reason ours is 115 MB, there is no dependable system WebView on Windows, and WebKitGTK on Linux carries real distro and rendering risk. A main-process rewrite for one of three platforms is not worth it. Revisit only if Teyoo ever becomes macOS-only.
 
 
 ### Built-in translation
 
-Translation introduces provider, configuration, privacy, and product-scope complexity outside ColaMD's focused Markdown editing role.
+Translation introduces provider, configuration, privacy, and product-scope complexity outside Teyoo's focused Markdown editing role.
 
 ### Resizable file panel
 
@@ -365,7 +365,7 @@ Implemented in the `2.0.2` candidate: the file panel width can be adjusted and i
 
 ### Rich image pipelines
 
-**Sources:** [#73](https://github.com/marswaveai/ColaMD/pull/73), [#74](https://github.com/marswaveai/ColaMD/pull/74)
+**Sources:** [#73](https://github.com/xxoolqq/Teyoo/pull/73), [#74](https://github.com/xxoolqq/Teyoo/pull/74)
 
 Two full image workflows were declined: a configurable import pipeline (Image menu, seven folder choices, copy/reference/embed modes) and a paste pipeline with a Feishu-style floating toolbar, lightbox, and base64 migration. Both add persistent UI, settings, or image-management subsystems, and the product keeps the interface to title bar, editor, and file panel，one setting screen is already too much, and a default that needs configuring is the wrong default.
 
@@ -375,10 +375,10 @@ The status dot driven by file-watcher timing was removed on 2026-09-11. It could
 
 ### Ultrawide paged reading layouts
 
-**Source:** [#67](https://github.com/marswaveai/ColaMD/pull/67)
+**Source:** [#67](https://github.com/xxoolqq/Teyoo/pull/67)
 
-Two- and three-page reading layouts for ultrawide displays were declined. ColaMD is an editor, not a paginated reader; the feature costs ~480 lines of pagination logic, hijacks wheel/trackpad/page keys, and sits on the known-fragile CSS multicol + contenteditable ground (IME, cross-column selection, position loss after external reload) for a single edge-case scenario.
+Two- and three-page reading layouts for ultrawide displays were declined. Teyoo is an editor, not a paginated reader; the feature costs ~480 lines of pagination logic, hijacks wheel/trackpad/page keys, and sits on the known-fragile CSS multicol + contenteditable ground (IME, cross-column selection, position loss after external reload) for a single edge-case scenario.
 
 ### Temporary same-directory document switcher
 
-**Superseded — do not build.** This was the 2026-09-01 direction for the same need as tabs ([#59](https://github.com/marswaveai/ColaMD/issues/59)): a quiet strip below the title bar holding up to three same-directory documents. The tab strip shipped in `v2.1.0` covers that need with an explicit model instead (open a tab when you want one, the file panel keeps replacing the current document), so the switcher is closed and the prototype in `temporary-document-switcher-prototype.html` is history rather than a plan.
+**Superseded — do not build.** This was the 2026-09-01 direction for the same need as tabs ([#59](https://github.com/xxoolqq/Teyoo/issues/59)): a quiet strip below the title bar holding up to three same-directory documents. The tab strip shipped in `v2.1.0` covers that need with an explicit model instead (open a tab when you want one, the file panel keeps replacing the current document), so the switcher is closed and the prototype in `temporary-document-switcher-prototype.html` is history rather than a plan.

@@ -11,7 +11,7 @@ export function pinyinRubyStringifyHandler(node: any, _parent: any, state: any, 
   const exit = state.enter('pinyinRuby')
   const tracker = state.createTracker(info)
   // 输出 `汉字(拼音)`
-  let value = tracker.move(`${node.text ?? ''}(${node.pinyin ?? ''})`)
+  const value = tracker.move(`${node.text ?? ''}(${node.pinyin ?? ''})`)
   exit()
   return value
 }

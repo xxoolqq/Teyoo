@@ -50,7 +50,7 @@ flowchart TD
 function hello(name) {
   console.log(`Hello, ${name}!`)
 }
-hello('ColaMD')
+hello('Teyoo')
 ```
 
 ## 6. 编辑测试

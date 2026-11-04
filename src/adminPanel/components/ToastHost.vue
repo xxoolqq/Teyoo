@@ -1,6 +1,6 @@
 <template>
   <!-- 整窗口的一层浮层，所以必须 Teleport 到 body。
-       它原先挂在 .admin-app 里：宿主（ColaMD）把整个应用挂在 #admin-panel 内部，
+       它原先挂在 .admin-app 里：宿主（Teyoo）把整个应用挂在 #admin-panel 内部，
        那一层是 position: fixed + z-index: 4（base.css:3101），自成层叠上下文 ——
        里面写多大的 z-index 都出不去，而顶部装菜单栏与标签条的那条 #titlebar 是
        z-index: 30（base.css:93），于是提示框一直被压在菜单栏底下。挪到 body 才是

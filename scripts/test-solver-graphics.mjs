@@ -18,7 +18,7 @@ import os from 'node:os'
 
 const require = createRequire(import.meta.url)
 const ROOT = path.resolve(import.meta.dirname, '..')
-const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'colamd-gfx-'))
+const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'teyoo-gfx-'))
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** 每个用例 = 一个步骤 + 一段图形指令 + 期望结果 */
@@ -305,7 +305,7 @@ try {
 
   const shot = await cdp.send('Page.captureScreenshot', { format: 'png' })
   // 截图落在系统临时目录：跑一次肉眼核对就够，别弄脏工作区
-  const shotPath = path.join(os.tmpdir(), 'colamd-solver-graphics-report.png')
+  const shotPath = path.join(os.tmpdir(), 'teyoo-solver-graphics-report.png')
   if (shot?.data) fs.writeFileSync(shotPath, Buffer.from(shot.data, 'base64'))
 
   console.log(`\n可视化解题 · 画图回归：${report.length} 个用例 + 2 项端到端检查`)

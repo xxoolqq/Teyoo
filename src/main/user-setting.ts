@@ -20,6 +20,15 @@ import { dirname, join } from 'node:path'
 export interface UserSetting {
   general: {
     launchOnOpen: 'last' | 'new'
+    /**
+     * 启动页：'editor' = 照旧停在编辑器（默认）；'admin' = 启动后自动切到
+     * 「后台管理系统」标签页。
+     *
+     * 只影响「应用启动」这一条路径（见 main/index.ts 的 createWindow 第四个参数）：
+     * 命令行/双击文件打开的窗口、带初始内容的窗口（更新日志、随包文档）一律不动，
+     * 否则会出现「双击 md 却停在后台管理」。
+     */
+    startPage: 'editor' | 'admin'
     autoSaveOnBlur: boolean
     autoSaveIntervalMinutes: number
     defaultEncoding: 'UTF-8' | 'GBK'
@@ -45,10 +54,22 @@ export interface UserSetting {
     workDir: string
     /**
      * 解析 PDF（JSON → Markdown）时图片是否内嵌成 base64：
-     * true = 写 data:image/...;base64,...（Markdown 自包含，体积随图片涨）；
-     * false = 只写图片的 file:// 绝对路径（Markdown 小，但离开本机就显示不出来）。
+     *   默认 false —— 只写图片的 file:// 绝对路径（Markdown 小得多，且编辑器不再
+     *   默认把图片转成 base64；渲染时 toFileUrl、导出时 docx-export 都按路径读）；
+     *   true        —— 写 data:image/...;base64,...（Markdown 自包含，体积随图片涨）。
      */
     embedImages: boolean
+    /**
+     * 导入 .docx 转成 Markdown 时，图片的落地方式。
+     *
+     *   'datauri'   → 内嵌为 `data:image/…;base64,…`（mammoth 默认）：Markdown
+     *                 自包含，但一张几百 KB 的图就能让文本涨几十倍——拆题时会把
+     *                 这些 base64 当成 token 发给模型，实测一份 347KB 的卷子
+     *                 转出 249,425 字符，剥离后只剩 4,456（56 倍）。
+     *   'directory' → 写到「工作目录/images」下，Markdown 里只留绝对路径：
+     *                 文本干净、图片可复用于后续入库与预览。
+     */
+    docxImageMode: 'datauri' | 'directory'
     applyLocal: boolean
     applyRemote: boolean
     escapeUrl: boolean
@@ -130,6 +151,7 @@ export const DEFAULT_WORK_DIR = 'D:/TeyooData'
 const DEFAULT_SETTING: UserSetting = {
   general: {
     launchOnOpen: 'last',
+    startPage: 'editor',
     autoSaveOnBlur: true,
     // 0 = 不自动保存；1–5 为分钟数
     autoSaveIntervalMinutes: 0,
@@ -153,7 +175,10 @@ const DEFAULT_SETTING: UserSetting = {
   },
   image: {
     workDir: DEFAULT_WORK_DIR,
-    embedImages: true,
+    // 默认只写路径：内嵌 base64 会把 Markdown 撑大几十倍，项目内已不再默认内嵌
+    embedImages: false,
+    // 默认落盘：内嵌 base64 会把 Markdown 撑大几十倍，且对纯文本通道的模型毫无价值
+    docxImageMode: 'directory',
     applyLocal: true,
     applyRemote: true,
     escapeUrl: true,
@@ -184,7 +209,7 @@ const DEFAULT_SETTING: UserSetting = {
     // 勾选「公式 OCR 地址」后才改用下面的自定义端点。
     useCustomOcrUrl: false,
     // SimpleTex 契约端点，默认指向本地模拟服务（http/server.mjs）；填自己的
-    // SimpleTex /api/latex_ocr 即可切换。环境变量 COLAMD_OCR_URL 优先。
+    // SimpleTex /api/latex_ocr 即可切换。环境变量 TEYOO_OCR_URL 优先。
     formulaOcrUrl: 'http://127.0.0.1:8787/api/latex_ocr'
   },
   mineru: {

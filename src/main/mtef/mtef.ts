@@ -563,7 +563,8 @@ export class MTEFv5 {
           case SEL.SUM:
           // tmINTEG is not handled by the Go reference (it yields an empty
           // result on files containing integrals); all BigOp-class templates
-          // share tmSUM's slot layout, so they are handled the same way here.
+          // share tmSUM's slot layout, so they are handled the same way here
+          // (falls through on purpose).
           case SEL.INTEG:
           case SEL.PROD:
           case SEL.COPROD:
