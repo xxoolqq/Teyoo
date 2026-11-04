@@ -17,8 +17,8 @@ files:
   # Dropping it broke "docx转md" in installed builds: the WMF/EMF branch of
   # docx-import.js died with `Cannot find module '@napi-rs/canvas'`.
   # The wildcard also picks up the platform binary package
-  # (@napi-rs/canvas-win32-x64-msvc / -darwin-arm64 / -linux-x64-gnu …) that
-  # @napi-rs/canvas loads internally. ~37 MB unpacked, mostly Skia.
+  # (@napi-rs/canvas-win32-x64-msvc …) that @napi-rs/canvas loads internally.
+  # ~37 MB unpacked, mostly Skia.
   - 'node_modules/@napi-rs/**/*'
   # LaTeX公式（本地 Texo 模型）主进程推理：transformers.js 走 onnxruntime-node
   # 原生后端（electron.vite 里 external），运行时从 node_modules 加载。
@@ -60,14 +60,11 @@ asarUnpack:
   # 路径 LoadLibrary 这个 dll，留在 asar 里 Windows 加载不到。
   - node_modules/@img/sharp-${platform}-${arch}/**/*
 
-# ColaMD provides its own Chinese/English UI and only needs these Chromium
+# Teyoo provides its own Chinese/English UI and only needs these Chromium
 # locale resources. Keeping every Electron locale adds tens of megabytes.
-# Electron uses hyphens on Linux and underscores in macOS .lproj names.
 electronLanguages:
   - en-US
-  - en_US
   - zh-CN
-  - zh_CN
 
 extraResources:
   - from: resources/templates
@@ -107,33 +104,12 @@ fileAssociations:
     role: Editor
     mimeType: text/plain
 
-mac:
-  compression: maximum
-  # Publish separate installers for each CPU architecture instead of a
-  # universal binary. This keeps both Intel and Apple Silicon support while
-  # avoiding the duplicated Electron framework in every download.
-  artifactName: '${productName}-${version}-${arch}.${ext}'
-  target:
-    - target: dmg
-      arch:
-        - arm64
-        - x64
-    - target: zip
-      arch:
-        - arm64
-        - x64
-  category: public.app-category.productivity
-  icon: resources/icon.icns
-  hardenedRuntime: true
-  gatekeeperAssess: false
-  entitlements: resources/entitlements.mac.plist
-  entitlementsInherit: resources/entitlements.mac.plist
-  notarize: true
-
+# Windows only. macOS (dmg/zip + notarization) and Linux (AppImage/deb) targets
+# were removed when 7.x restarted as a Windows-first line; see
+# .github/workflows/release.yml.
 win:
-  # Artifact names must stay distinct from the mac ones: the mac zips are
-  # ColaMD-<version>-<arch>.zip, so a plain win zip would collide with the mac
-  # x64 zip in the release assets.
+  # Keep the platform in the name so the portable zip can never collide with
+  # the installer or with any future artifact on the release page.
   artifactName: ${productName}-${version}-win-${arch}.${ext}
   target:
     - nsis
@@ -142,19 +118,13 @@ win:
     - zip
   icon: resources/icon.png
 
-linux:
-  target:
-    - AppImage
-    - deb
-  category: Office
-  icon: resources/icon.png
-
 nsis:
-  # No spaces: the default "${productName} Setup ${version}.exe" gets sanitized
+  # No spaces: the default "${productName} Setup ${version}.${ext}" gets sanitized
   # two different ways (latest.yml: space -> "-", GitHub asset: space -> "."),
   # so the updater requested a filename that never existed on the release
-  # (ColaMD-Setup-2.0.0.exe vs ColaMD.Setup.2.0.0.exe) and every in-app update
-  # on Windows failed with a silent 404 (#56).
+  # (Teyoo-Setup-2.0.0.exe vs Teyoo.Setup.2.0.0.exe) and every in-app update
+  # on Windows failed with a silent 404 (#56). electron-updater matches this
+  # name against latest.yml's `path`, so it must stay space-free.
   artifactName: ${productName}-Setup-${version}.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -162,4 +132,4 @@ nsis:
 publish:
   provider: github
   owner: xxoolqq
-  repo: teyoo
+  repo: Teyoo
