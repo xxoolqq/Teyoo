@@ -1,22 +1,24 @@
 {
   "name": "teyoo",
   "version": "7.9.0",
-  "description": "A free, elegant Markdown editor for macOS, Windows and Linux. Simple by design, always in sync with the file on disk.",
+  "description": "A free, elegant Markdown editor. Simple by design, always in sync with the file on disk.",
   "main": "dist/main/index.js",
   "author": {
     "name": "marswave.ai",
     "email": "hello@marswave.ai"
   },
   "license": "MIT",
-  "homepage": "https://github.com/marswaveai/colamd",
+  "homepage": "https://github.com/xxoolqq/Teyoo",
   "repository": {
     "type": "git",
-    "url": "https://github.com/marswaveai/colamd.git"
+    "url": "https://github.com/xxoolqq/Teyoo.git"
   },
   "scripts": {
     "dev": "electron-vite dev",
     "postinstall": "patch-package",
     "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.renderer.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "build": "electron-vite build",
     "prebuild": "npm run typecheck",
     "check:theme-colors": "node scripts/check-theme-colors.mjs",
@@ -64,14 +66,20 @@
     "wmf-emf-renderer": "^0.2.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/better-sqlite3": "^9.6.0",
     "@types/katex": "^0.16.8",
     "@vitejs/plugin-vue": "^5.2.4",
     "electron": "^44.3.0",
     "electron-builder": "^26.16.1",
     "electron-vite": "^3.0.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-vue": "^10.12.0",
+    "globals": "^17.13.0",
     "patch-package": "^8.0.1",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "typescript-eslint": "^8.72.1",
+    "vite": "^6.0.0",
+    "vue-eslint-parser": "^10.4.1"
   }
 }
